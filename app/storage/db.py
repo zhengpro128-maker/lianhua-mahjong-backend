@@ -245,6 +245,25 @@ class Storage:
                 (_new_id(), room_id, reporter, target, target_name, reason),
             )
 
+    # ── 声明同意 ─────────────────────────────────────────
+
+    def get_disclaimer_agreement(self, player_id: str) -> Optional[dict]:
+        """按匿名身份查声明同意记录（无记录返回 None）。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                'SELECT version, agreed_at FROM disclaimer_agreements WHERE player_id = ?',
+                (player_id,)).fetchone()
+        return {'version': row['version'], 'agreed_at': row['agreed_at']} if row else None
+
+    def set_disclaimer_agreement(self, player_id: str, version: int) -> None:
+        """记录声明同意（幂等）：同 player_id 重复同意 = 更新版本与时间。"""
+        with self._conn() as conn:
+            conn.execute(
+                'INSERT OR REPLACE INTO disclaimer_agreements (player_id, version, agreed_at) '
+                'VALUES (?, ?, ?)',
+                (player_id, version, _now()),
+            )
+
     # ── 查询 ─────────────────────────────────────────────
 
     def get_match(self, match_id: str) -> Optional[dict]:
@@ -511,6 +530,28 @@ class PostgresStorage:
                 'INSERT INTO reports (id, room_id, reporter, target, target_name, reason) '
                 'VALUES (%s, %s, %s, %s, %s, %s)',
                 (_new_id(), room_id, reporter, target, target_name, reason),
+            )
+
+    # ── 声明同意 ─────────────────────────────────────────
+
+    def get_disclaimer_agreement(self, player_id: str) -> Optional[dict]:
+        """按匿名身份查声明同意记录（无记录返回 None）。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                'SELECT version, agreed_at FROM disclaimer_agreements '
+                'WHERE player_id = %s',
+                (player_id,)).fetchone()
+        return {'version': row['version'], 'agreed_at': row['agreed_at']} if row else None
+
+    def set_disclaimer_agreement(self, player_id: str, version: int) -> None:
+        """记录声明同意（幂等）：同 player_id 重复同意 = 更新版本与时间。"""
+        with self._conn() as conn:
+            conn.execute(
+                'INSERT INTO disclaimer_agreements (player_id, version, agreed_at) '
+                'VALUES (%s, %s, now()) '
+                'ON CONFLICT (player_id) DO UPDATE SET '
+                'version = EXCLUDED.version, agreed_at = EXCLUDED.agreed_at',
+                (player_id, version),
             )
 
     # ── 查询 ─────────────────────────────────────────────

@@ -78,5 +78,14 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at  DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 纯娱乐声明同意记录：按匿名身份（guestId）记住「首次确认」，跨浏览器/设备有效。
+-- version 为声明版本号：声明文案实质修改时 +1（与前端 DISCLAIMER_VERSION 同步），
+-- 已确认旧版的用户需重新确认。
+CREATE TABLE IF NOT EXISTS disclaimer_agreements (
+  player_id  TEXT PRIMARY KEY,
+  version    INTEGER NOT NULL DEFAULT 1,
+  agreed_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_matches_room ON matches(room_id);
 CREATE INDEX IF NOT EXISTS idx_round_results_match ON round_results(match_id);

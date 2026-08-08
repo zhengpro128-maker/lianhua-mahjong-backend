@@ -1,0 +1,40 @@
+"""账号级 REST API —— 纯娱乐声明同意记录（跨设备记住「首次确认」）
+
+- GET /api/players/by-id/{player_id}/disclaimer-agreement  查询是否已同意（含版本号）
+- PUT /api/players/by-id/{player_id}/disclaimer-agreement  记录同意（幂等）
+
+按匿名身份 player_id（guestId）存储：换浏览器 / 清 localStorage 后仍能在服务端
+记住「已确认」。声明文案有实质修改时把 DISCLAIMER_VERSION +1（与前端
+src/content/disclaimer.ts 的 DISCLAIMER_VERSION 同步），已确认旧版的用户需重新确认。
+"""
+
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
+
+from app.storage.db import storage
+
+router = APIRouter(tags=['account'])
+
+# 声明版本号：与前端 src/content/disclaimer.ts 的 DISCLAIMER_VERSION 保持同步。
+DISCLAIMER_VERSION = 1
+
+
+class DisclaimerAgreementRequest(BaseModel):
+    version: int = Field(default=1, ge=1)
+
+
+@router.get('/api/players/by-id/{player_id}/disclaimer-agreement')
+def get_disclaimer_agreement(player_id: str) -> dict:
+    """查询某玩家是否已同意声明（返回其同意的版本号，供前端比对当前版本）。"""
+    row = storage.get_disclaimer_agreement(player_id)
+    if row is None:
+        return {'playerId': player_id, 'agreed': False}
+    return {'playerId': player_id, 'agreed': True,
+            'version': row['version'], 'agreedAt': row['agreed_at']}
+
+
+@router.put('/api/players/by-id/{player_id}/disclaimer-agreement')
+def put_disclaimer_agreement(player_id: str, body: DisclaimerAgreementRequest) -> dict:
+    """记录玩家同意声明（幂等）。"""
+    storage.set_disclaimer_agreement(player_id, body.version)
+    return {'playerId': player_id, 'agreed': True, 'version': body.version}

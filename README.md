@@ -1,0 +1,249 @@
+# 莲花广麻 · 联网后端
+
+[![GitHub Stars](https://img.shields.io/github/stars/BestGuo2020/lianhua-mahjong-backend?style=flat&logo=github)](https://github.com/BestGuo2020/lianhua-mahjong-backend/stargazers)
+[![License](https://img.shields.io/github/license/BestGuo2020/lianhua-mahjong-backend)](./LICENSE)
+![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776ab?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)
+
+「莲花广麻」的联网对战后端，为前端 Vue 工程（`../`）提供**房间管理、实时对局、战绩持久化与风控能力**。前端可独立运行单机模式；联机模式（创建/加入房间、与真实玩家同场）依赖本服务。
+
+本仓库为**独立 git 仓库**（前端根仓 `.gitignore` 刻意忽略 `/backend/`，互不影响），玩法规则、牌面操作、AI 决策等核心逻辑从前端 `src/game/` 纯函数 1:1 翻译为 Python 复用，**不重写规则引擎**。
+
+> 玩法按作者第一次接触的莲花广麻规则实现，部分计分细节可能与其他地区或牌馆的规则存在差异。实际行为以项目代码和游戏内“玩法”面板为准。
+
+## 声明
+
+本后端仅为「莲花广麻」提供纯娱乐棋牌对局技术服务。游戏内所有积分、道具仅为本游戏内部虚拟娱乐数值，不具备任何现金价值，不可兑换人民币、实物、有价资产，不支持任何形式回购、变现、折现、线下结算；游戏内**无赌资流通载体**（不充值、不提现、无筹码，分数仅对局计分），不做赌注显示或现金奖励排行榜。
+
+平台严禁一切赌博及变相赌博行为，并内置了封禁、举报与合规留证能力（见「功能概览 · 风控」）。完整的用户声明与违规处置条款见前端仓库根目录 [README.md](https://github.com/BestGuo2020/lianhuaguangdongmahjong/blob/master/README.md)。
+
+## 技术栈
+
+| 分类 | 技术 |
+| --- | --- |
+| 语言 | Python `>=3.11` |
+| Web 框架 | FastAPI（`>=0.115`）、Uvicorn、WebSocket、Pydantic v2 |
+| 并发模型 | `asyncio` 驱动，每房间一个 `GameManager` 状态机，房间内异步串行执行 |
+| 数据存储 | 默认 SQLite（内置 `sqlite3`）；设 `PG_PASSWORD` 后自动切换 PostgreSQL（已适配 Supabase pooler） |
+| 测试 | pytest + pytest-asyncio + httpx + websockets |
+| 部署 | Docker / docker compose，GitHub Actions 自动构建镜像推送 GHCR |
+
+## 功能概览
+
+- **房间生命周期（REST）**：创建（6 位房间码，`capacity` 2/3/4）、加入、离开、准备、开局、房主解散、房间限时自动回收。
+- **实时对局（WebSocket）**：`/ws/room/{room_id}` 凭重进码鉴权，服务端权威校验每步动作，**状态快照即唯一真源**（每份快照 per-seat 差异化，他人手牌隐藏）。
+- **断线托管与重连**：断线后座位立即由 AIPlayer 接管、对局继续；玩家凭重进码可换浏览器/重开标签页恢复原座位与控制权，重连后下发全量快照。
+- **轻量匿名身份**：`playerId`（guestId）为账号锚点，零注册；对局中刷新/关页可凭会话重进。
+- **战绩持久化**：对局/每局结算/玩家统计落库，支持单场明细、房间历史、按玩家查统计。
+- **风控（Phase 8 P1）**：封禁黑名单（player/room/device 三级）+ 玩家举报；join 与 WS 握手处即时查禁。首版无管理端鉴权（内部工具）。
+- **免责声明同意记录**：按匿名身份跨设备记住「首次确认」，声明版本升级后需重新确认。
+- **视觉节奏（pace）**：真人联机房间注入 AI 出牌/碰杠延迟（对齐前端 `PACE_MS`），避免 AI 瞬移；测试保持默认 0 加速。
+
+### 当前实现的主要规则
+
+- 只碰、杠，不吃牌。
+- 仅支持自摸与抢杠胡，不支持普通弃牌点炮。
+- 白板作为癞子，可替代对子、刻子或顺子所需的牌。
+- 底分为 100；庄家 ×2，无白板胡牌 ×2，四张红中胡牌额外 ×4，杠上开花 ×2。
+- 摸到红中会立即亮杠，并从牌墙尾部补摸；累计四张红中立即按自摸结算。
+- 胡牌后从牌墙摸最多 8 张马牌；1、5、9 和红中为中马，每张增加一份底分。
+- 暗杠由其余三家各支付 2 份底分；明杠由出牌者支付 1 份底分；补杠由其余三家各支付 1 份底分。
+- 抢杠胡只由被抢杠者支付胡牌分数。
+
+## 架构
+
+```
+客户端 (Vue 3, 保留 UI/3D/音效)         服务端 (FastAPI)
+┌───────────────────────────┐        ┌──────────────────────────────────┐
+│ 组件层 (App.vue, 3D 牌桌)  │        │  API 层                          │
+│ 交互层 (手势/点击/倒计时)   │        │  ├─ POST /api/rooms              │ 创建/加入房间
+│ 前端表现层 (音效/动画)      │        │  ├─ GET  /api/rooms/{id}          │ 房间信息
+│                           │        │  └─ POST /api/rooms/{id}/ready     │ 准备/开局
+│ ┌───────────────┐         │        │  WS 层                            │
+│ │ useRemoteGame │         │  WS   │  ├─ /ws/room/{id}                  │ 实时游戏消息
+│ │ - 状态快照     │◄────────►│  JSON │  └─ 出站队列 + 后台发送任务          │
+│ │ - 动作发送     │         │        │                                     │
+│ └───────────────┘         │        │  Game 层                          │
+│  远程模式；本地单机走       │        │  ├─ GameManager (房间权威状态机)    │
+│  useGame 不动             │        │  ├─ RemotePlayer (人类客户端)       │
+│                           │        │  └─ AIPlayer (复用 core/ai.py)     │
+│                           │        │                                     │
+│                           │        │  Core 层 (★ 从 TS 翻译复用)         │
+│                           │        │  ├─ core/tiles.py   (牌墙/洗牌)     │
+│                           │        │  ├─ core/rules.py   (胡牌/算分) ★   │
+│                           │        │  ├─ core/ai.py      (AI 决策)       │
+│                           │        │  └─ core/actions.py (牌面操作)      │
+│                           │        │                                     │
+│                           │        │  Storage 层                         │
+│                           │        │  └─ SQLite / PostgreSQL: 房间/战绩/封禁│
+└───────────────────────────┘        └──────────────────────────────────┘
+```
+
+**消息协议核心思想**：服务端权威，客户端动作为「意图」，由服务端校验后执行。
+
+- 服务端 → 客户端：**状态快照 + 定向请求**（`state_snapshot` / `turn_request` / `claim_request` / `rob_kong_request`）
+- 客户端 → 服务端：**动作**（`discard` / `claim` / `gang` / `hu` / `pass` / `ping`）
+- 服务端 → 全房间：**事件**（`table_action` / `score_flow` / `announcement` / `hand_result`）
+
+协议草案详见 `docs/mahjong-backend-dev-plan.md` §4；前后端职责划分见 `docs/claude-handoff-phase7.md` §4。
+
+## 目录结构
+
+```text
+backend/
+├─ app/
+│  ├─ main.py                 # FastAPI 装配：CORS、路由注册、启动建表、/api/health
+│  ├─ api/                    # REST 层
+│  │  ├─ rooms.py             # 房间生命周期（创建/join/leave/ready/start/关闭）
+│  │  ├─ matches.py           # 战绩（单场/房间历史/玩家统计）
+│  │  ├─ moderation.py        # 风控（封禁/解封/举报）
+│  │  └─ account.py           # 免责声明同意记录
+│  ├─ core/                   # ★ 从前端 src/game/ 翻译的纯逻辑
+│  │  ├─ tiles.py             # 牌墙/洗牌/排序/中马
+│  │  ├─ rules.py             # 胡牌判定/听牌/算分/买马/杠分（游戏心脏）
+│  │  ├─ ai.py                # AI 决策
+│  │  └─ actions.py           # 牌面操作
+│  ├─ game/
+│  │  ├─ manager.py           # GameManager 权威状态机（从 useGame.ts 翻译）
+│  │  ├─ room.py              # RoomSession：座位/重进码/托管/落库 + room_registry
+│  │  ├─ player.py            # PlayerController / AIPlayer
+│  │  └─ remote_player.py     # RemotePlayer（挂起等待 WS 动作）
+│  ├─ ws/
+│  │  ├─ manager.py           # ConnectionManager（座位→出站队列/发送任务）
+│  │  └─ game_ws.py           # /ws/room/{id} 端点
+│  ├─ models/                 # Pydantic 模型（game / messages 协议）
+│  └─ storage/
+│     ├─ db.py                # SQLite/PostgreSQL 门面
+│     └─ schema_sqlite.sql / schema_postgres.sql
+├─ tests/                     # 160+ pytest 用例（对照前端 vitest 逐条移植）
+├─ scripts/
+│  ├─ smoke_4p.py             # 4 真人 WS 客户端完整东风场
+│  ├─ smoke_e2e.py            # 生产构建前端 + 真实后端端到端冒烟
+│  └─ benchmark_rooms.py      # 单 worker 并发房间压测基准
+├─ docs/                      # 开发计划与各阶段交接文档（见「文档索引」）
+├─ data/                      # SQLite 运行时数据（gitignored）
+├─ DEPLOY.md                  # 部署指南
+├─ Dockerfile                 # python:3.11-slim + 单 uvicorn worker
+├─ docker-compose.yml         # 本地构建版
+├─ docker-compose.prod.yml    # 生产镜像版（供 CI scp 到服务器 pull 运行）
+├─ LICENSE
+└─ pyproject.toml
+```
+
+## 安装方式
+
+### 前置条件
+
+- Python `>=3.11`
+- 推荐 venv；可选 Docker（本地 `docker compose` 一键启动）
+
+### 本地启动
+
+```bash
+cd backend
+
+# 方式一：uvicorn（开发）
+python -m venv .venv
+.venv/Scripts/python -m pip install -e ".[dev]"     # Windows
+# .venv/bin/pip install -e ".[dev]"                 # Linux/macOS
+PYTHONIOENCODING=utf-8 .venv/Scripts/python -m uvicorn app.main:app
+
+# 方式二：Docker（本地构建，监听 8000）
+docker compose up --build
+```
+
+启动后：
+
+```text
+REST + WebSocket → http://localhost:8000
+健康检查          → GET http://localhost:8000/api/health
+API 文档(可选)    → http://localhost:8000/docs   （设 DOCS_SHOW=True 开启）
+```
+
+前端联机模式默认请求「页面所在主机」的 `8000` 端口；后端部署到其他地址时，前端设置 `VITE_API_BASE`（见前端 README「环境变量」）。
+
+## 测试与冒烟
+
+```bash
+cd backend
+PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
+.venv/Scripts/python scripts/smoke_4p.py                      # 4 真人 WS 完整东风场
+.venv/Scripts/python scripts/smoke_e2e.py                     # 前端产物 + 真实后端端到端
+.venv/Scripts/python scripts/benchmark_rooms.py 8             # 并发房间压测（默认 8 房）
+```
+
+测试对照前端 vitest 逐条移植（`tests/test_rules.py` ↔ `src/game/rules.test.ts` 等），关键原则：每个 TS 用例至少一个等价 Python 用例；随机逻辑（洗牌、AI 弃牌）注入 `random` 保证确定性；用纯 AI 对局模拟跑通全流程。全部测试需在**非沙箱 shell** 下运行（沙箱会阻断 pytest-asyncio 的 worker 通信）。
+
+## 环境变量
+
+全部可选，由 `backend/.env`（gitignored）或环境变量提供，环境变量优先：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `PG_PASSWORD` | 未设 | 设置后自动走 PostgreSQL；未设则回退 SQLite |
+| `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_DATABASE` | Supabase pooler 默认 | PostgreSQL 连接覆盖 |
+| `ROOM_MAX` | `4` | 本服务器最多同时存在的房间数（大厅「剩余房间」用） |
+| `ROOM_LIFETIME` | `3600` | 房间限时（秒）；非对局中超时自动解散，对局中等结束自动释放 |
+| `DOCS_SHOW` | `False` | 是否暴露 `/docs` 接口文档 |
+
+`backend/.env` 不应提交仓库（已在 `.gitignore`）；部署环境的机密经 GitHub Actions Secrets 下发或服务器 `.env` 注入（见 DEPLOY.md）。
+
+## REST API 一览
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/health` | 健康检查 |
+| `POST` | `/api/rooms` | 创建房间（mode/capacity），签发 6 位房间码 |
+| `GET` | `/api/rooms/meta` | 服务器房间容量（active/max） |
+| `GET` | `/api/rooms/{id}` | 房间详情 + 座位表 + 准备状态 |
+| `POST` | `/api/rooms/{id}/join` | 加入（占座 + 签发 rejoinCode + 落库） |
+| `POST` | `/api/rooms/{id}/leave` | 离开（带 rejoinCode 身份校验） |
+| `POST` | `/api/rooms/{id}/ready` | 准备 / 取消准备 |
+| `POST` | `/api/rooms/{id}/start` | 开局（所有已占真人座位 ready 后触发） |
+| `DELETE` | `/api/rooms/{id}` | 关闭房间（仅创建者） |
+| `GET` | `/api/matches/{id}` | 单场对局详情（含各局结算） |
+| `GET` | `/api/rooms/{id}/matches` | 房间历史对局列表 |
+| `GET` | `/api/players/{nickname}/stats` | 个人统计（旧版，按昵称） |
+| `GET` | `/api/players/by-id/{player_id}/stats` | 个人统计（按匿名身份，改名不丢历史） |
+| `GET` / `PUT` | `/api/players/by-id/{player_id}/disclaimer-agreement` | 免责声明同意查询 / 记录（幂等） |
+| `POST` | `/api/admin/bans` | 封禁（player/room/device + 原因） |
+| `DELETE` | `/api/admin/bans/{scope}/{target}` | 解封 |
+| `POST` | `/api/reports` | 玩家举报 |
+
+错误响应统一为 `HTTPException(detail={'code': ...})`，如 `ROOM_NOT_FOUND` / `ROOM_LIMIT_REACHED` / `ALREADY_IN_ROOM` / `INVALID_REJOIN_CODE`。
+
+**WebSocket**：`/ws/room/{room_id}?rejoin_code=...` —— 握手鉴权（重进码限速 30s 内 5 次）→ `rejoin_ok` + 全量快照 → 客户端动作循环 → 断线标记 + AI 托管。开局由 REST `POST /start` 显式触发（先连 WS 再 start）。
+
+## 部署
+
+部署流程与一次性准备（GitHub Actions → GHCR → 服务器）见 **[DEPLOY.md](./DEPLOY.md)**。要点：
+
+- 后端是独立仓库（`ghcr.io/bestguo2020/lianhua-mahjong-backend`），每个 `master` push 自动构建镜像 → 推 GHCR → scp `docker-compose.prod.yml` → 服务器 `docker compose pull && up -d`。
+- 实时对局强依赖长连接 WebSocket + 服务端内存态（`room_registry`），不适合边缘函数 / 无服务器运行时。
+- 前端另行托管；如需要可前置 Nginx / EdgeOne 反代 `/api` 与 `/ws`（WebSocket 空闲超时上限 300s，客户端 20s 心跳维持）。
+- 存储：默认 SQLite（`mahjong_data` 卷持久化 `/app/data`）；设 `PG_PASSWORD` 自动走 PostgreSQL。
+- 镜像 `:latest` 随每次 push 覆盖；`sha-<commit>` tag 保留历史可回滚。
+
+## 已知边界
+
+- 单 worker 部署（Uvicorn 单进程）；SQLite 多 worker 需 WAL + 写锁（当前未启用）。
+- `GET /api/players/{nickname}/stats` 用昵称做路径参数，含特殊字符需 URL 编码；长期建议换 `player_id`。
+- 首版封禁/举报接口无管理端鉴权（内部工具），上真账号体系后再收紧。
+- 房间内存态运行期保存在 `room_registry`，服务重启丢失进行中对局（无重启恢复）。
+
+## 文档索引
+
+`docs/` 记录了完整的设计过程，适合接手开发前阅读：
+
+| 文档 | 内容 |
+| --- | --- |
+| [mahjong-backend-dev-plan.md](./docs/mahjong-backend-dev-plan.md) | 开发计划：现状盘点、目标架构、分阶段任务、WS 协议草案、表结构 DDL、测试策略、风控规划 |
+| [claude-handoff-phase0-4.md](./docs/claude-handoff-phase0-4.md) | Phase 0–4：环境骨架、数据模型与牌系统、规则引擎、AI/动作、游戏状态机 |
+| [claude-handoff-phase5.md](./docs/claude-handoff-phase5.md) | Phase 5：WebSocket 实时层与断线托管 |
+| [claude-handoff-phase6.md](./docs/claude-handoff-phase6.md) | Phase 6：REST 房间生命周期与 SQLite 持久化 |
+| [claude-handoff-phase7.md](./docs/claude-handoff-phase7.md) | Phase 7：前端对接 + 实测问题修复（快照真源 / pace / 公告去重 / 音效） |
+| [design-dice-wall-laizi.md](./docs/design-dice-wall-laizi.md) | 骰子拆墙、牌墙布局与癞子设计 |
+
+## 资源说明
+
+项目代码许可见 [LICENSE](./LICENSE)。前端工程（Vue 3 + Three.js）及完整玩法说明见上级目录根 README。
