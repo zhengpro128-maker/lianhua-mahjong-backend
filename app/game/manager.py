@@ -206,6 +206,7 @@ class GameManager:
 
         # 状态
         self.wall: list[TileType] = []
+        self._head_drawn = 0   # 从牌头累计摸走的张数（区别于牌尾 pop 的杠/红中补张）
         self.kong_draw_player_index = -1
         self.selected_index = -1
         self.last_discard: Optional[dict] = None
@@ -281,18 +282,27 @@ class GameManager:
     def _take_tile(self, from_tail: bool = False) -> Optional[TileType]:
         if not self.wall:
             return None
+        if not from_tail:
+            self._head_drawn += 1   # 牌头摸走计数（区别于牌尾 pop 的杠/红中补张）
         return self.wall.pop() if from_tail else self.wall.pop(0)
 
     def _receive_dealt_tile(self, player: GamePlayer, tile: TileType) -> None:
-        """发牌收牌：红中 → 花杠 + 牌墙尾补摸（递归）。"""
-        if tile == 'red':
-            player.redCount += 1
-            player.melds.append(Meld(type='flower', tile='red', tiles=['red']))
-            replacement = self._take_tile(True)
-            if replacement:
-                self._receive_dealt_tile(player, replacement)
-        else:
-            player.hand.append(tile)
+        """发牌收牌：红中先入正常手牌，发完牌后统一从牌墙尾补杠（见 _resolve_dealt_reds），
+        避免发牌过程中牌山就因红中补张而少牌。"""
+        player.hand.append(tile)
+
+    def _resolve_dealt_reds(self, seat_order: list) -> None:
+        """发完牌后处理红中：若手牌有红中，依次逆时针（庄家起）从牌墙尾补张。"""
+        for player_index in seat_order:
+            player = self.players[player_index]
+            while 'red' in player.hand:
+                player.hand.remove('red')
+                player.redCount += 1
+                player.melds.append(Meld(type='flower', tile='red', tiles=['red']))
+                replacement = self._take_tile(True)
+                if replacement is None:
+                    break
+                player.hand.append(replacement)  # 补到红中则由 while 继续转
 
     def _deal(self, player_index: int, count: int) -> None:
         for _ in range(count):
@@ -301,16 +311,21 @@ class GameManager:
                 self._receive_dealt_tile(self.players[player_index], tile)
 
     def _break_wall_by_dice(self) -> None:
-        """骰子决定拆墙点：一墩=2 张，数两骰点数和墩后拆开，旋转列表让拆墙处成为前端。
-
-        与前端 useGame 的拆墙逻辑保持一致（本地/远程同规则）。牌已洗乱，从哪拆
-        不影响公平，只为还原真实麻将的「骰子拆墙」观感。不设王牌：整条墙仍会被
-        正常摸/杠补摸完。
+        """骰子决定拆墙点（莲花广麻规则）：
+        点数和决定拆哪家墙（5/9→庄，2/6/10→下，3/7/11→对，4/8/12→上，即 (sum-1)%4）；
+        较小的点数 n 决定从该墙右起第 n+1 列开始抓（一墩=2 张）。
+        各玩家墙段起点对应 3D 环四边：庄=近(0)、下=右(102)、对=远(68)、上=左(34)。
+        旋转列表让拆墙处成为前端。与前端 useGame / wallBreakIndex 保持一致（本地/远程同规则）。
+        牌已洗乱，从哪拆不影响公平，只为还原真实麻将的「骰子拆墙」观感。不设王牌。
         """
         if not self.wall:
             return
-        s = self.dice[0] + self.dice[1]
-        break_index = (s * 2) % len(self.wall)
+        d1, d2 = self.dice[0], self.dice[1]
+        s = d1 + d2
+        n = min(d1, d2)
+        wall_player = (s - 1) % 4
+        segment_start = [0, 102, 68, 34][wall_player]
+        break_index = (segment_start + n * 2) % len(self.wall)
         self.wall = self.wall[break_index:] + self.wall[:break_index]
 
     # ── 开局 ──
@@ -326,6 +341,7 @@ class GameManager:
             self.players = []
         self._reset_players()
         self.wall = shuffle(create_wall(), self._random)
+        self._head_drawn = 0
         self.result = None
         self.win_presentation = None
         self.action_prompt = None
@@ -348,8 +364,15 @@ class GameManager:
         for _ in range(3):
             for player_index in seat_order:
                 self._deal(player_index, 4)
-        for player_index in seat_order:
-            self._deal(player_index, 1)
+        # 庄家跳牌：其余三家各补一张之前，庄家先抓上层两张（隔一墩）。
+        # 依次从墙头取 5 张：第 1、5 张给庄家（隔开中间），第 2、3、4 张给下家/对家/上家。
+        jump_tiles = [self._take_tile(False) for _ in range(5)]
+        jump_order = [self.dealer, seat_order[1], seat_order[2], seat_order[3], self.dealer]
+        for player_index, tile in zip(jump_order, jump_tiles):
+            if tile is not None:
+                self._receive_dealt_tile(self.players[player_index], tile)
+        # 发完牌后统一处理红中补杠（逆时针从牌墙尾补张），避免发牌中牌山就少牌
+        self._resolve_dealt_reds(seat_order)
 
         self.phase = 'opening'
         for player in self.players:
@@ -366,7 +389,8 @@ class GameManager:
         # 消除固定延时在慢设备上的「服务端抢跑」（AI 已出牌/副露/胡牌而用户没反应过来）。
         # 无真人（全 AI）或测试路径（NullEvents / pace=None）直接通过，即用即答。
         await self.events.wait_for_opening()
-        await self.begin_turn(self.dealer)
+        # 庄家已因跳牌持有 14 张：首回合跳过摸牌直接出牌
+        await self.begin_turn(self.dealer, skip_draw=True)
 
     def round_label(self) -> str:
         wind = '南' if self.round > 4 else '东'
@@ -720,6 +744,8 @@ class GameManager:
         horses_draw = draw_horses(self.wall, 8)
         horses = horses_draw['horses']
         hits = horses_draw['hits']
+        # 买马从牌头摸走：同步牌头计数，供 3D 牌山正确显示牌头缺口
+        self._head_drawn += len(horses)
         score = score_hand(
             dealer=winner_index == self.dealer,
             no_joker='white' not in winner.hand,

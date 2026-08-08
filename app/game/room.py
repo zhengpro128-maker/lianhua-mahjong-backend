@@ -164,6 +164,8 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         # 牌山整墙（摸牌顺序，已按骰子拆墙旋转）；拷贝避免 _take_tile 原地 pop 污染快照。
         # 牌山背面朝上，下发不含作弊信息，无需按座位隐藏。
         'wall': list(mgr.wall) if mgr else [],
+        # 牌头已摸走张数：供 3D 牌山区分「牌头消耗」与「牌尾补杠/红中补张」。
+        'headDrawn': getattr(mgr, '_head_drawn', 0) if mgr else 0,
         'currentPlayer': mgr.current_player if mgr else -1,
         'players': players,
         'seat': seat,

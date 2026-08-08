@@ -184,12 +184,12 @@ class TestEndDrawCleanup:
 
 
 def test_break_wall_by_dice_rotates_to_break_point():
-    """骰子决定拆墙点：数两骰点数和墩（一墩=2 张）后旋转列表，拆墙处成为前端。"""
+    """骰子决定拆墙点（莲花广麻规则）：和数定墙、小点数定列，旋转列表让拆墙处成为前端。"""
     manager = GameManager(mode='east', controllers=[AIPlayer() for _ in range(4)])
     manager.wall = [f't{i}' for i in range(10)]   # 10 张：索引 0-9
-    manager.dice = [1, 3]                         # 和=4 → 拆 4*2=8 张（%10）→ 从索引 8 起
+    manager.dice = [1, 3]   # 和=4 → 上家墙（段起点34），n=1 → (34+2)%10 = 6 起
     manager._break_wall_by_dice()
-    assert manager.wall == [f't{i}' for i in range(8, 10)] + [f't{i}' for i in range(8)]
+    assert manager.wall == [f't{i}' for i in range(6, 10)] + [f't{i}' for i in range(6)]
 
 
 def test_break_wall_by_dice_empty_wall_noop():
