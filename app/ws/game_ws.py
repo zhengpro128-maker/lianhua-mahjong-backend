@@ -11,47 +11,55 @@
 """
 
 import asyncio
+import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from loguru import logger
 
 from app.game.room import RoomError, build_snapshot, room_registry
 
 router = APIRouter()
 
 
-async def _sender(queue: asyncio.Queue, websocket: WebSocket) -> None:
+async def _sender(queue: asyncio.Queue, websocket: WebSocket, room_id: str, seat: int) -> None:
     """后台发送任务：从出站队列取消息真正 send_json；连接断开即结束。"""
     try:
         while True:
             message = await queue.get()
             await websocket.send_json(message)
     except Exception:
-        pass  # 连接已断开，发送失败无需上报（游戏循环不感知）
+        # 连接已断开，发送失败无需上报（游戏循环不感知）；DEBUG 留痕便于查错
+        logger.bind(room_id=room_id, seat=seat).debug("WS 发送失败（连接断开，预期内）")
 
 
 @router.websocket('/ws/room/{room_id}')
 async def game_ws(websocket: WebSocket, room_id: str) -> None:
     await websocket.accept()
+    start = time.perf_counter()
 
     rejoin_code = (websocket.query_params.get('rejoin_code') or '').strip()
 
     room = room_registry.get(room_id)
     if room is None:
+        logger.bind(room_id=room_id).warning("WS 握手拒绝 ROOM_NOT_FOUND")
         await websocket.send_json({'kind': 'rejoin_err', 'code': 'ROOM_NOT_FOUND'})
         await websocket.close()
         return
     if not rejoin_code:
+        logger.bind(room_id=room_id).warning("WS 握手拒绝 REJOIN_CODE_REQUIRED")
         await websocket.send_json({'kind': 'rejoin_err', 'code': 'REJOIN_CODE_REQUIRED'})
         await websocket.close()
         return
     # 重进码限速：30s 窗口内同一码最多 5 次握手（防重连风暴 / 顶号刷码）
     if not room.check_rejoin_rate(rejoin_code):
+        logger.bind(room_id=room_id).warning("WS 握手拒绝 REJOIN_RATE_LIMITED")
         await websocket.send_json({'kind': 'rejoin_err', 'code': 'REJOIN_RATE_LIMITED'})
         await websocket.close()
         return
     try:
         seat, state = room.resume_by_code(rejoin_code)
     except RoomError as exc:
+        logger.bind(room_id=room_id).warning(f"WS 握手拒绝 {exc}")
         await websocket.send_json({'kind': 'rejoin_err', 'code': str(exc)})
         await websocket.close()
         return
@@ -59,9 +67,10 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
 
     # 绑定座位：出站队列 + 后台发送任务
     queue: asyncio.Queue = asyncio.Queue()
-    sender = asyncio.create_task(_sender(queue, websocket))
+    sender = asyncio.create_task(_sender(queue, websocket, room_id, seat))
     room.conn.register(seat, queue, sender)
     room.on_connect(seat)
+    logger.bind(room_id=room_id, seat=seat).info(f"WS 连接 昵称={state.nickname}")
 
     await room.conn.send_to_seat(seat, {
         'kind': 'rejoin_ok',
@@ -79,10 +88,13 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
             message = await websocket.receive_json()
             ok, err = room.handle_client_message(seat, message)
             if not ok:
+                logger.bind(room_id=room_id, seat=seat).warning(f"消息被拒 {err}")
                 await room.conn.send_to_seat(seat, {'kind': 'error', 'code': err})
     except WebSocketDisconnect:
         pass
     finally:
+        duration = time.perf_counter() - start
+        logger.bind(room_id=room_id, seat=seat).info(f"WS 断开 连接时长={duration:.1f}s")
         room.on_disconnect(seat)
         room.conn.unregister(seat)
         if not sender.done():

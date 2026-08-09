@@ -9,6 +9,7 @@ src/content/disclaimer.ts 的 DISCLAIMER_VERSION 同步），已确认旧版的�
 """
 
 from fastapi import APIRouter
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.storage.db import storage
@@ -37,4 +38,5 @@ def get_disclaimer_agreement(player_id: str) -> dict:
 def put_disclaimer_agreement(player_id: str, body: DisclaimerAgreementRequest) -> dict:
     """记录玩家同意声明（幂等）。"""
     storage.set_disclaimer_agreement(player_id, body.version)
+    logger.bind(player_id=player_id).info(f"记录声明同意 version={body.version}")
     return {'playerId': player_id, 'agreed': True, 'version': body.version}

@@ -11,6 +11,7 @@
 from typing import Literal
 
 from fastapi import APIRouter
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.game.room import room_registry
@@ -37,12 +38,15 @@ class ReportRequest(BaseModel):
 @router.post('/api/admin/bans')
 def ban(body: BanRequest) -> dict:
     storage.ban_target(body.scope, body.target, body.reason, body.bannedBy)
+    logger.bind(scope=body.scope, target=body.target).info(
+        f"封禁 reason={body.reason} by={body.bannedBy}")
     return {'banned': True, 'scope': body.scope, 'target': body.target}
 
 
 @router.delete('/api/admin/bans/{scope}/{target}')
 def unban(scope: Literal['player', 'room', 'device'], target: str) -> dict:
     storage.unban(scope, target)
+    logger.bind(scope=scope, target=target).info("解封")
     return {'banned': False, 'scope': scope, 'target': target}
 
 
@@ -58,4 +62,6 @@ def report(body: ReportRequest) -> dict:
                  if s is not None and s.nickname == body.targetName), '')
     storage.add_report(body.roomId, body.reporterPlayerId,
                        target_id, body.targetName, body.reason)
+    logger.bind(room_id=body.roomId, reporter=body.reporterPlayerId).info(
+        f"举报 target={target_id} targetName={body.targetName} reason={body.reason}")
     return {'reported': True}

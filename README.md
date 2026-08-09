@@ -185,8 +185,17 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `ROOM_MAX` | `4` | 本服务器最多同时存在的房间数（大厅「剩余房间」用） |
 | `ROOM_LIFETIME` | `3600` | 房间限时（秒）；非对局中超时自动解散，对局中等结束自动释放 |
 | `DOCS_SHOW` | `False` | 是否暴露 `/docs` 接口文档 |
+| `LOG_LEVEL` | `INFO` | 日志级别（`DEBUG` 输出逐动作细节：出牌/碰/杠等） |
+| `LOG_DIR` | `logs` | 日志目录（滚动文件，已 gitignore） |
+| `LOG_ROTATION` | `10 MB` | 日志文件滚动大小 |
+| `LOG_RETENTION` | `30 days` | 日志文件保留时长 |
+| `LOG_TO_FILE` | `1` | 是否写滚动文件；`0` 仅控制台输出（测试/CI 用） |
 
 `backend/.env` 不应提交仓库（已在 `.gitignore`）；部署环境的机密经 GitHub Actions Secrets 下发或服务器 `.env` 注入（见 DEPLOY.md）。
+
+### 日志说明
+
+后端统一使用 loguru 输出（`app/logging_config.py` 配置，拦截标准库 logging）。每条日志带**时间戳、级别、调用位置**；HTTP 请求由中间件记录**状态码 / 耗时(ms) / 来源 IP / `request_id`**；房间级日志带 `room_id` / `seat` 上下文（对局日志的 `request_id` 为触发开局的请求）。WS 连接日志带连接时长。`rejoin_code` 属座位凭据，日志中会脱敏。
 
 ## REST API 一览
 

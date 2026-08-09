@@ -25,6 +25,8 @@ import sys
 from types import SimpleNamespace
 from typing import Optional, Protocol
 
+from loguru import logger
+
 # 容纳整场对局（东风 4 局 ≈ 数千次动作）的 async 递归调用链
 sys.setrecursionlimit(10000)
 
@@ -179,9 +181,13 @@ class GameManager:
 
     def __init__(self, mode: str = 'east', controllers: Optional[list] = None,
                  player_count: int = 4, random=None, events: Optional[GameEvents] = None,
-                 pace: Optional[dict] = None, player_seeds: Optional[list] = None):
+                 pace: Optional[dict] = None, player_seeds: Optional[list] = None,
+                 room_id: Optional[str] = None):
         self.match_type = mode
         self.player_count = player_count
+        # 房间级日志上下文：RoomSession 注入 room_id 后，对局日志带房间号便于查错
+        self.room_id = room_id
+        self._log = logger.bind(room_id=room_id) if room_id else logger
         # 默认控制器对齐前端 AiController 的 AI_DELAYS（人类思考速度）；
         # 测试路径显式传入 0 延迟 AIPlayer，不受此默认影响。
         self.controllers = controllers or [AIPlayer(delays=AI_DELAYS) for _ in range(player_count)]
@@ -378,6 +384,7 @@ class GameManager:
         for player in self.players:
             player.hand = sort_tiles(player.hand)
         self._broadcast_snapshot()
+        self._log.info(f"对局开始 mode={self.match_type} 第{self.round}局 庄家={self.dealer}")
 
         four_red_winner = next((i for i, p in enumerate(self.players) if p.redCount >= 4), -1)
         if four_red_winner >= 0:
@@ -489,6 +496,7 @@ class GameManager:
         player.drawnTileIndex = -1
         self.kong_draw_player_index = -1
         player.discards.append(tile)
+        self._log.debug(f"出牌 seat={player_index} 牌={tile}")
         controller = self.controllers[player_index]
         if hasattr(controller, 'on_discarded'):
             controller.on_discarded()
@@ -548,6 +556,7 @@ class GameManager:
             return await self.offer_next_claim(remaining, tile, from_)
         if kind == 'gang':
             perform_discard_gang(self._table_context, claimant['playerIndex'], tile, from_)
+            self._log.debug(f"座位{claimant['playerIndex']} 杠 {tile}")
             self._broadcast_snapshot()
             # 杠后补摸只由 begin_turn(from_tail) 完成：这里不能再 draw_for，
             # 否则点杠会连摸两张（补摸 + 回合摸），四副露时手牌多一张，不再是单骑。
@@ -555,6 +564,7 @@ class GameManager:
             return await self.begin_turn(claimant['playerIndex'], from_tail=True)
         # peng
         perform_peng(self._table_context, claimant['playerIndex'], tile, from_)
+        self._log.debug(f"座位{claimant['playerIndex']} 碰 {tile}")
         self._broadcast_snapshot()
         if action.get('discardIndex') is not None:
             await self._sleep(self.pace['afterClaimPeng'])
@@ -575,6 +585,7 @@ class GameManager:
         self._show_table_action('concealed-gang', player_index, None, tile, len(player.melds) - 1)
         self._show_score_flow(score_deltas)
         self._play_sound('gang.mp3')
+        self._log.debug(f"座位{player_index} 暗杠 {tile}")
         self._broadcast_snapshot()
         if no_continue:
             return
@@ -606,6 +617,7 @@ class GameManager:
                 break
         score_deltas = apply_kong_score(self.players, player_index, 'added')
         self._show_score_flow(score_deltas)
+        self._log.debug(f"座位{player_index} 补杠结算")
         self._broadcast_snapshot()
         await self._sleep(self.pace['afterKongSettle'])
         return await self.begin_turn(player_index, from_tail=True)
@@ -735,6 +747,7 @@ class GameManager:
         )
         self._play_sound('hu.mp3' if options.get('robbedKong') else 'zimo.mp3')
         self.finalize_win(winner_index, options)
+        self._log.info(f"和牌 赢家={winner.name} 牌={win_tile} 第{self.round}局")
         self._broadcast_snapshot()
 
     def finalize_win(self, winner_index: int, options: dict) -> None:
@@ -789,6 +802,7 @@ class GameManager:
         # 听牌：手牌加任意一张可成胡（waiting_tiles 非空）
         tenpai = [i for i, p in enumerate(self.players)
                   if waiting_tiles(p.hand, structural_meld_count(p))]
+        self._log.info(f"流局 听牌座位={tenpai}")
         self.result = self.make_round_result(
             {'draw': True, 'winner': '荒庄', 'horses': [], 'hits': 0,
              'multiplier': 0, 'points': 0, 'details': [],
@@ -843,6 +857,7 @@ class GameManager:
         if nxt['finished']:
             self.match_finished = True
             self.phase = 'finished'
+            self._log.info(f"整场结束 {self.match_type}")
             self._broadcast_snapshot()
             return
         await self.start_game()

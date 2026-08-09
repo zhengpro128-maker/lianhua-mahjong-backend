@@ -8,6 +8,7 @@
 """
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 
 from app.game.room import room_registry
 from app.storage.db import storage
@@ -20,6 +21,7 @@ def get_match(match_id: str) -> dict:
     """单场详情：对局元数据 + finalScores + 每局结算明细。"""
     match = storage.get_match(match_id)
     if match is None:
+        logger.bind(match_id=match_id).warning("对局不存在")
         raise HTTPException(status_code=404, detail={'code': 'MATCH_NOT_FOUND'})
     return match
 
@@ -28,6 +30,7 @@ def get_match(match_id: str) -> dict:
 def list_room_matches(room_id: str) -> dict:
     """房间历史对局列表。"""
     if room_registry.get(room_id) is None:
+        logger.bind(room_id=room_id).warning("房间不存在")
         raise HTTPException(status_code=404, detail={'code': 'ROOM_NOT_FOUND'})
     return {
         'roomId': room_id,
@@ -38,10 +41,12 @@ def list_room_matches(room_id: str) -> dict:
 @router.get('/api/players/{nickname}/stats')
 def get_player_stats(nickname: str) -> dict:
     """个人统计（按昵称，旧版）：场次 / 参与局数 / 胡牌局数 / 总净胜分。"""
+    logger.bind(nickname=nickname).debug("查询战绩")
     return storage.get_player_stats(nickname)
 
 
 @router.get('/api/players/by-id/{player_id}/stats')
 def get_player_stats_by_id(player_id: str) -> dict:
     """个人统计（按匿名身份 player_id / guestId）：改名不丢历史、重名不混。"""
+    logger.bind(player_id=player_id).debug("查询战绩")
     return storage.get_player_stats_by_id(player_id)

@@ -9,11 +9,17 @@ test_ws.py / test_api.py 共用：
 测试直接调用 room.start() 会把 game_task 绑定到 pytest 循环，与 uvicorn 跨循环死锁。
 """
 
+import os
 import threading
 import time
 
 import pytest
 import uvicorn
+
+# 测试静默：在导入 app.main（loguru 配置运行）之前设置，不落文件、不刷屏。
+# setdefault 保留开发者/CI 显式指定的环境变量。
+os.environ.setdefault('LOG_TO_FILE', '0')
+os.environ.setdefault('LOG_LEVEL', 'WARNING')
 
 from app.main import app
 from app.game.room import room_registry as rooms

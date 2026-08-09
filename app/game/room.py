@@ -20,6 +20,8 @@ import time
 import urllib.request
 from typing import Optional
 
+from loguru import logger
+
 from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.remote_player import RemotePlayer
@@ -58,6 +60,7 @@ def _fetch_random_avatar() -> str:
         url = payload.get('data', {}).get('msg', '')
         return url if isinstance(url, str) and url.startswith('http') else ''
     except Exception:
+        logger.warning("随机头像获取失败，回退默认头像")
         return ''
 
 
@@ -265,6 +268,7 @@ class RoomSession:
         反赌博风控：player_id 命中黑名单 → BANNED（重进码路径在 resume_by_code 内查禁）。
         """
         if player_id and self.storage is not None and self.storage.is_banned('player', player_id):
+            logger.bind(room_id=self.room_id).warning(f"加入被拒 BANNED player_id={player_id}")
             raise RoomError('BANNED')
         if rejoin_code:
             return self.resume_by_code(rejoin_code)
@@ -276,7 +280,8 @@ class RoomSession:
         for seat, state in enumerate(self.seats):
             if state is None:
                 # 断线/超时代打 AI 的思考速度在开局时由 _controllers 统一注入（_ai_delays）
-                controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout)
+                controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout,
+                                          room_id=self.room_id)
                 state = SeatState(seat, nickname, _make_rejoin_code(), controller,
                                   player_id=player_id)
                 self.seats[seat] = state
@@ -293,12 +298,16 @@ class RoomSession:
             if state is not None and state.rejoin_code == rejoin_code:
                 if self.storage is not None and state.player_id \
                         and self.storage.is_banned('player', state.player_id):
+                    logger.bind(room_id=self.room_id).warning("重连被拒 BANNED")
                     raise RoomError('BANNED')
                 if state.controller.connected:
                     # 顶号尝试：原会话仍在线，拒绝（防双连接争抢同一座位）
+                    logger.bind(room_id=self.room_id, seat=seat).warning(
+                        "重连被拒 ALREADY_CONNECTED（顶号尝试）")
                     raise RoomError('ALREADY_CONNECTED')
                 self._ensure_seat_avatar(state)   # 服务重启后内存头像丢失，按 player_id 恢复
                 return seat, state
+        logger.bind(room_id=self.room_id).warning("重连被拒 INVALID_REJOIN_CODE")
         raise RoomError('INVALID_REJOIN_CODE')
 
     # ── 重进码握手限速 ───────────────────────────────────
@@ -443,6 +452,7 @@ class RoomSession:
                     await asyncio.wait_for(self._opening_event.wait(), timeout=remaining)
                     self._opening_event.clear()
                 except asyncio.TimeoutError:
+                    logger.bind(room_id=self.room_id).warning("开局就绪等待超时，继续推进")
                     break
         finally:
             self._opening = None
@@ -474,6 +484,7 @@ class RoomSession:
                     await asyncio.wait_for(self._continue_event.wait(), timeout=remaining)
                     self._continue_event.clear()
                 except asyncio.TimeoutError:
+                    logger.bind(room_id=self.room_id).warning("结算确认等待超时，继续推进")
                     break
         finally:
             self._continue = None
@@ -505,9 +516,11 @@ class RoomSession:
             random=self._random,
             events=WSEvents(self),
             pace=self.pace,
+            room_id=self.room_id,
         )
         self.status = 'playing'
         self.game_task = asyncio.create_task(self._drive())
+        logger.bind(room_id=self.room_id).info("开局已触发，游戏任务启动")
 
     def _ai_delays(self) -> Optional[dict]:
         """真人联机房间（注入 PLAY_PACE）的 AI 用人类思考速度；测试路径保持即用即答。"""
@@ -605,12 +618,14 @@ class RoomSession:
     async def _drive(self) -> None:
         """整场对局驱动循环：开局 → 每局结算广播 → 推进 → 终局。"""
         try:
+            logger.bind(room_id=self.room_id).info(f"整场开始 mode={self.mode}")
             await self._persist_match_start()
             await self.manager.start_game(self.mode)
             while not self.manager.match_finished:
                 if self.manager.phase == 'settled':
                     self.conn.broadcast({'kind': 'hand_result', 'result': self.manager.result})
                     await self._persist_round(self.manager.result)
+                    logger.bind(room_id=self.room_id).info(f"第{self.manager.round}局结算")
                     # 确认屏障：等所有在线真人点「继续」（10s 倒计时 / 兜底超时）再进下一局
                     await self._wait_for_continue()
                     await self.manager.next_round()
@@ -644,6 +659,7 @@ class RoomSession:
         except Exception:
             self.status = 'error'
             self.conn.broadcast({'kind': 'error', 'code': 'INTERNAL_ERROR'})
+            logger.bind(room_id=self.room_id).exception("对局驱动异常，整场终止")
             raise
 
     def close(self) -> None:
@@ -656,6 +672,7 @@ class RoomSession:
         """
         self.status = 'closed'
         self.conn.broadcast({'kind': 'room_closed'})
+        logger.bind(room_id=self.room_id).info("房间关闭")
         try:
             current = asyncio.current_task()
         except RuntimeError:
@@ -718,6 +735,7 @@ class RoomRegistry:
         now = now if now is not None else time.monotonic()
         expired = [rid for rid, room in list(self._rooms.items()) if room.is_expired(now)]
         for rid in expired:
+            logger.bind(room_id=rid).info("房间到期回收")
             self.remove(rid)
         return expired
 

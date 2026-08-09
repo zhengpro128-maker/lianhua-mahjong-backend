@@ -16,6 +16,8 @@ request_rob_kong 通过 ConnectionManager 下发请求并 await 用户动作（a
 import asyncio
 from typing import Optional
 
+from loguru import logger
+
 from app.core.rules import can_rob_kong, is_winning_hand, matching_count
 from app.game.player import AIPlayer, ClaimContext, RobKongContext, TurnContext
 
@@ -26,10 +28,12 @@ _DISCONNECTED = object()
 class RemotePlayer:
     """人类远程玩家控制器。"""
 
-    def __init__(self, seat: int, conn, timeout: float = 12.0, ai_delays: Optional[dict] = None):
+    def __init__(self, seat: int, conn, timeout: float = 12.0, ai_delays: Optional[dict] = None,
+                 room_id: Optional[str] = None):
         self.seat = seat
         self.conn = conn          # ConnectionManager（按座位路由出站）
         self.timeout = timeout    # 单回合超时秒数（超时 AI 代打）
+        self.room_id = room_id    # 房间号：超时/断线/动作拒绝日志带上下文
         # 断线/超时代打用 AI 的思考速度：真人联机房间注入 AI_DELAYS（人类节奏），测试保持即用即答
         self._ai = AIPlayer(delays=ai_delays)
         self._pending: Optional[asyncio.Future] = None
@@ -86,6 +90,8 @@ class RemotePlayer:
         except asyncio.TimeoutError:
             self._pending = None
             self._pending_kind = None
+            logger.bind(room_id=self.room_id, seat=self.seat).warning(
+                f"回合超时，AI 代打 (kind={kind})")
             return await self._fallback(kind, ctx)
 
     async def _fallback(self, kind: str, ctx):
@@ -101,9 +107,13 @@ class RemotePlayer:
     def handle_action(self, message: dict) -> tuple[bool, str]:
         """投递客户端动作。返回 (是否受理, 错误码)。"""
         if self._pending is None:
+            logger.bind(room_id=self.room_id, seat=self.seat).warning(
+                f"动作被拒 code=STALE_ACTION type={message.get('type')}")
             return False, 'STALE_ACTION'
         action, err = self._validate(message)
         if action is None:
+            logger.bind(room_id=self.room_id, seat=self.seat).warning(
+                f"动作被拒 code={err} type={message.get('type')}")
             return False, err
         future = self._pending
         self._pending = None
@@ -193,8 +203,10 @@ class RemotePlayer:
         future = self._pending
         self._pending = None
         self._pending_kind = None
-        if future is not None and not future.done():
-            future.set_result(_DISCONNECTED)
+        if future is not None:
+            logger.bind(room_id=self.room_id, seat=self.seat).info("断线，AI 代打接管")
+            if not future.done():
+                future.set_result(_DISCONNECTED)
 
     # ── PlayerController 其余协议方法 ────────────────────
 

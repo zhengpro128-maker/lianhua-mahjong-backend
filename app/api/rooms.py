@@ -18,6 +18,7 @@ import secrets
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.game.manager import PLAY_PACE
@@ -119,9 +120,11 @@ def create_room(body: CreateRoomRequest) -> dict:
             room_id, mode=body.mode, capacity=body.capacity, storage=storage,
             pace=PLAY_PACE)
     except RoomError as exc:
+        logger.bind(room_id=room_id).warning(f"创建房间失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})
     storage.create_room(room_id, body.mode, body.capacity)
     storage.update_room_status(room_id, 'lobby')
+    logger.bind(room_id=room_id).info(f"创建房间 mode={body.mode} capacity={body.capacity}")
     return _room_response(room)
 
 
@@ -159,7 +162,10 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
     try:
         seat, is_rejoin, state = room.join_or_rejoin(body.nickname, player_id=body.playerId)
     except RoomError as exc:
+        logger.bind(room_id=room_id).warning(f"加入房间失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})
+    logger.bind(room_id=room_id, seat=seat).info(
+        f"加入房间 昵称={state.nickname} 重进={is_rejoin} player_id={state.player_id}")
     return {
         'roomId': room.room_id,
         'seat': seat,
@@ -187,6 +193,7 @@ def leave_room(room_id: str, body: SeatActionRequest) -> dict:
         room_registry.remove(room_id)
     elif was_creator and room.status != 'playing':
         room_registry.remove(room_id)
+    logger.bind(room_id=room_id, seat=body.seat).info("离开房间")
     return {'roomId': room.room_id, 'seat': body.seat, 'left': True}
 
 
@@ -196,6 +203,7 @@ def ready_room(room_id: str, body: SeatActionRequest) -> dict:
     room = _room_or_404(room_id)
     _verify_seat(room, body.seat, body.rejoinCode)
     ready = room.ready_seat(body.seat, body.ready)
+    logger.bind(room_id=room_id, seat=body.seat).debug(f"准备态 ready={ready}")
     return {'roomId': room.room_id, 'seat': body.seat, 'ready': ready}
 
 
@@ -209,7 +217,9 @@ async def start_room(room_id: str) -> dict:
     try:
         await room.start()
     except RoomError as exc:
+        logger.bind(room_id=room_id).warning(f"开局失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})
+    logger.bind(room_id=room_id).info(f"开局触发 status={room.status}")
     return {'roomId': room.room_id, 'status': room.status}
 
 
@@ -225,5 +235,6 @@ def close_room(room_id: str, body: SeatActionRequest) -> dict:
         raise HTTPException(status_code=403, detail={'code': 'NOT_CREATOR'})
     if room.status == 'playing':
         raise HTTPException(status_code=409, detail={'code': 'ROOM_PLAYING'})
+    logger.bind(room_id=room_id, seat=body.seat).info("关闭房间")
     room_registry.remove(room_id)
     return {'roomId': room_id, 'closed': True}

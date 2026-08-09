@@ -23,6 +23,7 @@ from urllib.parse import quote
 import psycopg
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
+from loguru import logger
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_DB_PATH = os.path.join(_BASE_DIR, 'data', 'mahjong.db')
@@ -100,6 +101,7 @@ class Storage:
     # ── 初始化 ───────────────────────────────────────────
 
     def init(self) -> None:
+        logger.info(f"数据库后端: SQLite 路径={self.path}")
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
             self._migrate(conn)
@@ -379,6 +381,7 @@ class PostgresStorage:
     # ── 初始化 ───────────────────────────────────────────
 
     def init(self) -> None:
+        logger.info("数据库后端: PostgreSQL")
         with self._conn() as conn:
             for statement in _PG_SCHEMA.split(';'):
                 statement = statement.strip()
