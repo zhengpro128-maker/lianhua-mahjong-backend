@@ -1,6 +1,0 @@
-2026-08-09 13:05:44.126 | INFO     | app.main:<module>:25 | api文档开启: True
-2026-08-09 13:05:44.128 | INFO     | app.storage.db:init:384 | 数据库后端: PostgreSQL
-2026-08-09 13:05:46.837 | INFO     | uvicorn.server:_serve:94 | Started server process [35404]
-2026-08-09 13:05:46.837 | INFO     | uvicorn.lifespan.on:startup:48 | Waiting for application startup.
-2026-08-09 13:05:46.838 | INFO     | uvicorn.lifespan.on:startup:62 | Application startup complete.
-2026-08-09 13:05:46.838 | INFO     | uvicorn.server:_log_started_message:225 | Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
