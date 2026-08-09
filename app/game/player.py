@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from app.models.game import Meld, TileType
 from app.core.actions import remove_matches
 from app.core.ai import choose_discard_index, decide_claim, decide_rob_kong, decide_turn
+from app.rules.base import GameRuleSet
+from app.rules.lianhua import get_default_rule_set
 
 
 # ─── 上下文（服务端 → 控制器 / 客户端的只读快照）──────────────
@@ -84,9 +86,14 @@ def _map_turn_decision(decision: dict) -> dict:
 class AIPlayer:
     """AI 玩家控制器：封装 AI 决策的时序编排与纯函数调用。"""
 
-    def __init__(self, delays: Optional[dict] = None, random=None):
+    def __init__(self, delays: Optional[dict] = None, random=None,
+                 rule_set: Optional[GameRuleSet] = None):
         self.delays = delays or {'turn': 0, 'after_kong': 0, 'claim': 0}
         self._random = random
+        self.rules = rule_set or get_default_rule_set()
+
+    def set_rule_set(self, rule_set: GameRuleSet) -> None:
+        self.rules = rule_set
 
     async def request_turn(self, ctx: TurnContext) -> dict:
         ms = self.delays['after_kong'] if ctx.afterKong else self.delays['turn']
@@ -98,7 +105,7 @@ class AIPlayer:
             'exposedMelds': ctx.exposedMelds,
             'kongBloom': ctx.kongBloom,
         }
-        return _map_turn_decision(decide_turn(view))
+        return _map_turn_decision(decide_turn(view, self.rules))
 
     async def request_claim(self, ctx: ClaimContext) -> dict:
         ms = self.delays['claim']
@@ -114,7 +121,7 @@ class AIPlayer:
                 # 碰后无牌可打（手牌恰好只剩这 2 张）：真实规则下不能碰，
                 # 否则出牌阶段手牌为空导致对局停滞。
                 return {'kind': 'pass'}
-            discard_index = choose_discard_index(after_peng, self._random)
+            discard_index = choose_discard_index(after_peng, self._random, self.rules)
             return {'kind': 'peng', 'discardIndex': discard_index}
         return {'kind': 'pass'}
 

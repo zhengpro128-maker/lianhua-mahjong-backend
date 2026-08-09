@@ -25,6 +25,8 @@ from loguru import logger
 from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.remote_player import RemotePlayer
+from app.rules.base import GameRuleSet
+from app.rules.lianhua import get_default_rule_set
 from app.ws.manager import ConnectionManager
 
 
@@ -190,7 +192,7 @@ class RoomSession:
 
     def __init__(self, room_id: str, mode: str = 'east', capacity: int = 4,
                  turn_timeout: float = 12.0, random=None, storage=None,
-                 pace: Optional[dict] = None):
+                 pace: Optional[dict] = None, rule_set: Optional[GameRuleSet] = None):
         self.room_id = room_id
         self.mode = mode
         # capacity = 真人座位上限（2/3/4）；麻将桌固定 4 人，空位由 AI 补足
@@ -198,6 +200,7 @@ class RoomSession:
         self.player_count = 4
         self.turn_timeout = turn_timeout
         self._random = random
+        self.rules = rule_set or get_default_rule_set()
         self.storage = storage  # 可选 app.storage.db.Storage；为 None 时纯内存态（测试/单机）
         self.pace = pace  # 视觉节奏注入；None → GameManager 默认 0（测试/单机即用即答）
         self.status = 'lobby'  # lobby / playing / finished / error / closed
@@ -281,7 +284,7 @@ class RoomSession:
             if state is None:
                 # 断线/超时代打 AI 的思考速度在开局时由 _controllers 统一注入（_ai_delays）
                 controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout,
-                                          room_id=self.room_id)
+                                          room_id=self.room_id, rule_set=self.rules)
                 state = SeatState(seat, nickname, _make_rejoin_code(), controller,
                                   player_id=player_id)
                 self.seats[seat] = state
@@ -517,6 +520,7 @@ class RoomSession:
             events=WSEvents(self),
             pace=self.pace,
             room_id=self.room_id,
+            rule_set=self.rules,
         )
         self.status = 'playing'
         self.game_task = asyncio.create_task(self._drive())
@@ -539,7 +543,7 @@ class RoomSession:
                 seat.controller.set_ai_delays(ai_delays)
                 controllers.append(seat.controller)
             else:
-                controllers.append(AIPlayer(delays=ai_delays))
+                controllers.append(AIPlayer(delays=ai_delays, rule_set=self.rules))
         return controllers
 
     def _seeds(self) -> list:

@@ -31,18 +31,13 @@ from loguru import logger
 sys.setrecursionlimit(10000)
 
 from app.models.game import GamePlayer, Meld, TileType
-from app.core.tiles import create_wall, shuffle, sort_tiles
-from app.core.rules import (
-    apply_kong_score,
-    apply_win_score,
-    can_rob_kong,
-    draw_horses,
-    matching_count,
-    score_hand,
-    waiting_tiles,
-)
+from app.core.tiles import shuffle, sort_tiles
 from app.core.actions import perform_discard_gang, perform_peng, remove_matches
 from app.game.player import AI_DELAYS, AIPlayer, ClaimContext, RobKongContext, TurnContext
+from app.rules.base import GameRuleSet
+from app.rules.fans import FanContext
+from app.rules.lianhua import get_default_rule_set
+from app.settlement import SettlementService, settlement_service
 
 # ─── 场次常量（对应 useGame.ts MATCH_HANDS / MATCH_NAMES）────────
 
@@ -157,16 +152,13 @@ def advance_match_state(*, round_, dealer, honba, match_type, result, scores=Non
 
 # ─── 和牌关键牌解析（对应 useGame.ts resolveWinTile）────────
 
-def resolve_win_tile(winner: GamePlayer, options: Optional[dict] = None) -> TileType:
+def resolve_win_tile(
+    winner: GamePlayer,
+    options: Optional[dict] = None,
+    rule_set: Optional[GameRuleSet] = None,
+) -> TileType:
     """四红中 → red；否则 options.winTile → 刚摸到的牌 → 手牌末张。"""
-    options = options or {}
-    if options.get('fourRed'):
-        return 'red'
-    if options.get('winTile'):
-        return options['winTile']
-    if winner.drawnTileIndex >= 0:
-        return winner.hand[winner.drawnTileIndex]
-    return winner.hand[-1]
+    return (rule_set or get_default_rule_set()).resolve_win_tile(winner, options or {})
 
 
 def structural_meld_count(player: GamePlayer) -> int:
@@ -182,15 +174,23 @@ class GameManager:
     def __init__(self, mode: str = 'east', controllers: Optional[list] = None,
                  player_count: int = 4, random=None, events: Optional[GameEvents] = None,
                  pace: Optional[dict] = None, player_seeds: Optional[list] = None,
-                 room_id: Optional[str] = None):
+                 room_id: Optional[str] = None, rule_set: Optional[GameRuleSet] = None,
+                 settlements: Optional[SettlementService] = None):
         self.match_type = mode
         self.player_count = player_count
         # 房间级日志上下文：RoomSession 注入 room_id 后，对局日志带房间号便于查错
         self.room_id = room_id
         self._log = logger.bind(room_id=room_id) if room_id else logger
+        self.rules = rule_set or get_default_rule_set()
+        self.settlements = settlements or settlement_service
         # 默认控制器对齐前端 AiController 的 AI_DELAYS（人类思考速度）；
         # 测试路径显式传入 0 延迟 AIPlayer，不受此默认影响。
-        self.controllers = controllers or [AIPlayer(delays=AI_DELAYS) for _ in range(player_count)]
+        self.controllers = controllers or [
+            AIPlayer(delays=AI_DELAYS, rule_set=self.rules) for _ in range(player_count)
+        ]
+        for controller in self.controllers:
+            if hasattr(controller, 'set_rule_set'):
+                controller.set_rule_set(self.rules)
         # 玩家种子：联网房间用「座位昵称」覆盖默认种子（AI 座位保留 PLAYER_SEED）
         self.seeds = player_seeds or PLAYER_SEED
         self._random = random
@@ -207,6 +207,8 @@ class GameManager:
             show_table_action=self.events.show_table_action,
             show_score_flow=self.events.show_score_flow,
             play_sound=self.events.play_sound,
+            rules=self.rules,
+            settlements=self.settlements,
         )
         self._id_counter = 0
 
@@ -272,6 +274,17 @@ class GameManager:
         if ms and ms > 0:
             await asyncio.sleep(ms / 1000)
 
+    def _apply_kong_score(
+        self,
+        player_index: int,
+        type_: str,
+        from_index: Optional[int] = None,
+    ) -> list[dict]:
+        settlement = self.settlements.calculate_kong(
+            len(self.players), player_index, type_, self.rules.base_score, from_index)
+        self.settlements.apply_deltas(self.players, settlement.deltas)
+        return settlement.as_list()
+
     # ── 发牌与牌墙 ──
 
     def _reset_players(self) -> None:
@@ -301,10 +314,13 @@ class GameManager:
         """发完牌后处理红中：若手牌有红中，依次逆时针（庄家起）从牌墙尾补张。"""
         for player_index in seat_order:
             player = self.players[player_index]
-            while 'red' in player.hand:
-                player.hand.remove('red')
+            while True:
+                flower = next((tile for tile in player.hand if self.rules.is_flower_tile(tile)), None)
+                if flower is None:
+                    break
+                player.hand.remove(flower)
                 player.redCount += 1
-                player.melds.append(Meld(type='flower', tile='red', tiles=['red']))
+                player.melds.append(Meld(type='flower', tile=flower, tiles=[flower]))
                 replacement = self._take_tile(True)
                 if replacement is None:
                     break
@@ -346,7 +362,7 @@ class GameManager:
             self.match_finished = False
             self.players = []
         self._reset_players()
-        self.wall = shuffle(create_wall(), self._random)
+        self.wall = shuffle(self.rules.create_wall(), self._random)
         self._head_drawn = 0
         self.result = None
         self.win_presentation = None
@@ -386,7 +402,10 @@ class GameManager:
         self._broadcast_snapshot()
         self._log.info(f"对局开始 mode={self.match_type} 第{self.round}局 庄家={self.dealer}")
 
-        four_red_winner = next((i for i, p in enumerate(self.players) if p.redCount >= 4), -1)
+        four_red_winner = next((
+            i for i, p in enumerate(self.players)
+            if self.rules.should_auto_win_on_flowers(p.redCount)
+        ), -1)
         if four_red_winner >= 0:
             self.end_game(four_red_winner, {'fourRed': True})
             return
@@ -414,11 +433,11 @@ class GameManager:
         if not tile:
             self.end_draw()
             return False
-        if tile == 'red':
+        if self.rules.is_flower_tile(tile):
             player.redCount += 1
-            player.melds.append(Meld(type='flower', tile='red', tiles=['red']))
+            player.melds.append(Meld(type='flower', tile=tile, tiles=[tile]))
             self._show_table_action('flower-gang', player_index, None, tile, len(player.melds) - 1)
-            if player.redCount >= 4:
+            if self.rules.should_auto_win_on_flowers(player.redCount):
                 self.end_game(player_index, {'fourRed': True})
                 return False
             await self._play_sound_and_wait('gang.mp3')
@@ -516,21 +535,24 @@ class GameManager:
 
     def find_claims(self, from_: int, tile: TileType) -> list[dict]:
         """找可以碰/杠该弃牌的玩家（按距离排序；白板/红中不可碰杠）。"""
-        if tile in ('white', 'red'):
+        if not self.rules.is_claimable_tile(tile):
             return []
         claimants = []
         for player_index, player in enumerate(self.players):
             if player_index == from_:
                 continue
-            count = matching_count(player.hand, tile)
-            if count >= 2:
+            capabilities = self.rules.claim_capabilities(player.hand, tile)
+            if capabilities.can_peng or capabilities.can_gang:
                 claimants.append({
                     'playerIndex': player_index,
-                    'count': count,
+                    'canGang': capabilities.can_gang,
                     'distance': self.seat_distance(from_, player_index),
                 })
         claimants.sort(key=lambda item: item['distance'])
-        return [{'playerIndex': c['playerIndex'], 'canGang': c['count'] >= 3} for c in claimants]
+        return [
+            {'playerIndex': claimant['playerIndex'], 'canGang': claimant['canGang']}
+            for claimant in claimants
+        ]
 
     async def offer_next_claim(self, claimants: list[dict], tile: TileType, from_: int) -> None:
         """按座位顺序询问碰/杠。AI 单次碰+出牌闭环由 ClaimAction.discardIndex 完成。"""
@@ -581,7 +603,7 @@ class GameManager:
         player.hand = remove_matches(player.hand, tile, 4)
         player.drawnTileIndex = -1
         player.melds.append(Meld(type='angang', tile=tile, tiles=[tile, tile, tile, tile]))
-        score_deltas = apply_kong_score(self.players, player_index, 'concealed')
+        score_deltas = self._apply_kong_score(player_index, 'concealed')
         self._show_table_action('concealed-gang', player_index, None, tile, len(player.melds) - 1)
         self._show_score_flow(score_deltas)
         self._play_sound('gang.mp3')
@@ -615,7 +637,7 @@ class GameManager:
             if meld.type == 'gang' and meld.added and meld.pending:
                 meld.pending = False
                 break
-        score_deltas = apply_kong_score(self.players, player_index, 'added')
+        score_deltas = self._apply_kong_score(player_index, 'added')
         self._show_score_flow(score_deltas)
         self._log.debug(f"座位{player_index} 补杠结算")
         self._broadcast_snapshot()
@@ -626,7 +648,7 @@ class GameManager:
         """找可以抢杠的玩家（按距离排序）。"""
         robbers = []
         for player_index, player in enumerate(self.players):
-            if player_index != kong_player_index and can_rob_kong(
+            if player_index != kong_player_index and self.rules.can_rob_kong(
                 player.hand, tile, structural_meld_count(player)
             ):
                 robbers.append((self.seat_distance(kong_player_index, player_index), player_index))
@@ -718,7 +740,7 @@ class GameManager:
         winner = self.players[winner_index]
         self.winning_player_index = winner_index
 
-        win_tile = resolve_win_tile(winner, options)
+        win_tile = resolve_win_tile(winner, options, self.rules)
         robbed_kong_meld_index = (
             self.take_robbed_kong_tile(options['robbedKongPlayerIndex'], win_tile)
             if options.get('robbedKong') else -1
@@ -754,33 +776,31 @@ class GameManager:
         """胡牌结算：买马 + 算分 + 收付 → result → settled。"""
         winner = self.players[winner_index]
         scores_before = [p.score for p in self.players]
-        horses_draw = draw_horses(self.wall, 8)
+        horses_draw = self.rules.draw_horses(self.wall)
         horses = horses_draw['horses']
         hits = horses_draw['hits']
         # 买马从牌头摸走：同步牌头计数，供 3D 牌山正确显示牌头缺口
         self._head_drawn += len(horses)
-        score = score_hand(
+        score = self.rules.score_hand(FanContext(
             dealer=winner_index == self.dealer,
-            no_joker='white' not in winner.hand,
+            no_joker=not any(self.rules.is_joker_tile(tile) for tile in winner.hand),
             four_red=bool(options.get('fourRed')),
             kong_bloom=bool(options.get('kongBloom')),
             horse_hits=hits,
             robbed_kong=bool(options.get('robbedKong')),
-        )
-        total_won = apply_win_score(
-            self.players,
-            winner_index,
-            score['points'],
+        ))
+        settlement = self.settlements.calculate_win(
+            len(self.players), winner_index, score['points'],
             options.get('robbedKongPlayerIndex') if options.get('robbedKong') else None,
-            self.dealer,
-        )
+            self.dealer)
+        self.settlements.apply_deltas(self.players, settlement.deltas)
         base = {
             'winnerIndex': winner_index,
             'winner': winner.name,
             'horses': horses,
             'hits': hits,
             **score,
-            'totalWon': total_won,
+            'totalWon': settlement.total_won,
             **options,
         }
         self.result = self.make_round_result(base, scores_before)
@@ -801,7 +821,7 @@ class GameManager:
         scores_before = [p.score for p in self.players]
         # 听牌：手牌加任意一张可成胡（waiting_tiles 非空）
         tenpai = [i for i, p in enumerate(self.players)
-                  if waiting_tiles(p.hand, structural_meld_count(p))]
+                  if self.rules.waiting_tiles(p.hand, structural_meld_count(p))]
         self._log.info(f"流局 听牌座位={tenpai}")
         self.result = self.make_round_result(
             {'draw': True, 'winner': '荒庄', 'horses': [], 'hits': 0,

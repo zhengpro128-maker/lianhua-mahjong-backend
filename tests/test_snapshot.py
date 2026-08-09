@@ -162,9 +162,12 @@ async def test_snapshot_after_hand_result(server, fresh_rooms):
         assert settled, 'hand_result 前未收到 phase=settled 的快照'
         snap = settled[-1]
         assert snap['result'] is not None, 'settled 快照应携带 result'
-        assert snap['winPresentation'] is not None, 'settled 快照应携带 winPresentation'
-        wp = snap['winPresentation']
-        assert 'winnerIndex' in wp and 'tile' in wp
+        if snap['result'].get('draw'):
+            assert snap['winPresentation'] is None, '流局快照不应携带 winPresentation'
+        else:
+            assert snap['winPresentation'] is not None, '胡牌快照应携带 winPresentation'
+            wp = snap['winPresentation']
+            assert 'winnerIndex' in wp and 'tile' in wp
     finally:
         await safe_close(a)
 

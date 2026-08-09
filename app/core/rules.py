@@ -15,6 +15,7 @@ from typing import Optional
 
 from app.models.game import GamePlayer, Meld, TileType
 from app.core.tiles import TILE_TYPES, is_horse
+from app.settlement import settlement_service
 
 # 参与组牌的标准牌：全部 34 种减去 红中(red) 与 白板(white)
 STANDARD_TILES: list[TileType] = [t for t in TILE_TYPES if t != 'white' and t != 'red']
@@ -45,20 +46,10 @@ def apply_kong_score(
     - concealed（暗杠）：其余三家各支付底分两倍
     - added（补杠）：其余三家各支付底分
     """
-    if type_ == 'discard':
-        payers = [from_index]
-    else:
-        payers = [i for i in range(len(players)) if i != kong_player_index]
-    payment = BASE_SCORE * 2 if type_ == 'concealed' else BASE_SCORE
-    valid_payers = [p for p in payers if _is_integer(p) and p != kong_player_index]
-    for payer_index in valid_payers:
-        players[payer_index].score -= payment
-        players[kong_player_index].score += payment
-    deltas = [
-        {'playerIndex': kong_player_index, 'amount': payment * len(valid_payers)},
-        *({'playerIndex': p, 'amount': -payment} for p in valid_payers),
-    ]
-    return [d for d in deltas if d['amount'] != 0]
+    result = settlement_service.calculate_kong(
+        len(players), kong_player_index, type_, BASE_SCORE, from_index)
+    settlement_service.apply_deltas(players, result.deltas)
+    return result.as_list()
 
 
 def apply_win_score(
@@ -72,17 +63,10 @@ def apply_win_score(
 
     庄家胡牌的倍数已计入 points；闲家胡牌时，庄家单独支付双倍。
     """
-    if _is_integer(payer_index):
-        payers = [payer_index]
-    else:
-        payers = [i for i in range(len(players)) if i != winner_index]
-    total_won = 0
-    for index in payers:
-        payment = points * 2 if (winner_index != dealer_index and index == dealer_index) else points
-        players[index].score -= payment
-        players[winner_index].score += payment
-        total_won += payment
-    return total_won
+    result = settlement_service.calculate_win(
+        len(players), winner_index, points, payer_index, dealer_index)
+    settlement_service.apply_deltas(players, result.deltas)
+    return result.total_won
 
 
 # ─── 副露拆解（记忆化递归）────────────────────────────────
@@ -268,30 +252,15 @@ def score_hand(
     底分 × 已知倍数 + 中马数 × 底分；中马按张数加底分。
     返回 {multiplier, totalMultiplier, horsePoints, points, details}。
     """
-    details: list[dict] = [{'label': '抢杠胡' if robbed_kong else '自摸', 'multiplier': 1}]
-    multiplier = 1
-    if dealer:
-        multiplier *= 2
-        details.append({'label': '庄家', 'multiplier': 2})
-    if no_joker:
-        multiplier *= 2
-        details.append({'label': '无癞子', 'multiplier': 2})
-    if four_red:
-        multiplier *= 4
-        details.append({'label': '四红中', 'multiplier': 4})
-    if kong_bloom:
-        multiplier *= 2
-        details.append({'label': '杠上开花', 'multiplier': 2})
-    horse_points = horse_hits * BASE_SCORE
-    total_multiplier = multiplier + horse_hits
-    if horse_hits > 0:
-        details.append({'label': f'中马 {horse_hits} 张', 'points': horse_points})
-    points = multiplier * BASE_SCORE + horse_points
-    return {
-        'multiplier': multiplier,
-        # 驼峰 key：与纯前端 scoreHand 完全一致（远程结算 result 直接复用，显示不再少中马加成）
-        'totalMultiplier': total_multiplier,
-        'horsePoints': horse_points,
-        'points': points,
-        'details': details,
-    }
+    # 延迟导入避免默认规则集复用本模块结构判定函数时形成循环导入。
+    from app.rules.fans import FanContext
+    from app.rules.lianhua import get_default_rule_set
+
+    return get_default_rule_set().score_hand(FanContext(
+        dealer=dealer,
+        no_joker=no_joker,
+        four_red=four_red,
+        kong_bloom=kong_bloom,
+        horse_hits=horse_hits,
+        robbed_kong=robbed_kong,
+    ))

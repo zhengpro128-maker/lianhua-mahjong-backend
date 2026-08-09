@@ -20,6 +20,13 @@ import uvicorn
 # setdefault 保留开发者/CI 显式指定的环境变量。
 os.environ.setdefault('LOG_TO_FILE', '0')
 os.environ.setdefault('LOG_LEVEL', 'WARNING')
+# 测试服务只监听本机；避免开发机系统代理截获 127.0.0.1 请求并返回 503。
+for _proxy_key in ('NO_PROXY', 'no_proxy'):
+    _hosts = [item.strip() for item in os.environ.get(_proxy_key, '').split(',') if item.strip()]
+    for _host in ('127.0.0.1', 'localhost'):
+        if _host not in _hosts:
+            _hosts.append(_host)
+    os.environ[_proxy_key] = ','.join(_hosts)
 
 from app.main import app
 from app.game.room import room_registry as rooms

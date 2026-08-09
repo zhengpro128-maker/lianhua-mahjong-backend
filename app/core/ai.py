@@ -11,7 +11,8 @@ import re
 from typing import Optional
 
 from app.models.game import GamePlayer, Meld, TileType
-from app.core.rules import concealed_kongs, is_winning_hand, matching_count
+from app.rules.base import GameRuleSet
+from app.rules.lianhua import get_default_rule_set
 
 # ─── 决策类型（对应 TS 端联合类型，用 dict 表示）────────────────
 
@@ -22,28 +23,29 @@ RobKongDecision = str
 _SUITED_RE = re.compile(r'^([mps])([1-9])$')
 
 
-def decide_turn(view: dict) -> dict:
+def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None) -> dict:
     """决策当前 AI 回合的动作。
 
     view: {hand, melds, exposedMelds, kongBloom}（见 make_turn_view）
     优先级：自摸胡 → 补杠 → 暗杠 → 弃牌。
     """
-    if is_winning_hand(view['hand'], view['exposedMelds']):
+    rules = rule_set or get_default_rule_set()
+    if rules.is_winning_hand(view['hand'], view['exposedMelds']):
         return {'kind': 'win'}
 
     meld_index = -1
     for i, meld in enumerate(view['melds']):
-        if meld.type == 'peng' and meld.tile in view['hand']:
+        if meld.type == 'peng' and rules.can_added_kong(view['hand'], view['melds'], meld.tile):
             meld_index = i
             break
     if meld_index >= 0:
         return {'kind': 'added-kong', 'meldIndex': meld_index}
 
-    kongs = concealed_kongs(view['hand'])
+    kongs = rules.concealed_kongs(view['hand'])
     if kongs:
         return {'kind': 'concealed-kong', 'tile': kongs[0]}
 
-    return {'kind': 'discard', 'handIndex': choose_discard_index(view['hand'])}
+    return {'kind': 'discard', 'handIndex': choose_discard_index(view['hand'], rule_set=rules)}
 
 
 def decide_claim(view: dict) -> str:
@@ -58,16 +60,21 @@ def decide_rob_kong(_view: dict) -> str:
     return 'win'
 
 
-def choose_discard_index(hand: list[TileType], random=None) -> int:
+def choose_discard_index(
+    hand: list[TileType],
+    random=None,
+    rule_set: Optional[GameRuleSet] = None,
+) -> int:
     """弃牌启发式：优先打掉「孤张」——同牌少、无相邻靠张的牌；
     白板（癞子）加罚分保手。random 注入以便测试确定化。
 
     分数 = 同牌数×4 + 相邻靠张数×2 + 白板罚分10 + 随机抖动，取最小者。
     """
+    rules = rule_set or get_default_rule_set()
     _rand = random if random is not None else _random.random
     scored = []
     for index, tile in enumerate(hand):
-        same = matching_count(hand, tile) - 1
+        same = rules.matching_count(hand, tile) - 1
         neighbors = 0
         match = _SUITED_RE.match(tile)
         if match:
@@ -77,7 +84,7 @@ def choose_discard_index(hand: list[TileType], random=None) -> int:
                 neighbors += 1
             if f'{suit}{number + 1}' in hand:
                 neighbors += 1
-        penalty = 10 if tile == 'white' else 0
+        penalty = 10 if rules.is_joker_tile(tile) else 0
         scored.append((same * 4 + neighbors * 2 + penalty + _rand(), index))
     # 稳定排序：同分保持原手牌顺序（与 TS 端 Array.sort 一致）
     scored.sort(key=lambda pair: pair[0])

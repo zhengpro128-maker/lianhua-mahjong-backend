@@ -10,7 +10,8 @@
 from typing import Optional, Protocol
 
 from app.models.game import GamePlayer, Meld, TileType
-from app.core.rules import apply_kong_score
+from app.rules.lianhua import get_default_rule_set
+from app.settlement import settlement_service
 
 
 class ActionContext(Protocol):
@@ -64,7 +65,12 @@ def perform_discard_gang(ctx: ActionContext, player_index: int, tile: TileType, 
     remove_last_discard(ctx.players[from_].discards, tile)
     player.hand = remove_matches(player.hand, tile, 3)
     player.melds.append(Meld(type='gang', tile=tile, from_=from_, tiles=[tile, tile, tile, tile]))
-    score_deltas = apply_kong_score(ctx.players, player_index, 'discard', from_)
+    rules = getattr(ctx, 'rules', get_default_rule_set())
+    settlements = getattr(ctx, 'settlements', settlement_service)
+    settlement = settlements.calculate_kong(
+        len(ctx.players), player_index, 'discard', rules.base_score, from_)
+    settlements.apply_deltas(ctx.players, settlement.deltas)
+    score_deltas = settlement.as_list()
     ctx.current_player.value = player_index  # type: ignore[attr-defined]
     ctx.show_table_action('discard-gang', player_index, from_, tile, len(player.melds) - 1)
     ctx.show_score_flow(score_deltas)

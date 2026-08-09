@@ -18,8 +18,9 @@ from typing import Optional
 
 from loguru import logger
 
-from app.core.rules import can_rob_kong, is_winning_hand, matching_count
 from app.game.player import AIPlayer, ClaimContext, RobKongContext, TurnContext
+from app.rules.base import GameRuleSet
+from app.rules.lianhua import get_default_rule_set
 
 # on_disconnect 投递给 pending future 的哨兵：收到后走 AI 代打
 _DISCONNECTED = object()
@@ -29,13 +30,14 @@ class RemotePlayer:
     """人类远程玩家控制器。"""
 
     def __init__(self, seat: int, conn, timeout: float = 12.0, ai_delays: Optional[dict] = None,
-                 room_id: Optional[str] = None):
+                 room_id: Optional[str] = None, rule_set: Optional[GameRuleSet] = None):
         self.seat = seat
         self.conn = conn          # ConnectionManager（按座位路由出站）
         self.timeout = timeout    # 单回合超时秒数（超时 AI 代打）
         self.room_id = room_id    # 房间号：超时/断线/动作拒绝日志带上下文
         # 断线/超时代打用 AI 的思考速度：真人联机房间注入 AI_DELAYS（人类节奏），测试保持即用即答
-        self._ai = AIPlayer(delays=ai_delays)
+        self.rules = rule_set or get_default_rule_set()
+        self._ai = AIPlayer(delays=ai_delays, rule_set=self.rules)
         self._pending: Optional[asyncio.Future] = None
         self._pending_kind: Optional[str] = None   # 'turn' | 'claim' | 'rob_kong'
         self._last_ctx = None     # 最近一次请求上下文（added-kong 需查 melds）
@@ -144,14 +146,14 @@ class RemotePlayer:
                 return {'kind': 'discard', 'handIndex': hi}, ''
             if mtype == 'hu':
                 # 自摸胡：手牌（含刚摸的牌）须已成形
-                if ctx is not None and is_winning_hand(ctx.hand, ctx.exposedMelds):
+                if ctx is not None and self.rules.is_winning_hand(ctx.hand, ctx.exposedMelds):
                     return {'kind': 'win'}, ''
                 return None, 'INVALID_ACTION'
             if mtype == 'gang':
                 gk = message.get('kind')
                 if gk == 'concealed':
                     tile = message.get('tile')
-                    if not tile or ctx is None or matching_count(ctx.hand, tile) < 4:
+                    if not tile or ctx is None or tile not in self.rules.concealed_kongs(ctx.hand):
                         return None, 'INVALID_ACTION'
                     return {'kind': 'concealed-kong', 'tile': tile}, ''
                 if gk == 'added':
@@ -170,7 +172,13 @@ class RemotePlayer:
                     return {'kind': 'pass'}, ''
                 if a in ('peng', 'gang'):
                     # 以服务端权威手牌校验副露张数，防止客户端声明不存在的碰/杠
-                    if ctx is not None and matching_count(ctx.hand, ctx.tile) >= (3 if a == 'gang' else 2):
+                    capabilities = (
+                        self.rules.claim_capabilities(ctx.hand, ctx.tile) if ctx is not None else None
+                    )
+                    allowed = capabilities and (
+                        capabilities.can_gang if a == 'gang' else capabilities.can_peng
+                    )
+                    if allowed:
                         return {'kind': a}, ''
                 return None, 'INVALID_ACTION'
             if mtype == 'pass':
@@ -180,7 +188,9 @@ class RemotePlayer:
         if kind == 'rob_kong':
             if mtype == 'hu':
                 # 抢杠胡：杠牌加入手牌后须成胡
-                if ctx is not None and can_rob_kong(ctx.hand, ctx.tile, ctx.exposedMelds):
+                if ctx is not None and self.rules.can_rob_kong(
+                    ctx.hand, ctx.tile, ctx.exposedMelds
+                ):
                     return 'win', ''
                 return None, 'INVALID_ACTION'
             if mtype == 'pass':
@@ -192,7 +202,7 @@ class RemotePlayer:
     def _find_peng_meld_index(self, tile) -> int:
         """补杠时由牌找碰副露索引（客户端只发牌，服务端定位副露）。"""
         ctx = self._last_ctx
-        if ctx is None:
+        if ctx is None or not self.rules.can_added_kong(ctx.hand, ctx.melds, tile):
             return -1
         for i, meld in enumerate(ctx.melds):
             if meld.type == 'peng' and meld.tile == tile:
@@ -217,7 +227,11 @@ class RemotePlayer:
         测试路径置 None 保持即用即答）。放在开局而非 join 时注入，保证以「开局瞬间」
         的房间节奏为准（测试可能在 join 后再改 pace）。
         """
-        self._ai = AIPlayer(delays=delays)
+        self._ai = AIPlayer(delays=delays, rule_set=self.rules)
+
+    def set_rule_set(self, rule_set: GameRuleSet) -> None:
+        self.rules = rule_set
+        self._ai.set_rule_set(rule_set)
 
     def on_discarded(self) -> None:
         pass
