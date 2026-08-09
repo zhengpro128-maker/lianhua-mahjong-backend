@@ -10,6 +10,7 @@
 
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,18 @@ from loguru import logger
 
 # 已配置标记：保证 setup 只执行一次（同进程内多个 uvicorn server 共用同一套 sink）
 _CONFIGURED = False
+
+# Uvicorn 的 WebSocket 握手日志包含完整查询串；重进码是座位凭据，任何日志出口
+# 都只能保留参数名和掩码。兼容 REST 的 snake_case 与 JSON 风格 camelCase。
+_REJOIN_CODE_PATTERN = re.compile(
+    r'(rejoin_?code=)[^&\s"\']*',
+    flags=re.IGNORECASE,
+)
+
+
+def redact_sensitive_data(message: str) -> str:
+    """脱敏可能出现在 HTTP/WS 请求行中的座位重进码。"""
+    return _REJOIN_CODE_PATTERN.sub(r'\1***', message)
 
 
 def _fmt(record: dict) -> str:
@@ -56,7 +69,8 @@ class InterceptHandler(logging.Handler):
             if frame.f_code.co_filename == logging.__file__:
                 continue            # 继续向上找真实调用者
             break
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        message = redact_sensitive_data(record.getMessage())
+        logger.opt(depth=depth, exception=record.exc_info).log(level, message)
 
 
 def _patch_uvicorn_loggers() -> None:

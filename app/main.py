@@ -10,7 +10,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from app.logging_config import configure_logging, _patch_uvicorn_loggers
+from app.logging_config import (
+    _patch_uvicorn_loggers,
+    configure_logging,
+    redact_sensitive_data,
+)
 
 configure_logging()
 
@@ -47,15 +51,7 @@ app.add_middleware(
 
 def _redact_query(query: str) -> str:
     """query 中 rejoin_code 为座位凭据，落日志时打码，避免凭据泄漏进日志文件。"""
-    if 'rejoin_code=' not in query:
-        return query
-    parts = []
-    for pair in query.split('&'):
-        if pair.startswith('rejoin_code='):
-            parts.append('rejoin_code=***')
-        else:
-            parts.append(pair)
-    return '&'.join(parts)
+    return redact_sensitive_data(query)
 
 
 @app.middleware('http')
@@ -66,7 +62,7 @@ async def access_log_middleware(request: Request, call_next):
     # 上下文变量：随 async 任务传播，sync 路由跑在线程池时 anyio 也会拷贝上下文
     with logger.contextualize(request_id=request_id):
         client_ip = request.client.host if request.client else '-'
-        # WS 握手 query 里带 rejoin_code（凭据），日志里脱敏
+        # HTTP query 先脱敏；Uvicorn 的 WS 请求行由 InterceptHandler 统一脱敏。
         query = _redact_query(request.url.query)
         try:
             response = await call_next(request)
