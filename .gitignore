@@ -1,7 +1,7 @@
 .pytest_cache
 .venv
 data/
-logs/   # 日志目录（loguru 滚动文件）
+logs/
 *.pyc
 .env
 # pip install . / wheel 构建产物（PEP 517）
