@@ -40,14 +40,16 @@ app = FastAPI(title="莲花广麻 Backend", version="0.2.0",
               docs_url="/docs" if DOCS_SHOW else None, lifespan=lifespan)
 
 # 开发期跨域：Vite dev server (:4173) → 后端 REST。生产同源部署时由网关收窄。
+# 注意：allow_origins 为精确匹配（浏览器 Origin 头不含路径也不带尾斜杠）；
+# vibehub 部署在 *.lumigrav.space 任意子域，用 allow_origin_regex 覆盖，避免换子域后失效。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        'https://vibe.lumigrav.space', 
-        'https://lianhuaguangdongmahjong.guoguo-labs.online/', 
+        'https://lianhuaguangdongmahjong.guoguo-labs.online',
         'http://localhost:4173',
         'http://127.0.0.1:4173',
     ],
+    allow_origin_regex=r'^https://([\w-]+\.)*lumigrav\.space$',
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
