@@ -42,7 +42,12 @@ app = FastAPI(title="莲花广麻 Backend", version="0.2.0",
 # 开发期跨域：Vite dev server (:4173) → 后端 REST。生产同源部署时由网关收窄。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
+    allow_origins=[
+        'https://vibe.lumigrav.space', 
+        'https://lianhuaguangdongmahjong.guoguo-labs.online/', 
+        'http://localhost:4173',
+        'http://127.0.0.1:4173',
+    ],
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],

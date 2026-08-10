@@ -318,6 +318,10 @@ class GameManager:
                 flower = next((tile for tile in player.hand if self.rules.is_flower_tile(tile)), None)
                 if flower is None:
                     break
+                # 已有 3 张红中亮花杠，再发到第 4 张 → 四红中：红中留手牌作胡牌牌，不再亮花杠/补张
+                if player.redCount >= 3:
+                    player.redCount += 1
+                    break
                 player.hand.remove(flower)
                 player.redCount += 1
                 player.melds.append(Meld(type='flower', tile=flower, tiles=[flower]))
@@ -435,11 +439,16 @@ class GameManager:
             return False
         if self.rules.is_flower_tile(tile):
             player.redCount += 1
-            player.melds.append(Meld(type='flower', tile=tile, tiles=[tile]))
-            self._show_table_action('flower-gang', player_index, None, tile, len(player.melds) - 1)
             if self.rules.should_auto_win_on_flowers(player.redCount):
+                # 四红中：第 4 张红中直接作为胡牌牌进手牌（不再亮花杠/补张），
+                # 位置随摸牌最右端，由胡牌展示 splitWinningTile 抽到赢牌位置。
+                player.hand = [*player.hand, tile]
+                player.drawnTileIndex = len(player.hand) - 1
+                self._play_sound('give.mp3', 0.7)
                 self.end_game(player_index, {'fourRed': True})
                 return False
+            player.melds.append(Meld(type='flower', tile=tile, tiles=[tile]))
+            self._show_table_action('flower-gang', player_index, None, tile, len(player.melds) - 1)
             await self._play_sound_and_wait('gang.mp3')
             # 亮杠后停顿再补摸：给花杠动画与报杠音效留出人类正常节奏，避免补摸瞬移
             await self._sleep(self.pace['redKongDraw'])
