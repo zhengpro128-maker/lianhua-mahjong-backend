@@ -5,6 +5,7 @@
 
 import json
 
+import psycopg
 import pytest
 
 from app.storage.base import BaseStorage, aggregate_player_stats
@@ -152,3 +153,40 @@ def test_stats_aggregation_is_pure_and_skips_missing_seat_delta():
         'wins': 1,
         'totalDelta': 200,
     }
+
+
+def test_postgres_connect_retries_after_transient_failure(monkeypatch):
+    """建连阶段瞬时失败（如 pooler DNS 抖动）应自动重试并恢复。"""
+    calls = []
+
+    def flaky(dsn, **kwargs):
+        calls.append(dsn)
+        if len(calls) == 1:
+            raise psycopg.OperationalError(
+                "failed to resolve host: "
+                "Temporary failure in name resolution")
+        return object()
+
+    monkeypatch.setattr('app.storage.postgres.psycopg.connect', flaky)
+    monkeypatch.setattr('app.storage.postgres.time.sleep', lambda _s: None)
+
+    storage = PostgresStorage('postgresql://unused')
+    assert storage._conn() is not None
+    assert len(calls) == 2
+
+
+def test_postgres_connect_gives_up_after_max_attempts(monkeypatch):
+    """连续失败达到上限后应抛出，而不是无限重试。"""
+    calls = []
+
+    def always_fail(dsn, **kwargs):
+        calls.append(dsn)
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr('app.storage.postgres.psycopg.connect', always_fail)
+    monkeypatch.setattr('app.storage.postgres.time.sleep', lambda _s: None)
+
+    storage = PostgresStorage('postgresql://unused')
+    with pytest.raises(psycopg.OperationalError):
+        storage._conn()
+    assert len(calls) == 3

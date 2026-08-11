@@ -1,5 +1,7 @@
 """PostgreSQL 连接、建表与兼容迁移。"""
 
+import time
+
 import psycopg
 from loguru import logger
 from psycopg.rows import dict_row
@@ -8,6 +10,11 @@ from .base import BaseStorage, load_schema
 
 
 _SCHEMA = load_schema('schema_postgres.sql')
+
+# 建连阶段重试：Supabase pooler 偶发 DNS/连接抖动，单次失败会让对局结算落库
+# 异常、整场驱动终止（见 game/room.py:_drive）。建连幂等，重试无副作用。
+_CONNECT_ATTEMPTS = 3
+_CONNECT_BACKOFF = 0.5   # 秒，每次尝试后翻倍
 
 
 class PostgresStorage(BaseStorage):
@@ -19,7 +26,20 @@ class PostgresStorage(BaseStorage):
         self.dsn = dsn
 
     def _conn(self) -> psycopg.Connection:
-        return psycopg.connect(self.dsn, row_factory=dict_row)
+        """带退避重试的同步连接；仅重试建连阶段的瞬时失败。"""
+        for attempt in range(1, _CONNECT_ATTEMPTS + 1):
+            try:
+                return psycopg.connect(self.dsn, row_factory=dict_row)
+            except psycopg.OperationalError as exc:
+                if attempt >= _CONNECT_ATTEMPTS:
+                    raise
+                delay = _CONNECT_BACKOFF * (2 ** (attempt - 1))
+                logger.warning(
+                    f"数据库连接失败（第 {attempt}/{_CONNECT_ATTEMPTS} 次），"
+                    f"{delay:.1f}s 后重试: {exc}"
+                )
+                time.sleep(delay)
+        raise AssertionError('unreachable')
 
     def init(self) -> None:
         logger.info("数据库后端: PostgreSQL")
