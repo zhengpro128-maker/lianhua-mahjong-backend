@@ -43,6 +43,24 @@ async def wait_until(cond, timeout=30.0, interval=0.05) -> None:
     raise AssertionError(f'等待超时（{timeout}s）: 条件未成立')
 
 
+class _FlakyStorage:
+    """真实存储包装：前 fail_until 次 insert_round_result 抛错后恢复（模拟落库抖动）。"""
+
+    def __init__(self, real, fail_until: int):
+        self._real = real
+        self._fail_until = fail_until
+        self.fail_count = 0
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def insert_round_result(self, match_id, round_data):
+        if self.fail_count < self._fail_until:
+            self.fail_count += 1
+            raise RuntimeError('模拟落库故障')
+        return self._real.insert_round_result(match_id, round_data)
+
+
 # ─── 创建 / 查询 ──────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -435,6 +453,46 @@ async def test_room_lifecycle_persists_match(server, fresh_rooms, temp_storage):
         resp = await http.get('/api/matches/does-not-exist')
         assert resp.status_code == 404
         assert resp.json()['detail']['code'] == 'MATCH_NOT_FOUND'
+
+
+@pytest.mark.asyncio
+async def test_db_outage_does_not_abort_match(server, fresh_rooms, temp_storage, monkeypatch):
+    """落库失败不应中断整场：失败入队补写，对局照常打完且全部结算落库。"""
+    flaky = _FlakyStorage(temp_storage, fail_until=1)
+    import app.api.rooms as rooms_api
+    monkeypatch.setattr(rooms_api, 'storage', flaky)
+
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        joins = {}
+        for nickname in ('甲', '乙'):
+            joins[nickname] = (await http.post(
+                f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
+        for nickname, join in joins.items():
+            resp = await http.post(f'/api/rooms/{room_id}/ready',
+                                   json={'seat': join['seat'],
+                                         'rejoinCode': join['rejoinCode']})
+            assert resp.status_code == 200
+
+        # 开局即注入故障存储：首局 insert_round_result 必失败（fail_until=1）
+        room = rooms.get(room_id)
+        assert room is not None and room.status == 'lobby'
+        room.pace = {}
+        resp = await http.post(f'/api/rooms/{room_id}/start')
+        assert resp.status_code == 200, resp.text
+
+        # 首局落库失败仍应打完对局，而不是进入 error 中断
+        await wait_until(lambda: room.status == 'finished', timeout=30)
+        assert room.manager.match_finished
+        assert flaky.fail_count == 1
+
+        # 失败的结算已随后续落库机会补写：全部局在库里（含东1局）
+        resp = await http.get(f'/api/rooms/{room_id}/matches')
+        matches = resp.json()['matches']
+        assert len(matches) == 1
+        detail = (await http.get(f'/api/matches/{matches[0]["id"]}')).json()
+        assert len(detail['rounds']) >= 1
+        assert '东1局' in [r['round'] for r in detail['rounds']]
 
 
 @pytest.mark.asyncio

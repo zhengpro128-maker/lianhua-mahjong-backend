@@ -39,6 +39,12 @@ class RoomError(Exception):
 # 可用环境变量覆盖（秒）。
 ROOM_LIFETIME = float(os.environ.get('ROOM_LIFETIME', str(60 * 60)))
 
+# ─── 落库韧性 ─────────────────────────────────────────────
+# 落库失败不中断对局驱动：失败项入队，等下次落库机会按序补写；终局时带退避
+# 多次尝试，仍失败仅告警（数据留在内存，不抛异常中止整场）。
+_FLUSH_RETRY_DELAY = 0.5   # 秒，终局补写重试间隔
+_FLUSH_RETRY_ATTEMPTS = 5  # 终局补写最大尝试次数
+
 
 def _make_rejoin_code() -> str:
     """8 位重进码：4+4 随机 hex，大写带连字符（如 'K7Q3-M9XP'）。"""
@@ -219,6 +225,9 @@ class RoomSession:
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
         self.match_id: Optional[str] = None  # 落库用；storage 为 None 时保持 None
+        # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
+        # 不再中断整场驱动，数据留在队列等下次落库机会重试。
+        self._pending_writes: list = []
         # 结算确认屏障：一局结算后等所有已连真人确认（客户端「继续」按钮）再推进下一局。
         # 兜底超时防止某客户端完全不响应导致整场卡死；正常流程客户端 10s 倒计时自动确认。
         self._continue_timeout = 20.0
@@ -558,6 +567,8 @@ class RoomSession:
         return seeds
 
     # ── 落库（storage 注入时生效；纯内存态为空操作）─────────
+    # 韧性约定：`_persist_*` 全部"入队 + 尝试补写"，落库失败绝不向上抛——
+    # 数据库抖动不中断整场对局，失败项留队列等下次落库机会按序重试。
 
     def _persist_seat(self, seat: int) -> None:
         """join 后写 room_seats / players 表（同步 sqlite 小操作，调用方在请求线程）。"""
@@ -568,34 +579,70 @@ class RoomSession:
         self.storage.upsert_room_seat(self.room_id, seat, state.nickname, state.rejoin_code,
                                       state.player_id)
 
+    async def _flush_writes(self) -> None:
+        """按序补写积压落库；任一失败即停（后续依赖其成功），失败项留待下次。"""
+        while self._pending_writes:
+            write = self._pending_writes[0]
+            try:
+                await asyncio.to_thread(write)
+            except Exception as exc:
+                logger.bind(room_id=self.room_id).warning(
+                    f"落库失败，{len(self._pending_writes)} 项待下次补写: {exc}")
+                return
+            self._pending_writes.pop(0)
+
+    async def _flush_writes_final(self) -> None:
+        """终局补写：带退避多次尝试，仍失败只告警（对局已结束，不中断收尾）。"""
+        for _ in range(_FLUSH_RETRY_ATTEMPTS):
+            await self._flush_writes()
+            if not self._pending_writes:
+                return
+            await asyncio.sleep(_FLUSH_RETRY_DELAY)
+        logger.bind(room_id=self.room_id).error(
+            f"终局落库未完成，{len(self._pending_writes)} 项数据留在内存")
+
     async def _persist_match_start(self) -> None:
         if self.storage is None:
             return
-        self.match_id = await asyncio.to_thread(
-            self.storage.create_match, self.room_id, self.mode)
-        await asyncio.to_thread(self.storage.update_room_status, self.room_id, 'playing')
-        # 记录参赛者身份（战绩真源；room_seats 离房即删，不能作为战绩依据）
         players = [
             {'seat': seat, 'player_id': state.player_id, 'nickname': state.nickname}
             if (state := self.seats[seat]) is not None else
             {'seat': seat, 'player_id': None, 'nickname': PLAYER_SEED[seat]['name']}
             for seat in range(len(self.seats))
         ]
-        await asyncio.to_thread(self.storage.upsert_match_players, self.match_id, players)
+
+        def write():
+            self.match_id = self.storage.create_match(self.room_id, self.mode)
+            self.storage.update_room_status(self.room_id, 'playing')
+            # 记录参赛者身份（战绩真源；room_seats 离房即删，不能作为战绩依据）
+            self.storage.upsert_match_players(self.match_id, players)
+
+        self._pending_writes.append(write)
+        await self._flush_writes()
 
     async def _persist_round(self, result: dict) -> None:
-        if self.storage is None or self.match_id is None:
+        if self.storage is None:
             return
         round_data = self._map_round_result(result)
-        await asyncio.to_thread(self.storage.insert_round_result, self.match_id, round_data)
+
+        def write():
+            self.storage.insert_round_result(self.match_id, round_data)
+
+        self._pending_writes.append(write)
+        await self._flush_writes()
 
     async def _persist_match_end(self, final_scores: list) -> None:
         if self.storage is None:
             return
-        if self.match_id is not None:
-            await asyncio.to_thread(self.storage.finish_match, self.match_id, final_scores)
-        await asyncio.to_thread(self.storage.update_room_status, self.room_id,
-                                'finished' if self.status == 'finished' else self.status)
+
+        def write():
+            if self.match_id is not None:
+                self.storage.finish_match(self.match_id, final_scores)
+            self.storage.update_room_status(
+                self.room_id, 'finished' if self.status == 'finished' else self.status)
+
+        self._pending_writes.append(write)
+        await self._flush_writes_final()
 
     @staticmethod
     def _map_round_result(result: dict) -> dict:
