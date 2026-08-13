@@ -61,6 +61,7 @@ def _room_response(room: RoomSession) -> dict:
     return {
         'roomId': room.room_id,
         'mode': room.mode,
+        'rulesetId': room.ruleset_id,
         'capacity': room.capacity,
         'status': room.status,
         'creatorSeat': room.creator_seat,
@@ -83,6 +84,7 @@ class CreateRoomRequest(BaseModel):
     mode: Literal['east', 'hanchan'] = 'east'
     capacity: int = Field(default=4, ge=2, le=4)
     playerId: Optional[str] = Field(default=None, max_length=64)  # 客户端匿名身份（guestId）
+    rulesetId: Literal['lotus-classic', 'lotus-legacy'] = 'lotus-classic'
 
 
 class JoinRequest(BaseModel):
@@ -117,12 +119,12 @@ def create_room(body: CreateRoomRequest) -> dict:
         # 真人联机房间注入视觉节奏（AI 出牌/碰杠有可读延迟，对齐前端 PACE_MS）；
         # 测试直接构造 RoomSession 不经此路径，保持默认 0 加速
         room = room_registry.create(
-            room_id, mode=body.mode, capacity=body.capacity, storage=storage,
-            pace=PLAY_PACE)
+        room_id, mode=body.mode, capacity=body.capacity, storage=storage,
+            pace=PLAY_PACE, ruleset_id=body.rulesetId)
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"创建房间失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})
-    storage.create_room(room_id, body.mode, body.capacity)
+    storage.create_room(room_id, body.mode, body.capacity, body.rulesetId)
     storage.update_room_status(room_id, 'lobby')
     logger.bind(room_id=room_id).info(f"创建房间 mode={body.mode} capacity={body.capacity}")
     return _room_response(room)

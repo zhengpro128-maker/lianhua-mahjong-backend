@@ -39,12 +39,13 @@ MatchType = Literal['east', 'hanchan']
 
 class Meld(BaseModel):
     """副露：碰/杠/暗杠/花杠"""
-    type: Literal['peng', 'gang', 'angang', 'flower']
+    type: Literal['peng', 'gang', 'angang', 'flower', 'chi']
     tile: TileType
     tiles: list[TileType]
     from_: Optional[int] = Field(default=None, alias='from')
     added: Optional[bool] = None
     pending: Optional[bool] = None
+    windKong: Optional[bool] = None
 
     model_config = {'populate_by_name': True}
 
@@ -68,12 +69,14 @@ class GamePlayer(BaseModel):
 
 TableActionType = Literal[
     'peng',
+    'chi',
     'discard-gang',
     'concealed-gang',
     'added-gang',
     'flower-gang',
     'self-draw',
     'robbed-kong-win',
+    'discard-win',
 ]
 
 
@@ -111,6 +114,7 @@ class WinPresentation(BaseModel):
     robbedKong: bool
     robbedKongPlayerIndex: int
     robbedKongMeldIndex: int
+    discardWin: bool = False
 
 
 # ─── 结算选项 ─────────────────────────────────────────────
@@ -122,3 +126,8 @@ class EndGameOptions(BaseModel):
     kongBloom: Optional[bool] = None
     robbedKong: Optional[bool] = None
     robbedKongPlayerIndex: Optional[int] = None
+    sourceFrom: Optional[int] = None
+    tianhu: Optional[bool] = None
+    dihu: Optional[bool] = None
+    selfDraw: Optional[bool] = None
+    winHand: Optional[list[TileType]] = None

@@ -30,8 +30,9 @@ class ClientAction(BaseModel):
     这里只做形状描述（字段全可选，避免误拒客户端格式变体）。"""
     type: ClientActionType
     handIndex: Optional[int] = None          # discard
-    action: Optional[Literal['peng', 'gang', 'pass']] = None   # claim
-    kind: Optional[Literal['added', 'concealed', 'self_draw', 'rob_kong']] = None  # gang / hu
+    action: Optional[Literal['peng', 'gang', 'chi', 'pass']] = None   # claim
+    optionIndex: Optional[int] = None
+    kind: Optional[Literal['added', 'concealed', 'wind', 'self_draw', 'rob_kong']] = None  # gang / hu
     tile: Optional[TileType] = None          # gang / hu
 
 

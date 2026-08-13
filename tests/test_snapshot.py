@@ -19,9 +19,13 @@ from app.game.room import room_registry as rooms
 
 
 async def prepare_room(room_id: str, capacity: int, nicknames: list,
-                       mode: str = 'east', turn_timeout: float = 5.0):
+                       mode: str = 'east', turn_timeout: float = 5.0,
+                       ruleset_id: str = 'lotus-classic'):
     """建房间 + join + ready（不 start），返回 (room, {nickname: rejoin_code})。"""
-    room = rooms.create(room_id, mode=mode, capacity=capacity, turn_timeout=turn_timeout)
+    room = rooms.create(
+        room_id, mode=mode, capacity=capacity, turn_timeout=turn_timeout,
+        ruleset_id=ruleset_id,
+    )
     codes = {}
     for nickname in nicknames:
         seat, _, state = room.join_or_rejoin(nickname)
@@ -102,6 +106,7 @@ async def test_snapshot_precedes_turn_request(server, fresh_rooms):
         assert 0 <= snap['wallCount'] <= 136
         assert len(snap['wall']) == snap['wallCount']
         assert all(isinstance(t, str) and t for t in snap['wall'])
+        assert set(snap['wall']) <= {'white'}, '进行中快照不得暴露未摸牌牌面'
     finally:
         await safe_close(a)
 
@@ -222,8 +227,64 @@ async def test_round_start_carries_dice(server, fresh_rooms):
         dice = rs['dice']
         assert isinstance(dice, list) and len(dice) == 2
         assert all(isinstance(v, int) and 1 <= v <= 6 for v in dice), f'骰子值应在 [1,6]: {dice}'
+        assert 'secondDice' not in rs, '经典玩法不应触发第二次投骰动画'
         # 紧随其后的发牌快照携带同款骰子（重连/兜底用）
         snap = await read_until(a, 'state_snapshot')
         assert snap['dice'] == dice, '发牌快照骰子应与 round_start 一致'
+        expected_break = ([0, 102, 68, 34][(sum(dice) - 1) % 4] + min(dice) * 2) % 136
+        assert snap['wallBreakIndex'] == expected_break
     finally:
         await safe_close(a)
+
+
+@pytest.mark.asyncio
+async def test_lotus_legacy_round_start_carries_second_dice(server, fresh_rooms):
+    """莲花麻将 round_start 在第一轮发牌前携带第二颗骰子。"""
+    room, codes = await prepare_room(
+        'SNAP6', 1, ['二骰'], ruleset_id='lotus-legacy',
+    )
+    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP6', codes['二骰']))
+    try:
+        await read_until(a, 'rejoin_ok')
+        async with httpx.AsyncClient(base_url=server['http']) as http:
+            await http.post('/api/rooms/SNAP6/start')
+        msgs = await collect_until(a, {'round_start'})
+        rs = msgs[-1]
+        second_dice = rs['secondDice']
+        assert isinstance(second_dice, list) and len(second_dice) == 2
+        assert all(isinstance(v, int) and 1 <= v <= 6 for v in second_dice)
+        assert isinstance(rs['flipTile'], str) and rs['flipTile']
+        assert isinstance(rs['flipStack'], int)
+        assert isinstance(rs['flipSeat'], int) and 0 <= rs['flipSeat'] < 4
+    finally:
+        await safe_close(a)
+
+
+@pytest.mark.asyncio
+async def test_lotus_legacy_two_clients_share_authoritative_opening(server, fresh_rooms):
+    """莲花联机两端收到一致的翻精开局数据，发牌后仍只收到牌墙背面占位。"""
+    room, codes = await prepare_room(
+        'SNAP7', 2, ['庄家', '下家'], ruleset_id='lotus-legacy',
+    )
+    clients = [
+        await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP7', codes[name]))
+        for name in ('庄家', '下家')
+    ]
+    try:
+        await asyncio.gather(*(read_until(ws, 'rejoin_ok') for ws in clients))
+        async with httpx.AsyncClient(base_url=server['http']) as http:
+            response = await http.post('/api/rooms/SNAP7/start')
+            assert response.status_code == 200, response.text
+
+        starts = await asyncio.gather(*(read_until(ws, 'round_start') for ws in clients))
+        for field in ('dice', 'secondDice', 'flipTile', 'flipStack', 'flipSeat'):
+            assert starts[0][field] == starts[1][field], field
+        assert starts[0]['secondDice'] != starts[0]['dice'] or starts[0]['flipTile']
+
+        await asyncio.gather(*(ws.send(json.dumps({'type': 'opening_done'})) for ws in clients))
+        snapshots = await asyncio.gather(*(read_until(ws, 'state_snapshot') for ws in clients))
+        for snap in snapshots:
+            assert snap['rulesetId'] == 'lotus-legacy'
+            assert set(snap['wall']) <= {'white'}
+    finally:
+        await asyncio.gather(*(safe_close(ws) for ws in clients))

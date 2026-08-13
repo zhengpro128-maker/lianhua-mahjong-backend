@@ -23,6 +23,38 @@ class SettlementResult:
 
 
 class SettlementService:
+    def calculate_lotus_win(
+        self, player_count: int, winner_index: int, base_fan: int,
+        winner_is_dealer: bool, self_draw_style: bool,
+        payer_index: Optional[int] = None,
+        dealer_index: Optional[int] = None,
+    ) -> SettlementResult:
+        """莲花麻将收付表：点炮也由未胡三家按身份共同支付。"""
+        h = 100 * base_fan
+        if not winner_is_dealer and not self_draw_style:
+            dealer_pay, non_dealer_pay = 2 * h, h
+        elif winner_is_dealer and not self_draw_style:
+            dealer_pay, non_dealer_pay = 0, 2 * h
+        elif not winner_is_dealer:
+            dealer_pay, non_dealer_pay = 4 * h, 2 * h
+        else:
+            dealer_pay, non_dealer_pay = 0, 4 * h
+        payers = [payer_index] if _is_integer(payer_index) else [
+            index for index in range(player_count) if index != winner_index
+        ]
+        deltas = [{'playerIndex': winner_index,
+                   'amount': sum(dealer_pay if payer == dealer_index else non_dealer_pay
+                                 for payer in payers)}]
+        deltas.extend(
+            {'playerIndex': payer,
+             'amount': -(dealer_pay if payer == dealer_index else non_dealer_pay)}
+            for payer in payers
+        )
+        clean = tuple(delta for delta in deltas if delta['amount'])
+        return SettlementResult(clean, total_won=sum(
+            delta['amount'] for delta in clean if delta['amount'] > 0
+        ))
+
     def calculate_kong(
         self,
         player_count: int,

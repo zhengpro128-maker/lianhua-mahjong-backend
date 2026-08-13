@@ -27,6 +27,7 @@ from app.game.player import AI_DELAYS, AIPlayer
 from app.game.remote_player import RemotePlayer
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import get_default_rule_set
+from app.rules.registry import get_rule_set
 from app.ws.manager import ConnectionManager
 
 
@@ -133,16 +134,26 @@ class WSEvents:
         # 状态变更后广播全量快照：per-seat 差异化（本人手牌可见，他座隐藏）
         self.room.broadcast_snapshot()
 
-    def round_start(self, match_started, round_, dealer, honba, dice) -> None:
-        # 每局开局广播：客户端据此播放开局序列（对局开始 + 骰子）
-        self.room.conn.broadcast({
+    def round_start(self, match_started, round_, dealer, honba, dice, second_dice=None,
+                    flip_tile=None, flip_stack=None, flip_seat=None) -> None:
+        # 每局开局广播：客户端据此播放开局序列（对局开始 + 骰子 + 翻精）
+        message = {
             'kind': 'round_start',
             'matchStarted': match_started,
             'round': round_,
             'dealer': dealer,
             'honba': honba,
             'dice': dice,
-        })
+        }
+        if second_dice is not None:
+            message['secondDice'] = second_dice
+        if flip_tile is not None:
+            message['flipTile'] = flip_tile
+        if flip_stack is not None:
+            message['flipStack'] = flip_stack
+        if flip_seat is not None:
+            message['flipSeat'] = flip_seat
+        self.room.conn.broadcast(message)
 
     async def wait_for_opening(self) -> None:
         # 开局就绪屏障：等所有在线真人客户端发牌动画结束（opening_done）再开始首回合
@@ -166,15 +177,22 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'kind': 'state_snapshot',
         'roomId': room.room_id,
         'mode': room.mode,
+        'rulesetId': room.ruleset_id,
         'phase': mgr.phase if mgr else room.status,
         'round': mgr.round if mgr else 1,
         'dealer': mgr.dealer if mgr else 0,
         'honba': mgr.honba if mgr else 0,
         'dice': mgr.dice if mgr else [1, 1],
         'wallCount': len(mgr.wall) if mgr else 0,
-        # 牌山整墙（摸牌顺序，已按骰子拆墙旋转）；拷贝避免 _take_tile 原地 pop 污染快照。
-        # 牌山背面朝上，下发不含作弊信息，无需按座位隐藏。
-        'wall': list(mgr.wall) if mgr else [],
+        'secondDice': getattr(mgr, 'second_dice', [1, 1]) if mgr else [1, 1],
+        'flipTile': getattr(mgr, 'flip_tile', None) if mgr else None,
+        'jokerTiles': list(getattr(mgr, 'joker_tiles', [])) if mgr else [],
+        'wildcardTiles': list(getattr(mgr, 'wildcard_tiles', [])) if mgr else [],
+        'flipStack': getattr(mgr, 'flip_stack', None) if mgr else None,
+        'openingStack': getattr(mgr, 'opening_stack', None) if mgr else None,
+        'wallBreakIndex': getattr(mgr, 'wall_break_index', 0) if mgr else 0,
+        # 仅下发牌墙长度对应的统一背面占位，禁止客户端读取未摸牌牌序。
+        'wall': ['white'] * len(mgr.wall) if mgr else [],
         # 牌头已摸走张数：供 3D 牌山区分「牌头消耗」与「牌尾补杠/红中补张」。
         'headDrawn': getattr(mgr, '_head_drawn', 0) if mgr else 0,
         'currentPlayer': mgr.current_player if mgr else -1,
@@ -198,15 +216,17 @@ class RoomSession:
 
     def __init__(self, room_id: str, mode: str = 'east', capacity: int = 4,
                  turn_timeout: float = 12.0, random=None, storage=None,
-                 pace: Optional[dict] = None, rule_set: Optional[GameRuleSet] = None):
+                 pace: Optional[dict] = None, rule_set: Optional[GameRuleSet] = None,
+                 ruleset_id: str = 'lotus-classic'):
         self.room_id = room_id
         self.mode = mode
+        self.ruleset_id = ruleset_id
         # capacity = 真人座位上限（2/3/4）；麻将桌固定 4 人，空位由 AI 补足
         self.capacity = capacity
         self.player_count = 4
         self.turn_timeout = turn_timeout
         self._random = random
-        self.rules = rule_set or get_default_rule_set()
+        self.rules = rule_set or get_rule_set(ruleset_id)
         self.storage = storage  # 可选 app.storage.db.Storage；为 None 时纯内存态（测试/单机）
         self.pace = pace  # 视觉节奏注入；None → GameManager 默认 0（测试/单机即用即答）
         self.status = 'lobby'  # lobby / playing / finished / error / closed
@@ -235,7 +255,11 @@ class RoomSession:
         self._continue_event: Optional[asyncio.Event] = None
         # 开局就绪屏障：等所有在线真人客户端发牌动画结束（opening_done）再开始首回合。
         # 消除固定 openingDelay 在慢设备上的「服务端抢跑」；兜底超时防客户端不响应卡死。
-        self._opening_timeout = 15.0
+        # 远端莲花开局包含开始音效、两次骰子、翻精展示和发牌动画；
+        # 浏览器音频最坏情况下每个等待最多 4s，15s 会在最后一批发牌前抢跑。
+        # 远端开局包含开始/两次骰子音效与完整发牌动画；真实双窗口的 Canvas
+        # 渲染可能显著拖慢定时器，60 秒覆盖慢浏览器的完整时间线，仍保留兜底。
+        self._opening_timeout = 60.0
         self._opening: Optional[dict] = None
         self._opening_event: Optional[asyncio.Event] = None
 
@@ -612,7 +636,8 @@ class RoomSession:
         ]
 
         def write():
-            self.match_id = self.storage.create_match(self.room_id, self.mode)
+            self.match_id = self.storage.create_match(
+                self.room_id, self.mode, self.ruleset_id)
             self.storage.update_room_status(self.room_id, 'playing')
             # 记录参赛者身份（战绩真源；room_seats 离房即删，不能作为战绩依据）
             self.storage.upsert_match_players(self.match_id, players)
@@ -694,6 +719,7 @@ class RoomSession:
                 'kind': 'match_finished',
                 'roomId': self.room_id,
                 'mode': self.mode,
+                'rulesetId': self.ruleset_id,
                 'finalScores': final_scores,
             })
             await self._persist_match_end(final_scores)

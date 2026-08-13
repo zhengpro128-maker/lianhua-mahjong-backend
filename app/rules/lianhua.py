@@ -59,6 +59,7 @@ class LianhuaGuangmaRuleSet:
     code = 'lianhua_guangma'
     base_score = BASE_SCORE
     horse_count = 8
+    supports_chi = False
 
     def __init__(self, fan_engine: FanEngine | None = None):
         self.fan_engine = fan_engine or _build_fan_engine()

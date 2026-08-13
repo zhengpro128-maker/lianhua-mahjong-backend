@@ -58,3 +58,13 @@ class PostgresStorage(BaseStorage):
         ).fetchone()
         if row is None:
             conn.execute('ALTER TABLE room_seats ADD COLUMN player_id TEXT')
+        for table in ('rooms', 'matches'):
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = %s AND column_name = 'ruleset_id'",
+                (table,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN ruleset_id TEXT NOT NULL DEFAULT 'lotus-classic'"
+                )

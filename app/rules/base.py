@@ -11,12 +11,15 @@ from app.rules.fans import FanContext, FanEvaluation
 class ClaimCapabilities:
     can_peng: bool = False
     can_gang: bool = False
+    can_hu: bool = False
+    chi_options: tuple[dict, ...] = ()
 
 
 class GameRuleSet(Protocol):
     code: str
     base_score: int
     horse_count: int
+    supports_chi: bool
 
     def create_wall(self) -> list[TileType]: ...
     def is_flower_tile(self, tile: TileType) -> bool: ...

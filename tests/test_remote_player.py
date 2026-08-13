@@ -79,6 +79,23 @@ def test_turn_hu_rejected_when_not_winning():
     assert player._pending is not None
 
 
+def test_turn_discard_rejects_negative_and_out_of_range_indices():
+    player = _pending_turn_player(['m1', 'm2'])
+    for index in (-1, 2, True):
+        ok, err = player.handle_action({'type': 'discard', 'handIndex': index})
+        assert ok is False
+        assert err == 'INVALID_ACTION'
+        assert player._pending is not None
+
+
+def test_turn_discard_accepts_an_in_range_index():
+    player = _pending_turn_player(['m1', 'm2'])
+    ok, err = player.handle_action({'type': 'discard', 'handIndex': 1})
+    assert ok is True
+    assert err == ''
+    assert player._pending is None
+
+
 def test_turn_hu_accepted_when_winning():
     player = _pending_turn_player(WINNING_HAND)
     ok, err = player.handle_action({'type': 'hu'})

@@ -45,6 +45,9 @@ def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None) -> dict:
     if kongs:
         return {'kind': 'concealed-kong', 'tile': kongs[0]}
 
+    if getattr(rules, 'wind_kong', lambda _hand: False)(view['hand']):
+        return {'kind': 'wind-kong'}
+
     return {'kind': 'discard', 'handIndex': choose_discard_index(view['hand'], rule_set=rules)}
 
 

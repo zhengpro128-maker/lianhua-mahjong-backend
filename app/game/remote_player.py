@@ -141,7 +141,9 @@ class RemotePlayer:
         if kind == 'turn':
             if mtype == 'discard':
                 hi = message.get('handIndex')
-                if not isinstance(hi, int) or hi < 0:
+                hand = getattr(ctx, 'hand', None) if ctx is not None else None
+                if not isinstance(hi, int) or isinstance(hi, bool) or not isinstance(hand, list) \
+                        or not 0 <= hi < len(hand):
                     return None, 'INVALID_ACTION'
                 return {'kind': 'discard', 'handIndex': hi}, ''
             if mtype == 'hu':
@@ -156,6 +158,10 @@ class RemotePlayer:
                     if not tile or ctx is None or tile not in self.rules.concealed_kongs(ctx.hand):
                         return None, 'INVALID_ACTION'
                     return {'kind': 'concealed-kong', 'tile': tile}, ''
+                if gk == 'wind':
+                    if ctx is not None and getattr(ctx, 'canWindKong', False):
+                        return {'kind': 'wind-kong'}, ''
+                    return None, 'INVALID_ACTION'
                 if gk == 'added':
                     tile = message.get('tile')
                     meld_index = self._find_peng_meld_index(tile)
@@ -166,10 +172,22 @@ class RemotePlayer:
             return None, 'INVALID_ACTION'
 
         if kind == 'claim':
+            if mtype == 'hu':
+                if ctx is not None and getattr(ctx, 'canHu', False):
+                    return {'kind': 'win'}, ''
+                return None, 'INVALID_ACTION'
             if mtype == 'claim':
                 a = message.get('action')
                 if a == 'pass':
                     return {'kind': 'pass'}, ''
+                if a == 'chi':
+                    option = message.get('optionIndex')
+                    if not isinstance(option, int) or ctx is None:
+                        return None, 'INVALID_ACTION'
+                    options = getattr(ctx, 'chiOptions', [])
+                    if 0 <= option < len(options):
+                        return {'kind': 'chi', 'optionIndex': option}, ''
+                    return None, 'INVALID_ACTION'
                 if a in ('peng', 'gang'):
                     # 以服务端权威手牌校验副露张数，防止客户端声明不存在的碰/杠
                     capabilities = (

@@ -26,6 +26,14 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+def _row_value(row, key: str, default=None):
+    """Read a field from sqlite3.Row, psycopg dict row, or test mapping."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
+
+
 def _decode_json(value: Optional[str]):
     return json.loads(value) if value else None
 
@@ -36,6 +44,7 @@ def map_match(row, rounds: Sequence) -> dict:
         'id': row['id'],
         'roomId': row['room_id'],
         'mode': row['mode'],
+        'rulesetId': _row_value(row, 'ruleset_id', 'lotus-classic'),
         'startAt': row['start_at'],
         'endAt': row['end_at'],
         'finalScores': _decode_json(row['final_scores']),
@@ -51,6 +60,7 @@ def map_match_summary(row) -> dict:
     return {
         'id': row['id'],
         'mode': row['mode'],
+        'rulesetId': _row_value(row, 'ruleset_id', 'lotus-classic'),
         'startAt': row['start_at'],
         'endAt': row['end_at'],
         'finalScores': _decode_json(row['final_scores']),
@@ -143,12 +153,13 @@ class BaseStorage(ABC):
 
     # ── 房间 ─────────────────────────────────────────────
 
-    def create_room(self, room_id: str, mode: str, capacity: int) -> None:
+    def create_room(self, room_id: str, mode: str, capacity: int,
+                    ruleset_id: str = 'lotus-classic') -> None:
         with self._conn() as conn:
             self._execute(
                 conn,
-                'INSERT INTO rooms (id, mode, capacity) VALUES (:p, :p, :p)',
-                (room_id, mode, capacity),
+                'INSERT INTO rooms (id, mode, capacity, ruleset_id) VALUES (:p, :p, :p, :p)',
+                (room_id, mode, capacity, ruleset_id),
             )
 
     def update_room_status(self, room_id: str, status: str) -> None:
@@ -163,13 +174,14 @@ class BaseStorage(ABC):
 
     # ── 对局 ─────────────────────────────────────────────
 
-    def create_match(self, room_id: str, mode: str) -> str:
+    def create_match(self, room_id: str, mode: str,
+                     ruleset_id: str = 'lotus-classic') -> str:
         match_id = _new_id()
         with self._conn() as conn:
             self._execute(
                 conn,
-                'INSERT INTO matches (id, room_id, mode) VALUES (:p, :p, :p)',
-                (match_id, room_id, mode),
+                'INSERT INTO matches (id, room_id, mode, ruleset_id) VALUES (:p, :p, :p, :p)',
+                (match_id, room_id, mode, ruleset_id),
             )
         return match_id
 
@@ -343,7 +355,7 @@ class BaseStorage(ABC):
         with self._conn() as conn:
             rows = self._execute(
                 conn,
-                'SELECT id, mode, start_at, end_at, final_scores FROM matches '
+                'SELECT id, mode, ruleset_id, start_at, end_at, final_scores FROM matches '
                 'WHERE room_id = :p ORDER BY start_at',
                 (room_id,),
             ).fetchall()

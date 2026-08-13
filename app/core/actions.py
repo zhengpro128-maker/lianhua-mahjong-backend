@@ -75,3 +75,21 @@ def perform_discard_gang(ctx: ActionContext, player_index: int, tile: TileType, 
     ctx.show_table_action('discard-gang', player_index, from_, tile, len(player.melds) - 1)
     ctx.show_score_flow(score_deltas)
     ctx.play_sound('gang.mp3')
+
+
+def perform_chi(ctx: ActionContext, player_index: int, option: dict, from_: int) -> None:
+    """执行服务端已校验的吃牌选项。"""
+    player = ctx.players[player_index]
+    tiles = list(option['tiles'])
+    remove_last_discard(ctx.players[from_].discards, option['tile'])
+    hand = list(player.hand)
+    for item in tiles:
+        if item == option['tile']:
+            continue
+        hand.remove(item)
+    player.hand = hand
+    player.drawnTileIndex = -1
+    player.melds.append(Meld(type='chi', tile=option['tile'], from_=from_, tiles=tiles))
+    ctx.current_player.value = player_index  # type: ignore[attr-defined]
+    ctx.show_table_action('chi', player_index, from_, option['tile'], len(player.melds) - 1)
+    ctx.play_sound('chi.mp3')

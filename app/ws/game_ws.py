@@ -78,6 +78,7 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
         'rejoin': True,
         'roomId': room.room_id,
         'mode': room.mode,
+        'rulesetId': room.ruleset_id,
         'nickname': state.nickname,
         'rejoinCode': state.rejoin_code,
     })

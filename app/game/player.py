@@ -30,12 +30,18 @@ class TurnContext(BaseModel):
     kongBloom: bool
     skipDraw: bool
     afterKong: bool
+    jokers: list[TileType] = Field(default_factory=list)
+    canHu: bool = False
+    canWindKong: bool = False
 
 
 class ClaimContext(BaseModel):
     """吃碰杠响应上下文"""
     hand: list[TileType]
     canGang: bool
+    canHu: bool = False
+    canPeng: bool = False
+    chiOptions: list[dict] = Field(default_factory=list)
     tile: TileType
     from_: int = Field(alias='from')
     model_config = {'populate_by_name': True}
@@ -80,6 +86,8 @@ def _map_turn_decision(decision: dict) -> dict:
         return {'kind': 'added-kong', 'meldIndex': decision['meldIndex']}
     if kind == 'concealed-kong':
         return {'kind': 'concealed-kong', 'tile': decision['tile']}
+    if kind == 'wind-kong':
+        return {'kind': 'wind-kong'}
     return {'kind': 'discard', 'handIndex': decision['handIndex']}
 
 
@@ -104,6 +112,7 @@ class AIPlayer:
             'melds': ctx.melds,
             'exposedMelds': ctx.exposedMelds,
             'kongBloom': ctx.kongBloom,
+            'jokers': list(ctx.jokers),
         }
         return _map_turn_decision(decide_turn(view, self.rules))
 
@@ -111,6 +120,18 @@ class AIPlayer:
         ms = self.delays['claim']
         if ms:
             await asyncio.sleep(ms / 1000)
+        if ctx.canHu:
+            return {'kind': 'win'}
+        if ctx.canGang:
+            return {'kind': 'gang'}
+        if ctx.canPeng:
+            after_peng = remove_matches(list(ctx.hand), ctx.tile, 2)
+            if not after_peng:
+                return {'kind': 'pass'}
+            return {'kind': 'peng', 'discardIndex': choose_discard_index(
+                after_peng, self._random, self.rules)}
+        if ctx.chiOptions:
+            return {'kind': 'chi', 'optionIndex': 0}
         decision = decide_claim({'hand': list(ctx.hand), 'canGang': ctx.canGang})
         if decision == 'gang':
             return {'kind': 'gang'}
