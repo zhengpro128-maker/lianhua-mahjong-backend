@@ -87,8 +87,25 @@ def tile_name(tile: TileType) -> str:
 
 # ─── 中马判定 ─────────────────────────────────────────────
 
-def is_horse(tile: TileType) -> bool:
-    """判断是否为中马牌：红中 或 万/筒/条的 1/5/9"""
-    if tile == 'red':
-        return True
-    return bool(re.match(r'^[mps][159]$', tile))
+# 广东麻将买马：以庄家为起点逆时针，各座位对应的中马牌固定。
+# 数字覆盖万/筒/条三色；字牌按位置分配。
+_HORSE_RANK_SETS = (
+    (1, 5, 9),   # A 庄家
+    (2, 6),      # B 下家
+    (3, 7),      # C 对家
+    (4, 8),      # D 上家
+)
+_HORSE_HONOR_SETS = (
+    ('east',),              # A 庄家
+    ('red', 'south'),       # B 下家
+    ('green', 'west'),      # C 对家
+    ('white', 'north'),     # D 上家
+)
+
+
+def is_horse_for_seat(tile: TileType, seat: int) -> bool:
+    """判断某张牌是否对应该座位（0=庄家/1=下家/2=对家/3=上家）的中马。"""
+    suited = re.match(r'^([mps])([1-9])$', tile)
+    if suited:
+        return int(suited.group(2)) in _HORSE_RANK_SETS[seat]
+    return tile in _HORSE_HONOR_SETS[seat]

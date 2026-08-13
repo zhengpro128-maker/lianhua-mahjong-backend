@@ -117,6 +117,18 @@ class TestDiscardGangReplacement:
         def reset(self):
             pass
 
+    def test_tail_draw_uses_top_then_bottom_without_reserving_tiles(self):
+        manager = GameManager(mode='east', controllers=[self._StubController() for _ in range(4)])
+        manager.wall = [f'tile-{index}' for index in range(136)]
+        assert manager._take_tile(from_tail=True) == 'tile-134'
+        assert manager._take_tile(from_tail=True) == 'tile-135'
+        assert manager._take_tile(from_tail=True) == 'tile-132'
+        assert manager._take_tile(from_tail=True) == 'tile-133'
+        manager.wall = ['last-tile']
+        manager._head_drawn = 135
+        assert manager._take_tile(from_tail=True) == 'last-tile'
+        assert manager.wall == []
+
     @pytest.mark.asyncio
     async def test_single_replacement_after_discard_gang(self):
         """点杠只补摸一张：杠后手牌净减 3（13 → 10），不再连摸两张（否则为 11）"""

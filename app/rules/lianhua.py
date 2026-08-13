@@ -112,8 +112,8 @@ class LianhuaGuangmaRuleSet:
         count = self.matching_count(hand, tile)
         return ClaimCapabilities(can_peng=count >= 2, can_gang=count >= 3)
 
-    def draw_horses(self, wall: list[TileType], amount: int | None = None) -> dict:
-        return _draw_horses(wall, self.horse_count if amount is None else amount)
+    def draw_horses(self, wall: list[TileType], amount: int | None = None, seat: int = 0) -> dict:
+        return _draw_horses(wall, self.horse_count if amount is None else amount, seat)
 
     def evaluate_fans(self, context: FanContext) -> FanEvaluation:
         evaluation = self.fan_engine.evaluate(context)

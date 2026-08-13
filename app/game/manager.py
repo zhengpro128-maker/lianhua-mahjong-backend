@@ -303,7 +303,12 @@ class GameManager:
             return None
         if not from_tail:
             self._head_drawn += 1   # 牌头摸走计数（区别于牌尾 pop 的杠/红中补张）
-        return self.wall.pop() if from_tail else self.wall.pop(0)
+            return self.wall.pop(0)
+        # 每墩在 wall 中按「上层、下层」排列；补摸先取当前尾墩上层（倒数第二张），
+        # 再取同墩底层。只剩一张时照常取完，不设置王牌区。
+        tail_drawn = max(0, 136 - self._head_drawn - len(self.wall))
+        tail_index = -2 if tail_drawn % 2 == 0 and len(self.wall) >= 2 else -1
+        return self.wall.pop(tail_index)
 
     def _receive_dealt_tile(self, player: GamePlayer, tile: TileType) -> None:
         """发牌收牌：红中先入正常手牌，发完牌后统一从牌墙尾补杠（见 _resolve_dealt_reds），
@@ -785,11 +790,11 @@ class GameManager:
         """胡牌结算：买马 + 算分 + 收付 → result → settled。"""
         winner = self.players[winner_index]
         scores_before = [p.score for p in self.players]
-        horses_draw = self.rules.draw_horses(self.wall)
+        relative_seat = (winner_index - self.dealer) % len(self.players)
+        horses_draw = self.rules.draw_horses(self.wall, seat=relative_seat)
         horses = horses_draw['horses']
         hits = horses_draw['hits']
-        # 买马从牌头摸走：同步牌头计数，供 3D 牌山正确显示牌头缺口
-        self._head_drawn += len(horses)
+        # 买马从牌尾摸走：不推进牌头计数（区别于从牌头摸走）
         score = self.rules.score_hand(FanContext(
             dealer=winner_index == self.dealer,
             no_joker=not any(self.rules.is_joker_tile(tile) for tile in winner.hand),

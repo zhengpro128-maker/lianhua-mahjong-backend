@@ -14,7 +14,7 @@ import re
 from typing import Optional
 
 from app.models.game import GamePlayer, Meld, TileType
-from app.core.tiles import TILE_TYPES, is_horse
+from app.core.tiles import TILE_TYPES, is_horse_for_seat
 from app.settlement import settlement_service
 
 # 参与组牌的标准牌：全部 34 种减去 红中(red) 与 白板(white)
@@ -229,12 +229,12 @@ def meld_source_tile_index(meld: Meld, player_index: int) -> int:
 
 # ─── 买马 ─────────────────────────────────────────────────
 
-def draw_horses(wall: list[TileType], amount: int = 8) -> dict:
-    """从牌墙摸马（原地消耗 wall），返回 {horses, hits}。红中与 159 均算中马。"""
+def draw_horses(wall: list[TileType], amount: int = 8, seat: int = 0) -> dict:
+    """从牌墙末尾摸马（原地消耗 wall），返回 {horses, hits}。中马按座位判定。"""
     n = min(amount, len(wall))
-    horses = wall[:n]
-    del wall[:n]
-    return {'horses': horses, 'hits': sum(1 for t in horses if is_horse(t))}
+    horses = wall[-n:]
+    del wall[-n:]
+    return {'horses': horses, 'hits': sum(1 for t in horses if is_horse_for_seat(t, seat))}
 
 
 # ─── 番数计算 ─────────────────────────────────────────────

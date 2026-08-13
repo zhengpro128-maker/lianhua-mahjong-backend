@@ -20,7 +20,7 @@ from app.core.tiles import (
     shuffle,
     sort_tiles,
     tile_name,
-    is_horse,
+    is_horse_for_seat,
 )
 
 
@@ -207,42 +207,33 @@ class TestSortTiles:
 
 # ─── 中马判定 ─────────────────────────────────────────────
 
-class TestIsHorse:
-    def test_red_is_horse(self):
-        """红中总是中马"""
-        assert is_horse('red') is True
+class TestHorseForSeat:
+    def test_dealer_seat_a(self):
+        """庄家(A)：1/5/9 三色 + 东 是中马"""
+        for tile in ['m1', 'p1', 's1', 'm5', 'p5', 's5', 'm9', 'p9', 's9', 'east']:
+            assert is_horse_for_seat(tile, 0) is True, f'{tile} 应是庄家中马'
 
-    def test_suited_159_are_horses(self):
-        """万/筒/条的 1/5/9 是中马"""
-        # m1, m5, m9
-        assert is_horse('m1') is True
-        assert is_horse('m5') is True
-        assert is_horse('m9') is True
-        # p1, p5, p9
-        assert is_horse('p1') is True
-        assert is_horse('p5') is True
-        assert is_horse('p9') is True
-        # s1, s5, s9
-        assert is_horse('s1') is True
-        assert is_horse('s5') is True
-        assert is_horse('s9') is True
+    def test_next_seat_b(self):
+        """下家(B)：2/6 三色 + 红中 + 南 是中马"""
+        for tile in ['m2', 'p2', 's2', 'm6', 'p6', 's6', 'red', 'south']:
+            assert is_horse_for_seat(tile, 1) is True, f'{tile} 应是下家中马'
 
-    def test_suited_234678_are_not_horses(self):
-        """万/筒/条的 2/3/4/6/7/8 不是中马"""
-        for suit in ['m', 'p', 's']:
-            for rank in [2, 3, 4, 6, 7, 8]:
-                tile = f'{suit}{rank}'
-                assert is_horse(tile) is False, f'{tile} 不应是中马'
+    def test_opposite_seat_c(self):
+        """对家(C)：3/7 三色 + 发 + 西 是中马"""
+        for tile in ['m3', 'p3', 's3', 'm7', 'p7', 's7', 'green', 'west']:
+            assert is_horse_for_seat(tile, 2) is True, f'{tile} 应是对家中马'
 
-    def test_honors_except_red_are_not_horses(self):
-        """红中以外的字牌不是中马"""
-        for honor in ['east', 'south', 'west', 'north', 'green', 'white']:
-            assert is_horse(honor) is False, f'{honor} 不应是中马'
+    def test_upper_seat_d(self):
+        """上家(D)：4/8 三色 + 白 + 北 是中马"""
+        for tile in ['m4', 'p4', 's4', 'm8', 'p8', 's8', 'white', 'north']:
+            assert is_horse_for_seat(tile, 3) is True, f'{tile} 应是上家中马'
 
-    def test_all_horse_tiles_count(self):
-        """中马牌总共 10 种：红中(1) + 万/筒/条 × 159(各3) = 9 + 1 = 10"""
-        horse_tiles = [t for t in TILE_TYPES if is_horse(t)]
-        assert len(horse_tiles) == 10  # 红中 + m1,m5,m9 + p1,p5,p9 + s1,s5,s9
+    def test_seat_specificity(self):
+        """同一张牌只在对应座位算中马"""
+        assert is_horse_for_seat('m1', 1) is False   # 1 只归庄家
+        assert is_horse_for_seat('red', 0) is False  # 红中只归下家
+        assert is_horse_for_seat('east', 3) is False  # 东只归庄家
+        assert is_horse_for_seat('white', 2) is False  # 白只归上家
 
 
 # ─── TILE_TYPES 完整性 ────────────────────────────────────

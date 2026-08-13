@@ -100,13 +100,13 @@ class TestWinningHand:
 class TestHorseAndScore:
     """对应 rules.test.ts '买马与计分'"""
 
-    def test_159_and_red_are_horses(self):
-        """159 与红中均算中马"""
-        wall = ['m1', 'p2', 's5', 'red', 'east', 'm9', 's3', 'white', 'p7']
-        result = draw_horses(wall)
-        assert len(result['horses']) == 8
-        assert result['hits'] == 4
-        assert wall == ['p7']  # 原地消耗牌墙
+    def test_draw_from_wall_tail_by_seat(self):
+        """从牌墙末尾摸马，中马按庄家座位判定"""
+        wall = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'p1']
+        result = draw_horses(wall, amount=8, seat=0)
+        assert result['horses'] == ['m3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'p1']
+        assert wall == ['m1', 'm2']  # 原地消耗牌尾
+        assert result['hits'] == 3  # m5、m9、p1 是庄家(1/5/9)中马
 
     def test_multipliers_multiply_then_horses_add(self):
         """倍数累乘后，中马按张数乘底分加算"""
