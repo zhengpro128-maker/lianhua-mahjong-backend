@@ -680,7 +680,7 @@ class GameManager:
     # ── 碰/杠候选 ──
 
     def find_claims(self, from_: int, tile: TileType) -> list[dict]:
-        """找可以响应该弃牌的玩家；旧版莲花麻将按胡、碰杠、吃优先。"""
+        """找可以响应该弃牌的玩家；旧版莲花麻将按胡、杠、碰、吃优先。"""
         if not self.rules.is_claimable_tile(tile):
             return []
         claimants = []
@@ -717,7 +717,10 @@ class GameManager:
                     'distance': self.seat_distance(from_, player_index),
                 })
         claimants.sort(key=lambda item: (
-            0 if item.get('canHu') else 1 if item.get('canGang') or item.get('canPeng') else 2,
+            0 if item.get('canHu')
+            else 1 if item.get('canGang')
+            else 2 if item.get('canPeng')
+            else 3,
             item['distance'],
         ))
         return [

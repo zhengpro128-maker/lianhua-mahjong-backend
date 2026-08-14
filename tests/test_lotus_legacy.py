@@ -35,7 +35,7 @@ def test_lotus_special_patterns():
     lan = ['m1', 'm4', 'm7', 'p2', 'p5', 'p8', 's3', 's6', 's9',
            'east', 'south', 'red', 'green', 'white', 'north']
     assert is_seven_pairs(seven_pairs, [])
-    assert is_thirteen_orphans(orphans)
+    assert is_thirteen_orphans(orphans, [])
     assert is_thirteen_lan(lan[:14], [])
 
 
@@ -53,6 +53,22 @@ def test_lotus_qi_xing_requires_usable_joker_for_missing_honor():
             'm1', 'm4', 'm7', 'p2', 'p5', 'p8', 's1', 's4']
     result = evaluate_pattern(hand, 0, [])
     assert result == {'pattern': 'shiSanLan', 'fan': 2, 'label': '十三烂'}
+
+
+def test_lotus_thirteen_orphans_allows_joker_substitution():
+    # 缺 s9，由精牌 m2/m3 替补（m2→s9、m3→成对）→ 仍成立十三幺。
+    terminals = ['m1', 'm9', 'p1', 'p9', 's1', 's9',
+                 'east', 'south', 'west', 'north', 'red', 'green', 'white']
+    hand = [tile for tile in terminals if tile != 's9'] + ['m2', 'm3']
+    result = evaluate_pattern(hand, 0, ['m2', 'm3'])
+    assert result == {'pattern': 'thirteenOrphans', 'fan': 8, 'label': '十三幺'}
+
+
+def test_lotus_thirteen_orphans_rejects_non_terminal_pair():
+    # 重复的是非幺九牌 m2 → 不成立。
+    terminals = ['m1', 'm9', 'p1', 'p9', 's1', 's9',
+                 'east', 'south', 'west', 'north', 'red', 'green', 'white']
+    assert evaluate_pattern(terminals + ['m2'], 0, []) is None
 
 
 def test_lotus_chi_and_settlement():
@@ -143,3 +159,62 @@ def test_lotus_waiting_tiles_reports_joker_face_as_wait():
     assert 'east' in waits
     # 精牌面本身是听口：补入后作为癞子与 east 成对。
     assert 'red' in waits
+
+
+def test_find_claims_priority_gang_over_peng_over_chi():
+    """弃牌响应全局优先级：杠 > 碰 > 吃（与座位距离无关），对齐前端 findClaims。"""
+    rules = LotusLegacyRuleSet()
+    rules.round_state.joker_tiles = []
+    manager = GameManager(
+        controllers=[AIPlayer() for _ in range(4)],
+        rule_set=rules,
+    )
+    manager._reset_players()
+    manager.phase = 'checking'
+    # 0 号弃牌（from_=0）
+    manager.players[0].hand = []
+    # 1 号（距离1）：能吃 m5（m3+m4+m5），不能碰/杠
+    manager.players[1].hand = ['m3', 'm4', 'p9']
+    # 2 号（距离2）：能碰 m5
+    manager.players[2].hand = ['m5', 'm5', 'p9']
+    # 3 号（距离3）：能明杠 m5
+    manager.players[3].hand = ['m5', 'm5', 'm5', 'p9']
+
+    claimants = manager.find_claims(0, 'm5')
+
+    # 远家杠 > 近家碰 > 下家吃，与座位距离无关
+    assert [c['playerIndex'] for c in claimants] == [3, 2, 1]
+    assert claimants[0]['canGang'] is True
+    assert claimants[1]['canPeng'] is True and claimants[1]['canGang'] is False
+    assert claimants[2]['chiOptions'] == [
+        {'tile': 'm5', 'tiles': ['m3', 'm4', 'm5'], 'kind': 'sequence'}
+    ]
+
+
+def test_find_claims_priority_hu_first():
+    """胡 > 杠：能胡的远家优先于能明杠的近家。"""
+    rules = LotusLegacyRuleSet()
+    rules.round_state.joker_tiles = []
+    manager = GameManager(
+        controllers=[AIPlayer() for _ in range(4)],
+        rule_set=rules,
+    )
+    manager._reset_players()
+    manager.phase = 'checking'
+    # 0 号弃牌（from_=0）弃 s1
+    manager.players[0].hand = []
+    # 1 号：无响应能力
+    manager.players[1].hand = ['p9', 'p9', 'p9']
+    # 2 号（距离2）：能明杠 s1
+    manager.players[2].hand = ['s1', 's1', 's1', 'm1']
+    # 3 号（距离3）：听 s1（123m 456m 789m 123p s1s1）
+    manager.players[3].hand = [
+        'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9',
+        'p1', 'p2', 'p3', 's1',
+    ]
+
+    claimants = manager.find_claims(0, 's1')
+
+    assert [c['playerIndex'] for c in claimants] == [3, 2]
+    assert claimants[0]['canHu'] is True
+    assert claimants[1]['canGang'] is True and claimants[1]['canHu'] is False

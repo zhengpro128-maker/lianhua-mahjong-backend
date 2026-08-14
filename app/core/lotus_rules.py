@@ -232,19 +232,54 @@ def is_thirteen_lan(hand: list[TileType], jokers: list[TileType],
     return fill(unrestricted, limited)
 
 
-def is_thirteen_orphans(hand: list[TileType]) -> bool:
+def is_thirteen_orphans(hand: list[TileType], jokers: list[TileType],
+                        ordinary_jokers: list[TileType] = ()) -> bool:
+    """十三幺：门前清，13 种幺九/字牌全有且其一成对（14 张内唯一重复）。
+    精牌可替补缺失的幺九牌；白板（limited）只能替补精牌面或白板本身。"""
     if len(hand) != 14:
         return False
-    counts = Counter(hand)
-    return all(counts[tile] >= 1 for tile in ORPHANS) and \
-        len([tile for tile, count in counts.items() if count >= 2]) == 1 and \
-        next(count for count in counts.values() if count >= 2) == 2
+    natural, unrestricted, limited = _natural_tiles(hand, jokers, ordinary_jokers)
+    # 非幺九牌不能混入；每种幺九牌最多 2 张（唯一一对）。
+    if any(tile not in ORPHANS for tile in natural):
+        return False
+    counts = Counter(natural)
+    if any(counts[tile] > 2 for tile in ORPHANS):
+        return False
+    limited_candidates = [tile for tile in ORPHANS if tile in [*jokers, 'white']]
+
+    # 缺失的幺九牌种类必须由精牌补齐。
+    missing = [tile for tile in ORPHANS if counts[tile] == 0]
+    # 已有成对（count == 2）时，精牌只需补缺；否则还需一张精牌补成对子。
+    already_paired = any(counts[tile] == 2 for tile in ORPHANS)
+    total_wildcards = unrestricted + limited
+    if len(missing) > total_wildcards:
+        return False
+    spare = total_wildcards - len(missing)
+    if spare != (0 if already_paired else 1):
+        return False
+
+    # limited 只能补 limited_candidates 中的种类：缺字中不属于 limited_candidates 的必须用 unrestricted。
+    missing_limited_eligible = sum(1 for tile in missing if tile in limited_candidates)
+    missing_unrestricted_only = len(missing) - missing_limited_eligible
+    if missing_unrestricted_only > unrestricted:
+        return False
+    # 成对那张：unrestricted 补缺后仍有余量可直接补任意已有 1 张的种类；
+    # 否则需 limited 补缺后仍有余量，且该 limited 能补到某个最终为 1 张的 limited_candidates 种类。
+    if already_paired:
+        return True
+    if unrestricted - missing_unrestricted_only >= 1:
+        return True
+    return limited >= missing_limited_eligible + 1 and (
+        missing_limited_eligible >= 1
+        or any(counts[tile] == 1 for tile in limited_candidates)
+    )
 
 
 def evaluate_pattern(hand: list[TileType], exposed_meld_count: int,
                      jokers: list[TileType], ordinary_jokers: list[TileType] = ()) -> dict | None:
     if exposed_meld_count == 0 and len(hand) == 14:
-        if is_thirteen_orphans(hand):
+        # 与前端保持一致：十三幺允许精牌替补缺失的幺九牌。
+        if is_thirteen_orphans(hand, jokers, ordinary_jokers):
             return {'pattern': 'thirteenOrphans', 'fan': 8, 'label': '十三幺'}
         # 与前端保持一致：七星十三烂允许精牌替补，七字由精牌凑齐即可（不要求物理齐全）。
         if is_thirteen_lan(hand, jokers, ordinary_jokers, require_seven_honors=True):
