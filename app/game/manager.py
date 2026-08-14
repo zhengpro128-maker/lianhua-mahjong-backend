@@ -222,6 +222,9 @@ class GameManager:
         self.selected_index = -1
         self.last_discard: Optional[dict] = None
         self.first_discard_pending = False
+        # 跟庄：开局第一圈，庄家首弃后三家各出一张同牌 → 庄家付三家各一底分。
+        # 与 first_discard_pending 一样在 __init__ 初始化，begin_round 每局复位。
+        self.follow_dealer: dict = {'active': False, 'started': False, 'tile': None, 'followed': []}
         self.action_prompt: Optional[dict] = None
         self.pending_kong: Optional[dict] = None
         self.announcement: Optional[dict] = None
@@ -340,6 +343,43 @@ class GameManager:
         self.settlements.apply_deltas(self.players, settlement.deltas)
         return settlement.as_list()
 
+    # ── 跟庄（开局第一圈跟打同牌） ──
+
+    def _interrupt_follow_dealer(self) -> None:
+        """吃/碰/杠/胡等打断第一圈的动作发生时，跟庄窗口立即失效。"""
+        fd = self.follow_dealer
+        if fd:
+            fd['active'] = False
+
+    def _check_follow_dealer(self, player_index: int, tile: TileType) -> None:
+        """出牌落定后检测跟庄；触发时庄家向三家各付一个底分（不影响牌局进行）。"""
+        fd = self.follow_dealer
+        if not fd or not self.players:
+            return
+        if not fd['started']:
+            # 开局第一张出牌者必须是庄家（首弃），进入跟庄窗口。
+            if player_index != self.dealer:
+                return
+            fd['started'] = True
+            fd['active'] = True
+            fd['tile'] = tile
+            fd['followed'] = []
+            return
+        if not fd['active']:
+            return
+        if (player_index == self.dealer or player_index in fd['followed']
+                or tile != fd['tile']):
+            fd['active'] = False
+            return
+        fd['followed'].append(player_index)
+        if len(fd['followed']) == 3:
+            fd['active'] = False
+            settlement = self.settlements.calculate_follow_dealer(
+                len(self.players), self.dealer, self.rules.base_score)
+            self.settlements.apply_deltas(self.players, settlement.deltas)
+            self._show_score_flow(settlement.as_list())
+            self._announce('跟庄')
+
     # ── 发牌与牌墙 ──
 
     def _reset_players(self) -> None:
@@ -441,6 +481,8 @@ class GameManager:
         self.selected_index = -1
         self.last_discard = None
         self.first_discard_pending = True
+        # 跟庄：开局第一圈，庄家首弃后三家各出一张同牌 → 庄家付三家各一底分。
+        self.follow_dealer = {'active': False, 'started': False, 'tile': None, 'followed': []}
         self.phase = 'dealing'
 
         # 第一骰服务于旧版翻精规则；经典广麻仍只使用一组骰子。
@@ -670,6 +712,8 @@ class GameManager:
         }
         self._play_sound('dapai.mp3', 0.8)
         self.phase = 'checking'
+        # 跟庄检测（可能触发庄家向三家各付一底分），随后统一广播快照。
+        self._check_follow_dealer(player_index, tile)
         self._broadcast_snapshot()
 
         claimants = self.find_claims(player_index, tile)
@@ -766,11 +810,13 @@ class GameManager:
         if kind == 'pass':
             return await self.offer_next_claim(remaining, tile, from_)
         if kind == 'win':
+            self._interrupt_follow_dealer()
             return self.end_game(claimant['playerIndex'], {
                 'winTile': tile, 'sourceFrom': from_, 'selfDraw': False,
                 'dihu': claimant.get('dihu', False),
             })
         if kind == 'chi':
+            self._interrupt_follow_dealer()
             option = claimant['chiOptions'][action.get('optionIndex', 0)]
             perform_chi(self._table_context, claimant['playerIndex'], option, from_)
             self._broadcast_snapshot()
@@ -778,6 +824,7 @@ class GameManager:
             await self._sleep(self.pace['afterClaimPeng'])
             return await self.begin_turn(claimant['playerIndex'], skip_draw=True)
         if kind == 'gang':
+            self._interrupt_follow_dealer()
             perform_discard_gang(self._table_context, claimant['playerIndex'], tile, from_)
             self._log.debug(f"座位{claimant['playerIndex']} 杠 {tile}")
             self._broadcast_snapshot()
@@ -788,6 +835,7 @@ class GameManager:
             await self._sleep(gang_pause)
             return await self.begin_turn(claimant['playerIndex'], from_tail=True)
         # peng
+        self._interrupt_follow_dealer()
         perform_peng(self._table_context, claimant['playerIndex'], tile, from_)
         self._log.debug(f"座位{claimant['playerIndex']} 碰 {tile}")
         self._broadcast_snapshot()
@@ -802,6 +850,7 @@ class GameManager:
 
     async def perform_concealed_kong(self, player_index: int, tile: TileType, no_continue: bool = False) -> None:
         """暗杠：移除 4 张手牌 → 杠副露 → 结算（其余三家各付底分两倍）。"""
+        self._interrupt_follow_dealer()
         player = self.players[player_index]
         player.hand = remove_matches(player.hand, tile, 4)
         player.drawnTileIndex = -1
@@ -819,6 +868,7 @@ class GameManager:
 
     async def perform_wind_kong(self, player_index: int) -> None:
         """乱风杠：东南西北各一张，按暗杠结算但四张牌全部明示。"""
+        self._interrupt_follow_dealer()
         player = self.players[player_index]
         winds = ['east', 'south', 'west', 'north']
         if not all(wind in player.hand for wind in winds):
@@ -835,6 +885,7 @@ class GameManager:
 
     def declare_added_kong(self, player_index: int, meld_index: int, tile: TileType) -> None:
         """声明补杠：碰副露 → 杠副露（pending），等待抢杠询问。"""
+        self._interrupt_follow_dealer()
         player = self.players[player_index]
         player.hand = remove_matches(player.hand, tile, 1)
         player.drawnTileIndex = -1

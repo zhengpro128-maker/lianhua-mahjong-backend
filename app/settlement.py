@@ -80,6 +80,22 @@ class SettlementService:
         )
         return SettlementResult(tuple(d for d in deltas if d['amount'] != 0))
 
+    def calculate_follow_dealer(
+        self,
+        player_count: int,
+        dealer_index: int,
+        base_score: int,
+    ) -> SettlementResult:
+        """跟庄：庄家首弃后三家各出一张同牌，庄家向其他三家各付一个底分。"""
+        deltas = (
+            {'playerIndex': dealer_index, 'amount': -base_score * 3},
+            *(
+                {'playerIndex': i, 'amount': base_score}
+                for i in range(player_count) if i != dealer_index
+            ),
+        )
+        return SettlementResult(tuple(d for d in deltas if d['amount'] != 0))
+
     def calculate_win(
         self,
         player_count: int,
