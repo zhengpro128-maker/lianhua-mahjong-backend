@@ -197,7 +197,8 @@ def _spacing(tiles: list[TileType]) -> bool:
 
 
 def is_thirteen_lan(hand: list[TileType], jokers: list[TileType],
-                    ordinary_jokers: list[TileType] = ()) -> bool:
+                    ordinary_jokers: list[TileType] = (),
+                    require_seven_honors: bool = False) -> bool:
     if len(hand) != 14:
         return False
     natural, unrestricted, limited = _natural_tiles(hand, jokers, ordinary_jokers)
@@ -209,7 +210,8 @@ def is_thirteen_lan(hand: list[TileType], jokers: list[TileType],
 
     def fill(unrestricted_left: int, limited_left: int) -> bool:
         if unrestricted_left == 0 and limited_left == 0:
-            return True
+            # 七星十三烂：七字允许精牌替补，最终 14 张须包含东南西北中发白。
+            return True if not require_seven_honors else all(h in used for h in HONORS)
         key = (unrestricted_left, limited_left, tuple(sorted(used)))
         if key in memo:
             return False
@@ -244,8 +246,8 @@ def evaluate_pattern(hand: list[TileType], exposed_meld_count: int,
     if exposed_meld_count == 0 and len(hand) == 14:
         if is_thirteen_orphans(hand):
             return {'pattern': 'thirteenOrphans', 'fan': 8, 'label': '十三幺'}
-        # 与前端保持一致：七星十三烂是在十三烂成立后再检查七字。
-        if is_thirteen_lan(hand, jokers, ordinary_jokers) and all(tile in hand for tile in HONORS):
+        # 与前端保持一致：七星十三烂允许精牌替补，七字由精牌凑齐即可（不要求物理齐全）。
+        if is_thirteen_lan(hand, jokers, ordinary_jokers, require_seven_honors=True):
             return {'pattern': 'qiXing', 'fan': 4, 'label': '七星十三烂'}
         if is_thirteen_lan(hand, jokers, ordinary_jokers):
             return {'pattern': 'shiSanLan', 'fan': 2, 'label': '十三烂'}

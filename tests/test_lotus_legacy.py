@@ -1,5 +1,6 @@
 from app.core.lotus_rules import (
     chi_options,
+    evaluate_pattern,
     is_seven_pairs,
     is_thirteen_lan,
     is_thirteen_orphans,
@@ -36,6 +37,22 @@ def test_lotus_special_patterns():
     assert is_seven_pairs(seven_pairs, [])
     assert is_thirteen_orphans(orphans)
     assert is_thirteen_lan(lan[:14], [])
+
+
+def test_lotus_qi_xing_allows_joker_to_substitute_missing_honor():
+    # 物理缺 white；精牌 m2 替补成 white → 仍成立七星十三烂（七字允许精牌替补）。
+    hand = ['east', 'south', 'west', 'north', 'red', 'green',
+            'm1', 'm4', 'm7', 'p2', 'p5', 'p8', 's1', 'm2']
+    result = evaluate_pattern(hand, 0, ['m2', 'm3'])
+    assert result == {'pattern': 'qiXing', 'fan': 4, 'label': '七星十三烂'}
+
+
+def test_lotus_qi_xing_requires_usable_joker_for_missing_honor():
+    # 物理缺 white，且无精可替补 → 只算十三烂（2 番）。
+    hand = ['east', 'south', 'west', 'north', 'red', 'green',
+            'm1', 'm4', 'm7', 'p2', 'p5', 'p8', 's1', 's4']
+    result = evaluate_pattern(hand, 0, [])
+    assert result == {'pattern': 'shiSanLan', 'fan': 2, 'label': '十三烂'}
 
 
 def test_lotus_chi_and_settlement():
