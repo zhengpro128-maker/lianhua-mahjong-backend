@@ -78,6 +78,12 @@ def sort_tiles(tiles: list[TileType]) -> list[TileType]:
     return sorted(tiles, key=lambda t: _TILE_ORDER.get(t, 99))
 
 
+def sort_tiles_with_jokers(tiles: list[TileType], jokers) -> list[TileType]:
+    """莲花麻将手牌排序：精牌保持牌面顺序，但整体固定排在最左侧（对齐前端 sortTilesWithJokers）。"""
+    joker_set = set(jokers)
+    return sorted(tiles, key=lambda t: (0 if t in joker_set else 1, _TILE_ORDER.get(t, 99)))
+
+
 # ─── 牌名 ─────────────────────────────────────────────────
 
 def tile_name(tile: TileType) -> str:

@@ -48,6 +48,9 @@ app.add_middleware(
         'https://lianhuaguangdongmahjong.guoguo-labs.online',
         'http://localhost:4173',
         'http://127.0.0.1:4173',
+        # e2e 冒烟用独立前端端口（避免与正在运行的 dev :4173 冲突）
+        'http://localhost:4174',
+        'http://127.0.0.1:4174',
     ],
     allow_origin_regex=r'^https://([\w-]+\.)*lumigrav\.space$',
     allow_credentials=True,

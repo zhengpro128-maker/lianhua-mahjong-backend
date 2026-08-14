@@ -31,7 +31,7 @@ from loguru import logger
 sys.setrecursionlimit(10000)
 
 from app.models.game import GamePlayer, Meld, TileType
-from app.core.tiles import shuffle, sort_tiles
+from app.core.tiles import shuffle, sort_tiles, sort_tiles_with_jokers
 from app.core.actions import perform_chi, perform_discard_gang, perform_peng, remove_matches
 from app.game.player import AI_DELAYS, AIPlayer, ClaimContext, RobKongContext, TurnContext
 from app.rules.base import GameRuleSet
@@ -257,6 +257,50 @@ class GameManager:
     def seat_distance(self, from_: int, to: int) -> int:
         return (to - from_ + len(self.players)) % len(self.players)
 
+    def _is_human(self, player_index: int) -> bool:
+        """该座位是否为真人（RemotePlayer）；空座位/代打为 AIPlayer。
+
+        控制器只有 RemotePlayer（真人）与 AIPlayer（AI 补位）两种，故用
+        `not isinstance(..., AIPlayer)` 判定，避免在这里 import RemotePlayer。
+        """
+        return not isinstance(self.controllers[player_index], AIPlayer)
+
+    def _sort_hand(self, hand: list[TileType]) -> list[TileType]:
+        """整理手牌：莲花麻将把精牌固定排最左侧（对齐前端 sortTilesWithJokers）。"""
+        if self.rules.code == 'lotus-legacy':
+            return sort_tiles_with_jokers(hand, self.joker_tiles)
+        return sort_tiles(hand)
+
+    def _visible_tiles_for(self, player_index: int) -> list[TileType]:
+        """该玩家的可见牌：自己手牌+副露+弃牌，他人只算弃牌+副露（对齐前端 visibleTilesFor）。"""
+        result: list[TileType] = []
+        for index, player in enumerate(self.players):
+            if index == player_index:
+                result.extend(player.hand)
+            result.extend(player.discards)
+            for meld in player.melds:
+                result.extend(meld.tiles)
+        return result
+
+    def _public_tiles_for(self) -> list[TileType]:
+        """公开可见牌：所有玩家的弃牌 + 副露（对齐前端 publicTilesFor）。"""
+        result: list[TileType] = []
+        for player in self.players:
+            result.extend(player.discards)
+            for meld in player.melds:
+                result.extend(meld.tiles)
+        return result
+
+    def _upper_last_discard_for(self, player_index: int) -> Optional[TileType]:
+        """该玩家上家最近一张弃牌（用于安全度评估）。"""
+        upper_index = (player_index - 1 + len(self.players)) % len(self.players)
+        discards = self.players[upper_index].discards
+        return discards[-1] if discards else None
+
+    def _early_round_for(self, player_index: int) -> bool:
+        """是否早局（弃牌 < 2 张，用于字牌惩罚调权）。"""
+        return len(self.players[player_index].discards) < 2
+
     # ── 表现副作用转发 ──
 
     def _show_table_action(self, type_, actor_index, source_index, tile, meld_index) -> None:
@@ -435,8 +479,8 @@ class GameManager:
             self.flip_stack if opening else None,
             opening['flipSeat'] if opening else None,
         )
-        if opening:
-            self._announce(f'翻精 {self.flip_tile}')
+        # 「翻精」公告改由客户端在翻精阶段用中文牌名播报（服务端 round_start 阶段的
+        # 公告会因 opening.isRunning 被客户端丢弃，且此处只有原始牌码 5m 无中文名）。
 
         seat_order = [(self.dealer + offset) % len(self.players) for offset in range(len(self.players))]
         for _ in range(3):
@@ -455,7 +499,7 @@ class GameManager:
 
         self.phase = 'opening'
         for player in self.players:
-            player.hand = sort_tiles(player.hand)
+            player.hand = self._sort_hand(player.hand)
         self._broadcast_snapshot()
         self._log.info(f"对局开始 mode={self.match_type} 第{self.round}局 庄家={self.dealer}")
 
@@ -557,6 +601,10 @@ class GameManager:
             afterKong=from_tail,
             jokers=list(getattr(self.rules, 'round_state', None).jokers)
             if self.rules.code == 'lotus-legacy' else [],
+            visibleTiles=self._visible_tiles_for(player_index),
+            publicTiles=self._public_tiles_for(),
+            upperLastDiscard=self._upper_last_discard_for(player_index),
+            earlyRound=self._early_round_for(player_index),
             canHu=(not skip_draw and self.rules.is_winning_hand(
                 player.hand, structural_meld_count(player))),
             canWindKong=bool(
@@ -584,6 +632,9 @@ class GameManager:
             await self.perform_concealed_kong(player_index, action['tile'], no_continue=True)
             if self.phase == 'settled':
                 return
+            # 真人暗杠后停顿 350ms（对齐单机 kongActionExecutor），AI 直接补摸。
+            if self._is_human(player_index):
+                await self._sleep(350)
             return await self.begin_turn(player_index, from_tail=True)
         if kind == 'wind-kong':
             await self.perform_wind_kong(player_index)
@@ -601,7 +652,7 @@ class GameManager:
         if not 0 <= hand_index < len(player.hand):
             return
         tile = player.hand.pop(hand_index)
-        player.hand = sort_tiles(player.hand)
+        player.hand = self._sort_hand(player.hand)
         player.drawnTileIndex = -1
         self.kong_draw_player_index = -1
         player.discards.append(tile)
@@ -694,6 +745,13 @@ class GameManager:
             from_=from_,
             canHu=claimant.get('canHu', False),
             chiOptions=claimant.get('chiOptions', []),
+            exposedMelds=structural_meld_count(player),
+            jokers=list(getattr(self.rules, 'round_state', None).jokers)
+            if self.rules.code == 'lotus-legacy' else [],
+            visibleTiles=self._visible_tiles_for(claimant['playerIndex']),
+            publicTiles=self._public_tiles_for(),
+            upperLastDiscard=self._upper_last_discard_for(claimant['playerIndex']),
+            earlyRound=self._early_round_for(claimant['playerIndex']),
         )
         action = await self.controllers[claimant['playerIndex']].request_claim(ctx)
         if self.phase == 'settled':
@@ -711,7 +769,8 @@ class GameManager:
             option = claimant['chiOptions'][action.get('optionIndex', 0)]
             perform_chi(self._table_context, claimant['playerIndex'], option, from_)
             self._broadcast_snapshot()
-            await self._sleep(self.pace['skipDrawPengDelay'])
+            # 吃牌后停顿对齐单机 PACE_MS.afterClaimPeng（650ms），而非 skipDrawPengDelay（350ms）。
+            await self._sleep(self.pace['afterClaimPeng'])
             return await self.begin_turn(claimant['playerIndex'], skip_draw=True)
         if kind == 'gang':
             perform_discard_gang(self._table_context, claimant['playerIndex'], tile, from_)
@@ -719,7 +778,9 @@ class GameManager:
             self._broadcast_snapshot()
             # 杠后补摸只由 begin_turn(from_tail) 完成：这里不能再 draw_for，
             # 否则点杠会连摸两张（补摸 + 回合摸），四副露时手牌多一张，不再是单骑。
-            await self._sleep(self.pace['afterClaimGang'])
+            # 真人明杠停顿 350ms（对齐单机 lotusHuman），AI 明杠用 afterClaimGang 550ms。
+            gang_pause = 350 if self._is_human(claimant['playerIndex']) else self.pace['afterClaimGang']
+            await self._sleep(gang_pause)
             return await self.begin_turn(claimant['playerIndex'], from_tail=True)
         # peng
         perform_peng(self._table_context, claimant['playerIndex'], tile, from_)
@@ -863,8 +924,9 @@ class GameManager:
 
     # ── 和牌结算 ──
 
-    def take_robbed_kong_tile(self, player_index: int, tile: TileType) -> int:
-        """抢杠后把加杠副露还原为碰副露（取走 3 张），返回副露索引。"""
+    def take_robbed_kong_tile(self, player_index: int, tile: TileType, winner_index: int) -> int:
+        """抢杠后把加杠副露还原为碰副露（取走 3 张），并把被抢的杠牌加入抢杠者手牌，
+        保持 134 张牌数守恒（对应前端 lotusSettlement.takeRobbedKongTile）。返回副露索引。"""
         player = self.players[player_index]
         meld_index = -1
         for i, meld in enumerate(player.melds):
@@ -878,6 +940,7 @@ class GameManager:
             type='peng', tile=meld.tile, from_=meld.from_,
             tiles=meld.tiles[:3], added=None, pending=None,
         )
+        self.players[winner_index].hand.append(tile)
         return meld_index
 
     def end_game(self, winner_index: int, options: Optional[dict] = None) -> None:
@@ -895,7 +958,7 @@ class GameManager:
 
         win_tile = resolve_win_tile(winner, options, self.rules)
         robbed_kong_meld_index = (
-            self.take_robbed_kong_tile(options['robbedKongPlayerIndex'], win_tile)
+            self.take_robbed_kong_tile(options['robbedKongPlayerIndex'], win_tile, winner_index)
             if options.get('robbedKong') else -1
         )
         if options.get('robbedKong') or options.get('fourRed'):
@@ -940,14 +1003,14 @@ class GameManager:
                 source = self.players[options['sourceFrom']]
                 if source.discards and source.discards[-1] == options['winTile']:
                     source.discards.pop()
-                # 这里判断的是物理牌张，不是牌面；赢家手里已有同牌面时
-                # 仍需追加弃牌的这一张。
-                winner.hand.append(options['winTile'])
+                # 点炮胡：赢家手牌保持 13 张，第 14 张（和牌）由 winTile 单独携带，
+                # 与前端参考实现一致，避免亮牌时对和牌重复计数。
             win_hand = options.get('winHand')
             if win_hand is None:
                 win_hand = list(winner.hand)
-                # 抢杠胡的牌尚未进入赢家手牌；评分必须使用包含和牌的完整手牌。
-                if options.get('robbedKong') and options.get('winTile'):
+                # 点炮胡的和牌尚未进入赢家手牌；评分需补入和牌形成完整 14 张手牌。
+                # 抢杠胡的和牌已由 take_robbed_kong_tile 推入赢家手牌（14 张），无需再补。
+                if options.get('sourceFrom') is not None and options.get('winTile'):
                     win_hand.append(options['winTile'])
             score = self.rules.score_legacy_hand(
                 win_hand, structural_meld_count(winner),
@@ -966,10 +1029,17 @@ class GameManager:
                 dealer_index=self.dealer,
             )
             self.settlements.apply_deltas(self.players, settlement.deltas)
+            win_type = (
+                'tianhu' if options.get('tianhu')
+                else 'dihu' if options.get('dihu')
+                else 'robbed-kong' if options.get('robbedKong')
+                else 'self-draw' if options.get('selfDraw')
+                else 'discard'
+            )
             self.result = self.make_round_result({
                 'winnerIndex': winner_index, 'winner': winner.name,
                 'horses': [], 'hits': 0, **score,
-                'totalWon': settlement.total_won, **options,
+                'totalWon': settlement.total_won, 'winType': win_type, **options,
             }, scores_before)
             self.phase = 'settled'
             return

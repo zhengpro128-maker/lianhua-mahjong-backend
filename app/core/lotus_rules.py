@@ -267,9 +267,10 @@ def is_winning_hand(hand: list[TileType], exposed_meld_count: int,
 
 def waiting_tiles(hand: list[TileType], exposed_meld_count: int,
                   jokers: list[TileType]) -> list[TileType]:
+    # 候选牌补入后按癞子处理（精牌增加万能牌、白板增加受限万能牌），
+    # 与前端 lotusRules.waitingTiles 一致——精牌面/白板本身就是听口。
     return [tile for tile in TILE_TYPES
-            if is_winning_hand([*hand, tile], exposed_meld_count, jokers,
-                               [tile] if tile in jokers or tile == 'white' else [])]
+            if is_winning_hand([*hand, tile], exposed_meld_count, jokers)]
 
 
 def chi_options(hand: list[TileType], tile: TileType) -> list[dict]:
@@ -283,13 +284,13 @@ def chi_options(hand: list[TileType], tile: TileType) -> list[dict]:
             sequence = [f'{suit}{start + offset}' for offset in range(3)]
             companions = [candidate for candidate in sequence if candidate != tile]
             if all(count[companion] >= 1 for companion in companions):
-                result.append({'tile': tile, 'tiles': sequence})
+                result.append({'tile': tile, 'tiles': sequence, 'kind': 'sequence'})
     if tile in WINDS:
         for a in range(len(WINDS)):
             for b in range(a + 1, len(WINDS)):
                 sequence = [tile, WINDS[a], WINDS[b]]
                 if len(set(sequence)) == 3 and all(candidate == tile or count[candidate] >= 1 for candidate in sequence):
-                    result.append({'tile': tile, 'tiles': sequence})
+                    result.append({'tile': tile, 'tiles': sequence, 'kind': 'wind'})
     if tile in DRAGONS and all(candidate == tile or count[candidate] >= 1 for candidate in DRAGONS):
-        result.append({'tile': tile, 'tiles': list(DRAGONS)})
+        result.append({'tile': tile, 'tiles': list(DRAGONS), 'kind': 'dragon'})
     return result

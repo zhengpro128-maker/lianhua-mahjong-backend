@@ -33,6 +33,11 @@ class TurnContext(BaseModel):
     jokers: list[TileType] = Field(default_factory=list)
     canHu: bool = False
     canWindKong: bool = False
+    # lotus-legacy 策略 AI 需要的可见牌/安全度上下文
+    visibleTiles: list[TileType] = Field(default_factory=list)
+    publicTiles: list[TileType] = Field(default_factory=list)
+    upperLastDiscard: Optional[TileType] = None
+    earlyRound: bool = False
 
 
 class ClaimContext(BaseModel):
@@ -44,6 +49,13 @@ class ClaimContext(BaseModel):
     chiOptions: list[dict] = Field(default_factory=list)
     tile: TileType
     from_: int = Field(alias='from')
+    exposedMelds: int = 0
+    jokers: list[TileType] = Field(default_factory=list)
+    # lotus-legacy 策略 AI 需要的可见牌/安全度上下文
+    visibleTiles: list[TileType] = Field(default_factory=list)
+    publicTiles: list[TileType] = Field(default_factory=list)
+    upperLastDiscard: Optional[TileType] = None
+    earlyRound: bool = False
     model_config = {'populate_by_name': True}
 
 
@@ -114,6 +126,14 @@ class AIPlayer:
             'kongBloom': ctx.kongBloom,
             'jokers': list(ctx.jokers),
         }
+        if self.rules.code == 'lotus-legacy':
+            view.update({
+                'visibleTiles': list(ctx.visibleTiles),
+                'publicTiles': list(ctx.publicTiles),
+                'upperLastDiscard': ctx.upperLastDiscard,
+                'earlyRound': ctx.earlyRound,
+                '_random': self._random,
+            })
         return _map_turn_decision(decide_turn(view, self.rules))
 
     async def request_claim(self, ctx: ClaimContext) -> dict:
@@ -122,6 +142,8 @@ class AIPlayer:
             await asyncio.sleep(ms / 1000)
         if ctx.canHu:
             return {'kind': 'win'}
+        if self.rules.code == 'lotus-legacy':
+            return self._request_lotus_claim(ctx)
         if ctx.canGang:
             return {'kind': 'gang'}
         if ctx.canPeng:
@@ -144,6 +166,33 @@ class AIPlayer:
                 return {'kind': 'pass'}
             discard_index = choose_discard_index(after_peng, self._random, self.rules)
             return {'kind': 'peng', 'discardIndex': discard_index}
+        return {'kind': 'pass'}
+
+    def _request_lotus_claim(self, ctx: ClaimContext) -> dict:
+        """莲花麻将副露决策：能杠必杠；碰/吃按听牌质量与现状比较，不提升则 pass。"""
+        from app.core.lotus_ai import decide_claim as lotus_decide_claim
+        decision = lotus_decide_claim({
+            'hand': list(ctx.hand),
+            'exposedMelds': ctx.exposedMelds,
+            'jokers': list(ctx.jokers),
+            'tile': ctx.tile,
+            'canGang': ctx.canGang,
+            'canPeng': ctx.canPeng,
+            'chiOptions': ctx.chiOptions,
+            'visibleTiles': list(ctx.visibleTiles),
+            'publicTiles': list(ctx.publicTiles),
+            'upperLastDiscard': ctx.upperLastDiscard,
+            'earlyRound': ctx.earlyRound,
+        })
+        if decision['kind'] == 'gang':
+            return {'kind': 'gang'}
+        if decision['kind'] == 'peng':
+            return {'kind': 'peng', 'discardIndex': decision['discardIndex']}
+        if decision['kind'] == 'chi':
+            for index, option in enumerate(ctx.chiOptions):
+                if option is decision['meld']:
+                    return {'kind': 'chi', 'optionIndex': index}
+            return {'kind': 'pass'}
         return {'kind': 'pass'}
 
     async def request_rob_kong(self, ctx: RobKongContext) -> str:

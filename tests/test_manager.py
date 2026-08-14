@@ -232,3 +232,19 @@ def test_end_draw_records_tenpai():
     assert manager.result['dealerTenpai'] is True
     # 不付点数：各 delta 为 0
     assert all(change['delta'] == 0 for change in manager.result['scoreChanges'])
+
+
+def test_is_human_distinguishes_remote_from_ai():
+    """真人座位（RemotePlayer）与 AI 补位（AIPlayer）的杠停顿区分依据。"""
+    from app.game.remote_player import RemotePlayer
+    from app.game.room import RoomSession
+
+    room = RoomSession('HUMAN-TEST', capacity=2)
+    human = RemotePlayer(0, room.conn)
+    manager = GameManager(
+        mode='east',
+        controllers=[human, AIPlayer(), AIPlayer(), AIPlayer()],
+    )
+    assert manager._is_human(0) is True
+    assert manager._is_human(1) is False
+    assert manager._is_human(3) is False

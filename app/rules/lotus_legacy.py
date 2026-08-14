@@ -133,14 +133,14 @@ class LotusLegacyRuleSet:
     def evaluate_fans(self, context: FanContext):
         # 保持 GameRuleSet 兼容；通用接口只承载状态番，完整牌型请调用
         # score_legacy_hand（它需要具体手牌）。
+        # FanContext 没有 self_draw 字段，故不在此推断自摸——否则会把点炮误加成自摸；
+        # 抢杠胡 / 杠上开花 / 自摸的「加计自摸」由 score_legacy_hand 统一计算。
         from app.rules.fans import FanEvaluation, FanHit
         hits = []
         if context.robbed_kong:
             hits.append(FanHit(code='robbed_kong', label='抢杠胡', multiplier=2))
-        elif context.kong_bloom:
+        if context.kong_bloom:
             hits.append(FanHit(code='kong_bloom', label='杠上开花', multiplier=2))
-        elif not context.dealer:
-            hits.append(FanHit(code='self_draw', label='自摸', multiplier=2))
         if context.dealer:
             hits.append(FanHit(code='dealer', label='庄家', multiplier=2))
         multiplier = 1

@@ -5,6 +5,7 @@ from app.core.lotus_rules import (
     is_thirteen_orphans,
 )
 from app.core.lotus_wall import build_lotus_wall, compute_jokers, next_in_sequence
+from app.models.game import Meld
 from app.rules.lotus_legacy import LotusLegacyRuleSet
 from app.settlement import settlement_service
 from app.game.manager import GameManager
@@ -39,7 +40,7 @@ def test_lotus_special_patterns():
 
 def test_lotus_chi_and_settlement():
     assert chi_options(['m4', 'm6'], 'm5') == [
-        {'tile': 'm5', 'tiles': ['m4', 'm5', 'm6']}
+        {'tile': 'm5', 'tiles': ['m4', 'm5', 'm6'], 'kind': 'sequence'}
     ]
     result = settlement_service.calculate_lotus_win(
         player_count=4, winner_index=1, base_fan=1,
@@ -79,9 +80,12 @@ def test_lotus_discard_win_uses_the_physical_discard_tile():
     assert manager.phase == 'settled'
     assert manager.players[0].discards == []
     assert manager.result['winnerIndex'] == 1
+    # 点炮胡：赢家手牌保持 13 张，和牌由 winTile 单独携带（不再追加进手牌）。
+    assert len(manager.players[1].hand) == 13
+    assert 'm3' not in manager.players[1].hand
 
 
-def test_lotus_robbed_kong_win_scores_with_the_robbed_tile():
+def test_lotus_robbed_kong_win_conserves_the_robbed_tile():
     rules = LotusLegacyRuleSet()
     rules.round_state.joker_tiles = []
     manager = GameManager(
@@ -89,6 +93,11 @@ def test_lotus_robbed_kong_win_scores_with_the_robbed_tile():
         rule_set=rules,
     )
     manager._reset_players()
+    # 补杠副露（pending gang）供抢杠还原
+    manager.players[0].melds = [
+        Meld(type='gang', tile='m3', tiles=['m3', 'm3', 'm3', 'm3'],
+             added=True, pending=True),
+    ]
     manager.players[1].hand = [
         'm1', 'm2', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9',
         'p1', 'p2', 'p3', 's1', 's1',
@@ -102,3 +111,18 @@ def test_lotus_robbed_kong_win_scores_with_the_robbed_tile():
 
     assert manager.phase == 'settled'
     assert manager.result['winnerIndex'] == 1
+    # 杠副露还原为碰（3 张），被抢的杠牌进入抢杠者手牌，牌数守恒（14 张）。
+    assert manager.players[0].melds[0].type == 'peng'
+    assert manager.players[0].melds[0].tiles == ['m3', 'm3', 'm3']
+    assert len(manager.players[1].hand) == 14
+    assert manager.players[1].hand.count('m3') == 1
+
+
+def test_lotus_waiting_tiles_reports_joker_face_as_wait():
+    rules = LotusLegacyRuleSet()
+    rules.round_state.joker_tiles = ['red']
+    hand = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'east']
+    waits = rules.waiting_tiles(hand, 0)
+    assert 'east' in waits
+    # 精牌面本身是听口：补入后作为癞子与 east 成对。
+    assert 'red' in waits

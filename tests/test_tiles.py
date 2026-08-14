@@ -19,6 +19,7 @@ from app.core.tiles import (
     create_wall,
     shuffle,
     sort_tiles,
+    sort_tiles_with_jokers,
     tile_name,
     is_horse_for_seat,
 )
@@ -184,6 +185,11 @@ class TestSortTiles:
         reversed_tiles = ['s9', 'p1', 'm1']
         expected = ['m1', 'p1', 's9']
         assert sort_tiles(reversed_tiles) == expected
+
+    def test_sort_with_jokers_puts_jokers_first(self):
+        """莲花麻将：精牌保持牌面顺序，但整体固定排在最左侧。"""
+        hand = ['m3', 'east', 'm7', 'p2', 'white']
+        assert sort_tiles_with_jokers(hand, ['m7', 'white']) == ['m7', 'white', 'm3', 'p2', 'east']
 
     def test_sort_mixed(self):
         """混合牌型排序：万 < 筒 < 条 < 字（同花色内按点数）"""

@@ -48,6 +48,20 @@ def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None) -> dict:
     if getattr(rules, 'wind_kong', lambda _hand: False)(view['hand']):
         return {'kind': 'wind-kong'}
 
+    if rules.code == 'lotus-legacy':
+        # 莲花麻将按听口质量/剩余张/安全度选弃牌（对齐前端 lotusAi.chooseDiscardIndex）。
+        from app.core.lotus_ai import choose_discard_index as lotus_choose_discard_index
+        hand_index = lotus_choose_discard_index(
+            view['hand'], view.get('jokers', []), random=view.get('_random'),
+            options={
+                'exposedMelds': view.get('exposedMelds'),
+                'visibleTiles': view.get('visibleTiles'),
+                'publicTiles': view.get('publicTiles'),
+                'upperLastDiscard': view.get('upperLastDiscard'),
+                'earlyRound': view.get('earlyRound'),
+            })
+        return {'kind': 'discard', 'handIndex': hand_index}
+
     return {'kind': 'discard', 'handIndex': choose_discard_index(view['hand'], rule_set=rules)}
 
 
