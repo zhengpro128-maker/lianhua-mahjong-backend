@@ -38,6 +38,7 @@ class TurnContext(BaseModel):
     publicTiles: list[TileType] = Field(default_factory=list)
     upperLastDiscard: Optional[TileType] = None
     earlyRound: bool = False
+    wallCount: int = 0
 
 
 class ClaimContext(BaseModel):
@@ -56,6 +57,7 @@ class ClaimContext(BaseModel):
     publicTiles: list[TileType] = Field(default_factory=list)
     upperLastDiscard: Optional[TileType] = None
     earlyRound: bool = False
+    wallCount: int = 0
     model_config = {'populate_by_name': True}
 
 
@@ -132,6 +134,7 @@ class AIPlayer:
                 'publicTiles': list(ctx.publicTiles),
                 'upperLastDiscard': ctx.upperLastDiscard,
                 'earlyRound': ctx.earlyRound,
+                'wallCount': ctx.wallCount,
                 '_random': self._random,
             })
         return _map_turn_decision(decide_turn(view, self.rules))
@@ -183,6 +186,7 @@ class AIPlayer:
             'publicTiles': list(ctx.publicTiles),
             'upperLastDiscard': ctx.upperLastDiscard,
             'earlyRound': ctx.earlyRound,
+            'wallCount': ctx.wallCount,
         })
         if decision['kind'] == 'gang':
             return {'kind': 'gang'}

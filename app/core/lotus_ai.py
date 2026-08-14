@@ -4,7 +4,8 @@
 - 副露决策（decide_claim）按「动作后听牌质量」与现状比较，不提升则 pass，
   而非无脑 gang>peng>chi；
 - 弃牌启发式（choose_discard_index）按听口数/剩余可见张/特殊牌型分/安全度打分，
-  而非只按同牌数+靠张+癞子罚分。
+  而非只按同牌数+靠张+癞子罚分；
+- 杠决策（补杠/暗杠/风杠）评估是否破坏听牌/被抢杠，而非无脑杠。
 
 纯决策：只看状态给动作命令，不改任何状态、不触发表现副作用。
 """
@@ -17,9 +18,15 @@ from typing import Callable, Optional
 
 from app.core.actions import remove_matches
 from app.core.lotus_rules import matching_count, waiting_tiles
+from app.core.tiles import HONORS
 from app.models.game import TileType
 
 _SUITED_RE = re.compile(r'^([mps])([1-9])$')
+
+_ORPHAN_TERMINALS = (
+    'm1', 'm9', 'p1', 'p9', 's1', 's9',
+    'east', 'south', 'west', 'north', 'red', 'green', 'white',
+)
 
 
 def _wildcard_set(jokers: list[TileType]) -> set[TileType]:
@@ -35,8 +42,10 @@ def _remaining_count(tile: TileType, visible_tiles: list[TileType]) -> int:
 
 
 def _hand_quality_attack_score(waits: list[TileType], effective_remaining: int,
-                               special_score: int) -> int:
-    return (80 if len(waits) > 0 else 0) + len(waits) * 10 \
+                               special_score: int, late_game: bool = False) -> int:
+    ready_bonus = 80 if len(waits) > 0 else 0
+    late_bonus = 20 if late_game and len(waits) > 0 else 0
+    return ready_bonus + late_bonus + len(waits) * 10 \
         + effective_remaining * 2 + special_score * 3
 
 
@@ -57,21 +66,19 @@ def _public_safety_score(tile: TileType, public_tiles: list[TileType],
 
 def _special_pattern_score(hand: list[TileType], exposed_melds: int,
                            jokers: list[TileType]) -> int:
-    """门清时对十三烂/七对潜力的加分；副露后不再追求特殊牌型。"""
+    """门清时对十三烂/十三幺/七对潜力的加分；副露后不再追求特殊牌型。"""
     if exposed_melds > 0:
         return -20
     effective_jokers = _wildcard_set(jokers)
-    lan_defects = _shi_san_lan_defects(hand, effective_jokers)
-    lan_score = (4 - lan_defects) * 4 if lan_defects <= 3 else 0
-    return lan_score + _pair_potential(hand, effective_jokers) * 2
+    return max(
+        _shi_san_lan_potential(hand, effective_jokers),
+        _thirteen_orphans_potential(hand, effective_jokers),
+        _seven_pairs_potential(hand, effective_jokers),
+    )
 
 
-def _shi_san_lan_defects(hand: list[TileType], jokers: set[TileType]) -> int:
-    """十三烂的缺陷数：重复牌 + 同花色相邻点数差 <3 的次数（癞子已剔除）。
-
-    注意：必须用数牌正则精确匹配（`^[mps][1-9]$`），不能用 startswith('s')——
-    'south' 也以 's' 开头，会误入数牌列表。
-    """
+def _shi_san_lan_potential(hand: list[TileType], jokers: set[TileType]) -> int:
+    """十三烂/七星十三烂潜力：缺陷越少、字牌越齐、精牌越多越接近。"""
     natural = [tile for tile in hand if tile not in jokers]
     defects = len(natural) - len(set(natural))
     for suit in ('m', 'p', 's'):
@@ -84,11 +91,31 @@ def _shi_san_lan_defects(hand: list[TileType], jokers: set[TileType]) -> int:
         for index in range(1, len(ranks)):
             if ranks[index] - ranks[index - 1] < 3:
                 defects += 1
-    return defects
+    honors_held = sum(1 for honor in HONORS if honor in natural)
+    joker_count = len(hand) - len(natural)
+    honor_shortfall = max(0, 7 - honors_held)
+    jokers_after_honors = max(0, joker_count - honor_shortfall)
+    defects_after_jokers = max(0, defects - jokers_after_honors)
+    if defects_after_jokers > 3:
+        return 0
+    return (4 - defects_after_jokers) * 4 + honors_held + joker_count
 
 
-def _pair_potential(hand: list[TileType], jokers: set[TileType]) -> int:
-    """成对潜力：已有对子数 + 癞子可补足的单张数。"""
+def _thirteen_orphans_potential(hand: list[TileType], jokers: set[TileType]) -> int:
+    """十三幺潜力：13 种幺九/字牌持有进度 + 精牌可替补 + 对子可成。"""
+    natural = [tile for tile in hand if tile not in jokers]
+    held_kinds = sum(1 for tile in _ORPHAN_TERMINALS if tile in natural)
+    joker_count = len(hand) - len(natural)
+    kinds_after_jokers = held_kinds + joker_count
+    if kinds_after_jokers < 10:
+        return 0
+    has_pair = any(matching_count(natural, tile) >= 2 for tile in _ORPHAN_TERMINALS)
+    pair_score = 8 if has_pair or joker_count >= 2 else 0
+    return (kinds_after_jokers - 10) * 3 + pair_score
+
+
+def _seven_pairs_potential(hand: list[TileType], jokers: set[TileType]) -> int:
+    """七对子潜力：已有对子数 + 精牌可补单张成对。"""
     counts: Counter[TileType] = Counter()
     joker_count = 0
     for tile in hand:
@@ -101,7 +128,10 @@ def _pair_potential(hand: list[TileType], jokers: set[TileType]) -> int:
     for count in counts.values():
         pairs += count // 2
         singles += count % 2
-    return pairs + min(singles, joker_count)
+    near_seven = pairs + min(singles, joker_count)
+    if near_seven < 5:
+        return 0
+    return near_seven * 4
 
 
 def _discard_heuristic(hand: list[TileType], discarded: TileType,
@@ -126,12 +156,15 @@ def _discard_quality(after_discard: list[TileType], discarded: TileType,
                      exposed_melds: int, jokers: list[TileType],
                      visible_tiles: list[TileType], early_round: bool,
                      public_tiles: list[TileType],
-                     upper_last_discard: Optional[TileType]) -> dict:
+                     upper_last_discard: Optional[TileType],
+                     wall_count: Optional[int] = None) -> dict:
     waits = waiting_tiles(after_discard, exposed_melds, jokers)
     effective_remaining = sum(_remaining_count(tile, visible_tiles) for tile in waits)
     special_score = _special_pattern_score(after_discard, exposed_melds, jokers)
     safety_score = _public_safety_score(discarded, public_tiles, upper_last_discard)
-    attack_score = _hand_quality_attack_score(waits, effective_remaining, special_score)
+    late_game = (wall_count if wall_count is not None else 99) <= 8
+    attack_score = _hand_quality_attack_score(waits, effective_remaining, special_score, late_game)
+    safety_weight = 4 if late_game and len(waits) > 0 else 2
     return {
         'ready': len(waits) > 0,
         'waits': waits,
@@ -139,19 +172,21 @@ def _discard_quality(after_discard: list[TileType], discarded: TileType,
         'specialScore': special_score,
         'heuristic': _discard_heuristic(after_discard, discarded, jokers, early_round),
         'safetyScore': safety_score,
-        'netScore': attack_score + safety_score * 2,
+        'netScore': attack_score + safety_score * safety_weight,
     }
 
 
 def _current_hand_quality(hand: list[TileType], exposed_melds: int,
                           jokers: list[TileType],
-                          visible_tiles: Optional[list[TileType]] = None) -> dict:
+                          visible_tiles: Optional[list[TileType]] = None,
+                          wall_count: Optional[int] = None) -> dict:
     if visible_tiles is None:
         visible_tiles = hand
     waits = waiting_tiles(hand, exposed_melds, jokers)
     special_score = _special_pattern_score(hand, exposed_melds, jokers)
     effective_remaining = sum(_remaining_count(tile, visible_tiles) for tile in waits)
-    attack_score = _hand_quality_attack_score(waits, effective_remaining, special_score)
+    late_game = (wall_count if wall_count is not None else 99) <= 8
+    attack_score = _hand_quality_attack_score(waits, effective_remaining, special_score, late_game)
     return {
         'ready': len(waits) > 0,
         'waits': waits,
@@ -184,7 +219,8 @@ def _best_discard_after_claim(hand: list[TileType], exposed_melds: int,
                               visible_tiles: Optional[list[TileType]] = None,
                               early_round: bool = False,
                               public_tiles: Optional[list[TileType]] = None,
-                              upper_last_discard: Optional[TileType] = None):
+                              upper_last_discard: Optional[TileType] = None,
+                              wall_count: Optional[int] = None):
     if not hand:
         return None
     if visible_tiles is None:
@@ -203,11 +239,84 @@ def _best_discard_after_claim(hand: list[TileType], exposed_melds: int,
             'tile': tile,
             'quality': _discard_quality(after_discard, tile, exposed_melds, jokers,
                                         visible_tiles, early_round, public_tiles,
-                                        upper_last_discard),
+                                        upper_last_discard, wall_count),
         })
     candidates.sort(key=cmp_to_key(
         lambda a, b: _compare_quality(b['quality'], a['quality']) or (a['index'] - b['index'])))
     return candidates[0] if candidates else None
+
+
+def is_tenpai(hand: list[TileType], exposed_melds: int,
+              jokers: list[TileType]) -> bool:
+    """当前手牌是否已听牌（存在打出某张后听口非空）。"""
+    joker_set = _wildcard_set(jokers)
+    has_natural = any(tile not in joker_set for tile in hand)
+    for index, tile in enumerate(hand):
+        if has_natural and tile in joker_set:
+            continue
+        after_discard = hand[:index] + hand[index + 1:]
+        if waiting_tiles(after_discard, exposed_melds, jokers):
+            return True
+    return False
+
+
+def should_take_added_kong(view: dict) -> bool:
+    """补杠：把第 4 张亮出后别家可抢杠胡。牌河该牌出现越少，别家听它的可能性越高；
+    若手牌已听牌，补杠会破坏手牌结构且暴露被抢风险 → 放弃。"""
+    meld = next((item for item in view.get('melds', []) if item.get('type') == 'peng'), None)
+    if not meld:
+        return True
+    public_count = matching_count(view.get('publicTiles') or [], meld['tile'])
+    if public_count >= 1:
+        return True
+    return not is_tenpai(view['hand'], view.get('exposedMelds', 0), view.get('jokers', []))
+
+
+def should_take_concealed_kong(view: dict) -> bool:
+    """暗杠：移除 4 张后结构大变；已听牌时杠会破坏听牌 → 放弃，未听牌则杠（+6B 收益）。"""
+    return not is_tenpai(view['hand'], view.get('exposedMelds', 0), view.get('jokers', []))
+
+
+def should_take_wind_kong(view: dict) -> bool:
+    """风杠：同样移除 4 张；已听牌时放弃。"""
+    return not is_tenpai(view['hand'], view.get('exposedMelds', 0), view.get('jokers', []))
+
+
+def decide_turn(view: dict, jokers: list[TileType] | None = None,
+                rules=None) -> dict:
+    """回合决策：自摸胡 → 补杠 → 暗杠 → 乱风杠 → 弃牌（杠前评估是否破坏听牌/被抢杠）。"""
+    from app.core.lotus_rules import is_winning_hand as lotus_is_winning_hand
+    effective_jokers = list(jokers if jokers is not None else view.get('jokers', []))
+    if lotus_is_winning_hand(view['hand'], view.get('exposedMelds', 0), effective_jokers):
+        return {'kind': 'win'}
+
+    meld_index = -1
+    for i, meld in enumerate(view.get('melds', [])):
+        if meld.get('type') == 'peng' and meld['tile'] in view['hand']:
+            meld_index = i
+            break
+    if meld_index >= 0 and should_take_added_kong(view):
+        return {'kind': 'added-kong', 'meldIndex': meld_index}
+
+    kongs = [tile for tile in set(view['hand'])
+             if matching_count(view['hand'], tile) == 4]
+    if kongs and should_take_concealed_kong(view):
+        return {'kind': 'concealed-kong', 'tile': kongs[0]}
+
+    if all(wind in view['hand'] for wind in ('east', 'south', 'west', 'north')) \
+            and should_take_wind_kong(view):
+        return {'kind': 'wind-kong'}
+
+    return {'kind': 'discard', 'handIndex': choose_discard_index(
+        view['hand'], effective_jokers, random=view.get('_random'),
+        options={
+            'exposedMelds': view.get('exposedMelds'),
+            'visibleTiles': view.get('visibleTiles'),
+            'publicTiles': view.get('publicTiles'),
+            'upperLastDiscard': view.get('upperLastDiscard'),
+            'earlyRound': view.get('earlyRound'),
+            'wallCount': view.get('wallCount'),
+        })}
 
 
 # ── 副露决策 ────────────────────────────────────────────────
@@ -236,7 +345,8 @@ def decide_claim(view: dict) -> dict:
         return {'kind': 'gang'}
 
     baseline = _current_hand_quality(
-        view['hand'], view['exposedMelds'], view['jokers'], view.get('visibleTiles'))
+        view['hand'], view['exposedMelds'], view['jokers'], view.get('visibleTiles'),
+        view.get('wallCount'))
     candidates = []
 
     if view.get('canPeng') and matching_count(view['hand'], view['tile']) >= 2:
@@ -244,7 +354,7 @@ def decide_claim(view: dict) -> dict:
         discard = _best_discard_after_claim(
             after_peng, view['exposedMelds'] + 1, view['jokers'],
             view.get('visibleTiles'), view.get('earlyRound', False),
-            view.get('publicTiles'), view.get('upperLastDiscard'))
+            view.get('publicTiles'), view.get('upperLastDiscard'), view.get('wallCount'))
         if discard:
             candidates.append({
                 'action': {'kind': 'peng', 'discardIndex': discard['index']},
@@ -258,7 +368,7 @@ def decide_claim(view: dict) -> dict:
         discard = _best_discard_after_claim(
             after_chi, view['exposedMelds'] + 1, view['jokers'],
             view.get('visibleTiles'), view.get('earlyRound', False),
-            view.get('publicTiles'), view.get('upperLastDiscard'))
+            view.get('publicTiles'), view.get('upperLastDiscard'), view.get('wallCount'))
         if discard:
             candidates.append({
                 'action': {'kind': 'chi', 'meld': meld},
@@ -308,7 +418,8 @@ def choose_discard_index(hand: list[TileType], jokers: list[TileType],
                 options.get('visibleTiles') or hand,
                 options.get('earlyRound', False),
                 options.get('publicTiles') or [],
-                options.get('upperLastDiscard'))
+                options.get('upperLastDiscard'),
+                options.get('wallCount'))
         candidates.append({'index': index, 'score': score, 'quality': quality})
 
     def cmp(a: dict, b: dict) -> int:

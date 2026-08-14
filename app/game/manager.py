@@ -605,6 +605,7 @@ class GameManager:
             publicTiles=self._public_tiles_for(),
             upperLastDiscard=self._upper_last_discard_for(player_index),
             earlyRound=self._early_round_for(player_index),
+            wallCount=len(self.wall),
             canHu=(not skip_draw and self.rules.is_winning_hand(
                 player.hand, structural_meld_count(player))),
             canWindKong=bool(
@@ -755,6 +756,7 @@ class GameManager:
             publicTiles=self._public_tiles_for(),
             upperLastDiscard=self._upper_last_discard_for(claimant['playerIndex']),
             earlyRound=self._early_round_for(claimant['playerIndex']),
+            wallCount=len(self.wall),
         )
         action = await self.controllers[claimant['playerIndex']].request_claim(ctx)
         if self.phase == 'settled':

@@ -33,6 +33,11 @@ def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None) -> dict:
     if rules.is_winning_hand(view['hand'], view['exposedMelds']):
         return {'kind': 'win'}
 
+    if rules.code == 'lotus-legacy':
+        # 莲花麻将：杠决策评估（破坏听牌/被抢杠风险）+ 听口质量弃牌（对齐前端 lotusAi）。
+        from app.core.lotus_ai import decide_turn as lotus_decide_turn
+        return lotus_decide_turn(view, view.get('jokers', []), rules)
+
     meld_index = -1
     for i, meld in enumerate(view['melds']):
         if meld.type == 'peng' and rules.can_added_kong(view['hand'], view['melds'], meld.tile):
@@ -47,20 +52,6 @@ def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None) -> dict:
 
     if getattr(rules, 'wind_kong', lambda _hand: False)(view['hand']):
         return {'kind': 'wind-kong'}
-
-    if rules.code == 'lotus-legacy':
-        # 莲花麻将按听口质量/剩余张/安全度选弃牌（对齐前端 lotusAi.chooseDiscardIndex）。
-        from app.core.lotus_ai import choose_discard_index as lotus_choose_discard_index
-        hand_index = lotus_choose_discard_index(
-            view['hand'], view.get('jokers', []), random=view.get('_random'),
-            options={
-                'exposedMelds': view.get('exposedMelds'),
-                'visibleTiles': view.get('visibleTiles'),
-                'publicTiles': view.get('publicTiles'),
-                'upperLastDiscard': view.get('upperLastDiscard'),
-                'earlyRound': view.get('earlyRound'),
-            })
-        return {'kind': 'discard', 'handIndex': hand_index}
 
     return {'kind': 'discard', 'handIndex': choose_discard_index(view['hand'], rule_set=rules)}
 
