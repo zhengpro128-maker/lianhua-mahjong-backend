@@ -260,13 +260,19 @@ def is_tenpai(hand: list[TileType], exposed_melds: int,
     return False
 
 
+def _meld_attr(meld, name: str):
+    """Meld 对象或 dict 都按字段取值。"""
+    return meld[name] if isinstance(meld, dict) else getattr(meld, name)
+
+
 def should_take_added_kong(view: dict) -> bool:
     """补杠：把第 4 张亮出后别家可抢杠胡。牌河该牌出现越少，别家听它的可能性越高；
     若手牌已听牌，补杠会破坏手牌结构且暴露被抢风险 → 放弃。"""
-    meld = next((item for item in view.get('melds', []) if item.get('type') == 'peng'), None)
+    meld = next((item for item in view.get('melds', [])
+                 if _meld_attr(item, 'type') == 'peng'), None)
     if not meld:
         return True
-    public_count = matching_count(view.get('publicTiles') or [], meld['tile'])
+    public_count = matching_count(view.get('publicTiles') or [], _meld_attr(meld, 'tile'))
     if public_count >= 1:
         return True
     return not is_tenpai(view['hand'], view.get('exposedMelds', 0), view.get('jokers', []))
@@ -292,7 +298,8 @@ def decide_turn(view: dict, jokers: list[TileType] | None = None,
 
     meld_index = -1
     for i, meld in enumerate(view.get('melds', [])):
-        if meld.get('type') == 'peng' and meld['tile'] in view['hand']:
+        # melds 可能是 Meld 对象（player.py 传入）或 dict（单测传入），兼容两者。
+        if _meld_attr(meld, 'type') == 'peng' and _meld_attr(meld, 'tile') in view['hand']:
             meld_index = i
             break
     if meld_index >= 0 and should_take_added_kong(view):

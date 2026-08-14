@@ -79,6 +79,12 @@ class TestChooseDiscardIndex:
         index = choose_discard_index(hand, lambda: 0)
         assert hand[index] == 'north'
 
+    def test_tenpai_keeps_key_tile(self):
+        """已听牌时优先保留听口（不打听牌所需的关键张）"""
+        hand = ['m1', 'm2', 'm3', 'p4', 'p5', 'p6', 's7', 's8', 's9', 'east', 'east', 'north', 'white']
+        index = choose_discard_index(hand, lambda: 0, exposed_melds=0)
+        assert hand[index] == 'north'
+
 
 class TestDecideClaim:
     """对应 ai.test.ts 'decideClaim 吃碰杠响应'"""
@@ -88,6 +94,36 @@ class TestDecideClaim:
 
     def test_peng_when_not_can_gang(self):
         assert decide_claim({'hand': ['east', 'east', 'm1'], 'canGang': False}) == 'peng'
+
+    def test_pass_when_peng_breaks_tenpai(self):
+        """碰后听口未提升时 pass"""
+        hand = ['east', 'east', 'm1', 'm2', 'm3', 'p4', 'p5', 'p6', 's7', 's8', 'north', 'south', 'west']
+        assert decide_claim({'hand': hand, 'canGang': False, 'tile': 'east', 'exposedMelds': 0}) == 'pass'
+
+    def test_peng_when_improves_tenpai(self):
+        """碰后听口更优时选择 peng"""
+        hand = ['m1', 'm2', 'm3', 'p4', 'p5', 'p6', 's7', 's8', 's9', 'east', 'east', 'north', 'white']
+        assert decide_claim({'hand': hand, 'canGang': False, 'tile': 'east', 'exposedMelds': 0}) == 'peng'
+
+
+class TestDecideTurnKongEvaluation:
+    """对应 ai.test.ts 'decideTurn 杠决策评估'"""
+
+    def test_no_concealed_kong_when_tenpai(self):
+        """已听牌时放弃暗杠（避免拆散成形手牌）"""
+        hand = ['east', 'east', 'east', 'east', 'm2', 'm3', 'm4', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'north']
+        assert decide_turn(view(hand))['kind'] != 'concealed-kong'
+
+    def test_concealed_kong_when_scattered(self):
+        """未听牌时仍暗杠"""
+        hand = ['s7', 's7', 's7', 's7', 'm1', 'm2', 'm3', 'p4', 'p5', 'east', 'east']
+        assert decide_turn(view(hand)) == {'kind': 'concealed-kong', 'tile': 's7'}
+
+    def test_no_added_kong_when_tenpai(self):
+        """已听牌时放弃补杠"""
+        melds = [Meld(type='peng', tile='east', from_=1, tiles=['east', 'east', 'east'])]
+        hand = ['east', 'm2', 'm3', 'm4', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'north']
+        assert decide_turn(view(hand, melds, 1))['kind'] != 'added-kong'
 
 
 class TestDecideRobKong:

@@ -154,10 +154,15 @@ class AIPlayer:
             if not after_peng:
                 return {'kind': 'pass'}
             return {'kind': 'peng', 'discardIndex': choose_discard_index(
-                after_peng, self._random, self.rules)}
+                after_peng, self._random, self.rules, ctx.exposedMelds + 1)}
         if ctx.chiOptions:
             return {'kind': 'chi', 'optionIndex': 0}
-        decision = decide_claim({'hand': list(ctx.hand), 'canGang': ctx.canGang})
+        decision = decide_claim({
+            'hand': list(ctx.hand),
+            'canGang': ctx.canGang,
+            'tile': ctx.tile,
+            'exposedMelds': ctx.exposedMelds,
+        }, self.rules)
         if decision == 'gang':
             return {'kind': 'gang'}
         if decision == 'peng':
@@ -167,7 +172,7 @@ class AIPlayer:
                 # 碰后无牌可打（手牌恰好只剩这 2 张）：真实规则下不能碰，
                 # 否则出牌阶段手牌为空导致对局停滞。
                 return {'kind': 'pass'}
-            discard_index = choose_discard_index(after_peng, self._random, self.rules)
+            discard_index = choose_discard_index(after_peng, self._random, self.rules, ctx.exposedMelds + 1)
             return {'kind': 'peng', 'discardIndex': discard_index}
         return {'kind': 'pass'}
 
