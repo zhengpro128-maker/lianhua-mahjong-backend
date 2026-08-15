@@ -230,10 +230,10 @@ def meld_source_tile_index(meld: Meld, player_index: int) -> int:
 # ─── 买马 ─────────────────────────────────────────────────
 
 def draw_horses(wall: list[TileType], amount: int = 8, seat: int = 0) -> dict:
-    """从牌墙末尾摸马（原地消耗 wall），返回 {horses, hits}。中马按座位判定。"""
+    """从牌头摸马（原地消耗 wall），返回 {horses, hits}。中马按座位判定。"""
     n = min(amount, len(wall))
-    horses = wall[-n:]
-    del wall[-n:]
+    horses = wall[:n]
+    del wall[:n]
     return {'horses': horses, 'hits': sum(1 for t in horses if is_horse_for_seat(t, seat))}
 
 

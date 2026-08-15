@@ -1104,7 +1104,8 @@ class GameManager:
         horses_draw = self.rules.draw_horses(self.wall, seat=relative_seat)
         horses = horses_draw['horses']
         hits = horses_draw['hits']
-        # 买马从牌尾摸走：不推进牌头计数（区别于从牌头摸走）
+        # 买马从牌头摸走：头部物理消耗，推进牌头计数（对齐前端从牌头摸）。
+        self._head_drawn += len(horses)
         score = self.rules.score_hand(FanContext(
             dealer=winner_index == self.dealer,
             no_joker=not any(self.rules.is_joker_tile(tile) for tile in winner.hand),
