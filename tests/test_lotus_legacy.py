@@ -23,6 +23,15 @@ def test_lotus_wall_removes_flip_stack_and_computes_jokers():
     assert next_in_sequence('north') == 'east'
 
 
+def test_lotus_compute_jokers_keeps_white_when_flip_is_white_or_green():
+    # 白板翻精：精牌 = [白板, 红中]（白板本身作精，可替代任意牌）
+    assert compute_jokers('white') == ['white', 'red']
+    # 发财翻精：同序下一张是白板 → 白板也是精
+    assert compute_jokers('green') == ['green', 'white']
+    # 普通翻精：指示牌 + 同序下一张
+    assert compute_jokers('m5') == ['m5', 'm6']
+
+
 def test_lotus_special_patterns():
     seven_pairs = [
         'm1', 'm1', 'm2', 'm2', 'm3', 'm3', 'm4', 'm4',

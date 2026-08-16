@@ -31,9 +31,16 @@ def next_in_sequence(tile: TileType) -> TileType:
 
 
 def compute_jokers(flip_tile: TileType) -> list[TileType]:
+    """本局癞子 = [指示牌, 同序下一张]（恰 2 张，二者不同）。
+
+    白板翻精：指示牌是白板 → 精牌 = [白板, 红中]（箭循环白→中），白板本身作为精
+    （可替代任意牌）；发财翻精同理 → [发财, 白板]。此前把白板从精牌里过滤掉
+    （只留同序下一张），导致白板翻精/发翻精时白板不作精（与前端 lotusRules.ts
+    的 computeJokers 对齐后修复）。
+    """
     result = []
     for tile in (flip_tile, next_in_sequence(flip_tile)):
-        if tile != 'white' and tile not in result:
+        if tile not in result:
             result.append(tile)
     return result
 
