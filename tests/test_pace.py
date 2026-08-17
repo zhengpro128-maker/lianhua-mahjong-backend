@@ -156,3 +156,14 @@ class TestOpeningReadyBarrier:
         """非开局等待期间到达的 opening_done 幂等忽略，不算错。"""
         room = RoomSession('OPN-IDLE', capacity=4, pace=PLAY_PACE)
         assert room._confirm_opening(0) == (True, '')
+
+    def test_stale_round_confirmation_does_not_pollute_current_barrier(self):
+        """上一局迟到的 opening_done 不能确认当前局。"""
+        room = RoomSession('OPN-ROUND', capacity=4, pace=PLAY_PACE)
+        room._opening = {'round': 2, 'confirmed': set()}
+        room._opening_event = asyncio.Event()
+
+        assert room._confirm_opening(0, 1) == (True, '')
+        assert room._opening['confirmed'] == set()
+        assert room._confirm_opening(0, 2) == (True, '')
+        assert room._opening['confirmed'] == {0}

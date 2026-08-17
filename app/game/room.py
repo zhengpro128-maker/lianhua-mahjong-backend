@@ -427,7 +427,7 @@ class RoomSession:
         if message.get('type') == 'continue':
             return self._confirm_continue(seat)
         if message.get('type') == 'opening_done':
-            return self._confirm_opening(seat)
+            return self._confirm_opening(seat, message.get('round'))
         state = self.seats[seat]
         if state is None or not isinstance(state.controller, RemotePlayer):
             return False, 'NOT_HUMAN_SEAT'
@@ -450,10 +450,16 @@ class RoomSession:
             self._continue_event.set()
         return True, ''
 
-    def _confirm_opening(self, seat: int) -> tuple[bool, str]:
-        """客户端「opening_done」：标记该座位开局动画已完成（仅在开局就绪屏障激活时生效）。"""
+    def _confirm_opening(self, seat: int, round_: Optional[int] = None) -> tuple[bool, str]:
+        """客户端「opening_done」：标记当前局开局动画已完成。
+
+        round 是可选的，兼容旧客户端；新客户端带 round 时拒绝迟到的上一局确认。
+        """
         if self._opening is None:
             return True, ''   # 非开局等待期间：幂等忽略
+        opening_round = self._opening.get('round')
+        if round_ is not None and opening_round is not None and round_ != opening_round:
+            return True, ''   # 迟到的旧局确认：幂等忽略，不污染当前屏障
         confirmed = self._opening['confirmed']
         if seat not in confirmed:
             confirmed.add(seat)
@@ -472,7 +478,11 @@ class RoomSession:
         seats = self._human_connected_seats()
         if not seats:
             return   # 全 AI / 全员断线 → 无需等待
-        self._opening = {'deadline': time.monotonic() + self._opening_timeout, 'confirmed': set()}
+        self._opening = {
+            'round': self.manager.round if self.manager is not None else None,
+            'deadline': time.monotonic() + self._opening_timeout,
+            'confirmed': set(),
+        }
         self._opening_event = asyncio.Event()
         try:
             while True:
