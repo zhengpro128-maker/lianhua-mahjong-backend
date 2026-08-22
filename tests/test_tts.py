@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 
 import httpx
@@ -73,6 +74,32 @@ def test_invalid_optional_environment_values_fall_back(monkeypatch, tmp_path):
     cfg = load_tts_config(tmp_path / 'missing.txt')
     assert (cfg.timeout_s, cfg.concurrency) == (5.0, 2)
     assert (cfg.cache_max_mb, cfg.cache_ttl_days, cfg.negative_ttl_s) == (256, 30, 30.0)
+
+
+def test_provider_voice_overrides_style_per_field(monkeypatch, tmp_path):
+    prefixes = (
+        'BAIDU_TTS_VOICE_PROVIDER_', 'BAIDU_TTS_SPEED_PROVIDER_',
+        'BAIDU_TTS_PITCH_PROVIDER_', 'BAIDU_TTS_VOLUME_PROVIDER_',
+    )
+    for env_name in list(os.environ):
+        if env_name.startswith(prefixes):
+            monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv('BAIDU_TTS_VOICE_PROVIDER_DEEPSEEK', '4196')
+    monkeypatch.setenv('BAIDU_TTS_SPEED_PROVIDER_DEEPSEEK', '7')
+    monkeypatch.setenv('BAIDU_TTS_PITCH_PROVIDER_DEEPSEEK', '6')
+    monkeypatch.setenv('BAIDU_TTS_VOLUME_PROVIDER_DEEPSEEK', '7')
+    monkeypatch.setenv('BAIDU_TTS_VOICE_PROVIDER_RELAY_GPT', '4195')
+    monkeypatch.setenv('BAIDU_TTS_SPEED_PROVIDER_RELAY_GPT', 'invalid')
+
+    cfg = load_tts_config(tmp_path / 'missing.txt')
+    assert cfg.voice_for('高冷', 'deepseek') == TtsVoiceProfile(4196, 7, 6, 7)
+    talkative = cfg.voices['话痨']
+    relay = cfg.voice_for('话痨', 'relay-gpt')
+    assert relay == TtsVoiceProfile(
+        4195, talkative.speed, talkative.pitch, talkative.volume,
+        talkative.emotion,
+    )
+    assert cfg.voice_for('稳健', 'unknown') == cfg.voices['稳健']
 
 
 def test_text_normalization_and_voice_are_part_of_cache_key(tmp_path):

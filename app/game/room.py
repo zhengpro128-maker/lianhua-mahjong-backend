@@ -743,7 +743,8 @@ class RoomSession:
         self._tts_match_stats['requests'] += 1
         generation = self._tts_match_generation
         task = loop.create_task(self._synthesize_llm_audio(
-            generation, entry['id'], seat, text, controller.config.style))
+            generation, entry['id'], seat, text, controller.config.style,
+            controller.provider_id))
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
@@ -760,9 +761,10 @@ class RoomSession:
         self._on_llm_message(seat, lines.get(controller.config.style, lines['稳健']))
 
     async def _synthesize_llm_audio(self, generation: int, message_id: int,
-                                    seat: int, text: str, style: str) -> None:
+                                    seat: int, text: str, style: str,
+                                    provider_id: str) -> None:
         try:
-            audio = await get_tts_service().ensure_audio(text, style)
+            audio = await get_tts_service().ensure_audio(text, style, provider_id)
         except asyncio.CancelledError:
             raise
         except Exception:

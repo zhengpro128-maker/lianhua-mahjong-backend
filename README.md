@@ -217,6 +217,7 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `TTS_CACHE_DIR` | `data/tts-cache` | MP3 + SQLite 元数据缓存目录 |
 | `TTS_CACHE_MAX_MB` | `256` | LRU 容量上限 |
 | `TTS_CACHE_TTL_DAYS` | `30` | 未访问缓存有效期 |
+| `BAIDU_TTS_*_PROVIDER_<ID>` | 空 | 按 LLM providerId 覆盖 VOICE/SPEED/PITCH/VOLUME |
 
 ### LLM 大模型（可选，§9 设计文档）
 
@@ -290,8 +291,14 @@ LLM_PROVIDER_KIMI_MODEL=kimi-k2
 - 四种策略默认使用百度基础音库，可用 `BAIDU_TTS_VOICE_AGGRESSIVE`、
   `BAIDU_TTS_VOICE_STEADY`、`BAIDU_TTS_VOICE_TALKATIVE`、
   `BAIDU_TTS_VOICE_COLD` 及对应 SPEED/PITCH/VOLUME/EMOTION 变量覆盖。
-- 安全连通性检查：`python -m app.tts.check`。输出只包含可用状态、音频字节数或
-  百度业务错误码，不显示 Key/Secret/Token。
+- 不同模型可按稳定的 LLM providerId 配置专属声音，例如
+  `BAIDU_TTS_VOICE_PROVIDER_DEEPSEEK=4196`、
+  `BAIDU_TTS_SPEED_PROVIDER_DEEPSEEK=7`；`relay_gpt` 对应环境变量后缀
+  `RELAY_GPT`。每个字段独立按“provider 专属值 → 当前策略值 → 稳健默认值”解析，
+  因此也可只覆盖 VOICE、继续沿用策略的语速/音调/音量。
+- 安全连通性检查：`python -m app.tts.check --provider deepseek --style 激进`。
+  命令会加载 `backend/.env` 并输出最终采用的 profile、音频字节数或百度业务错误码，
+  不显示 Key/Secret/Token；省略参数时检查默认 provider 的稳健策略。
 - 使用前须在百度语音应用中开通短文本在线合成并领取相应免费资源；错误
   `502: No permission to access data` 表示当前应用没有该接口权限。
 

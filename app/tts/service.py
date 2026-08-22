@@ -98,13 +98,14 @@ class TtsService:
     def stats_snapshot(self) -> dict[str, int]:
         return dict(self.stats)
 
-    async def ensure_audio(self, text: str, style: str) -> Optional[TtsAudio]:
+    async def ensure_audio(self, text: str, style: str,
+                           provider_id: str = '') -> Optional[TtsAudio]:
         if not self.available:
             return None
         normalized = normalize_tts_text(text)
         if not normalized:
             return None
-        voice = self.config.voices.get(style) or self.config.voices['稳健']
+        voice = self.config.voice_for(style, provider_id)
         cache_key, text_hash = tts_cache_key(normalized, style, voice)
         self.stats['requests'] += 1
         cached = await self.cache.get(cache_key)

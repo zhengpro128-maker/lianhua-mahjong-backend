@@ -553,8 +553,8 @@ class TestPerSeatAssembly:
         class FakeTtsService:
             available = True
 
-            async def ensure_audio(self, text, style):
-                assert (text, style) == ('这张先放下。', '高冷')
+            async def ensure_audio(self, text, style, provider_id):
+                assert (text, style, provider_id) == ('这张先放下。', '高冷', 'deepseek')
                 return SimpleNamespace(
                     audio_url=f'/api/tts/audio/{"a" * 64}.mp3', cached=True)
 

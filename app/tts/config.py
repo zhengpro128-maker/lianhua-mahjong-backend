@@ -1,6 +1,6 @@
 """TTS 配置：环境变量优先，本地凭据文件仅作开发机回退。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 from typing import Optional
@@ -20,6 +20,15 @@ class TtsVoiceProfile:
     emotion: str = ''
 
 
+@dataclass(frozen=True)
+class TtsVoiceOverride:
+    """按 LLM providerId 覆盖音色参数；未配置字段继续继承策略配置。"""
+    voice_id: Optional[int] = None
+    speed: Optional[int] = None
+    pitch: Optional[int] = None
+    volume: Optional[int] = None
+
+
 @dataclass(frozen=True, repr=False)
 class TtsConfig:
     enabled: bool
@@ -33,10 +42,26 @@ class TtsConfig:
     cache_ttl_days: int
     negative_ttl_s: float
     voices: dict[str, TtsVoiceProfile]
+    provider_voices: dict[str, TtsVoiceOverride] = field(default_factory=dict)
 
     @property
     def available(self) -> bool:
         return self.enabled and bool(self.api_key and self.secret_key)
+
+    def voice_for(self, style: str, provider_id: str = '') -> TtsVoiceProfile:
+        """provider 专属字段优先，缺失字段回退当前策略，再回退稳健策略。"""
+        base = self.voices.get(style) or self.voices['稳健']
+        provider_key = provider_id.strip().lower().replace('-', '_')
+        override = self.provider_voices.get(provider_key)
+        if override is None:
+            return base
+        return TtsVoiceProfile(
+            voice_id=base.voice_id if override.voice_id is None else override.voice_id,
+            speed=base.speed if override.speed is None else override.speed,
+            pitch=base.pitch if override.pitch is None else override.pitch,
+            volume=base.volume if override.volume is None else override.volume,
+            emotion=base.emotion,
+        )
 
 
 def _clamp_int(value: str | int, minimum: int, maximum: int, default: int) -> int:
@@ -59,6 +84,16 @@ def _int_at_least(value: str | int, minimum: int, default: int) -> int:
         return max(minimum, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def _optional_clamped_int(value: Optional[str], minimum: int,
+                          maximum: int) -> Optional[int]:
+    if value is None or not value.strip():
+        return None
+    try:
+        return max(minimum, min(maximum, int(value)))
+    except ValueError:
+        return None
 
 
 def _read_credential_file(path: Path) -> tuple[str, str]:
@@ -97,6 +132,32 @@ def _voice(style: str, defaults: tuple[int, int, int, int]) -> TtsVoiceProfile:
     )
 
 
+def _provider_voices() -> dict[str, TtsVoiceOverride]:
+    """扫描 BAIDU_TTS_<FIELD>_PROVIDER_<ID> 动态提供商配置。"""
+    prefixes = {
+        'BAIDU_TTS_VOICE_PROVIDER_': ('voice_id', 0, 99999),
+        'BAIDU_TTS_SPEED_PROVIDER_': ('speed', 0, 15),
+        'BAIDU_TTS_PITCH_PROVIDER_': ('pitch', 0, 15),
+        'BAIDU_TTS_VOLUME_PROVIDER_': ('volume', 0, 15),
+    }
+    entries: dict[str, dict[str, int]] = {}
+    for env_name, raw_value in os.environ.items():
+        for prefix, (field_name, minimum, maximum) in prefixes.items():
+            if not env_name.startswith(prefix):
+                continue
+            provider_id = env_name[len(prefix):].strip().lower()
+            if not provider_id or not provider_id.replace('_', '').isalnum():
+                break
+            value = _optional_clamped_int(raw_value, minimum, maximum)
+            if value is not None:
+                entries.setdefault(provider_id, {})[field_name] = value
+            break
+    return {
+        provider_id: TtsVoiceOverride(**values)
+        for provider_id, values in entries.items()
+    }
+
+
 def load_tts_config(credential_file: Optional[Path] = None) -> TtsConfig:
     file_path = credential_file or Path(os.environ.get(
         'BAIDU_TTS_CREDENTIAL_FILE', str(DEFAULT_CREDENTIAL_FILE)))
@@ -127,4 +188,5 @@ def load_tts_config(credential_file: Optional[Path] = None) -> TtsConfig:
         negative_ttl_s=_clamp_float(
             os.environ.get('TTS_NEGATIVE_TTL_S', '30'), 1.0, 300.0, 30.0),
         voices=voices,
+        provider_voices=_provider_voices(),
     )
