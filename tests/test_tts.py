@@ -12,6 +12,7 @@ from app.tts.baidu import BaiduTtsClient, TtsProviderError
 from app.tts.cache import TtsDiskCache
 from app.tts.config import TtsConfig, TtsVoiceProfile, load_tts_config
 from app.tts.service import TtsService, normalize_tts_text, tts_cache_key
+from app.local_tts.service import LocalTtsGatewayService
 
 
 def config(tmp_path: Path) -> TtsConfig:
@@ -111,6 +112,21 @@ def test_text_normalization_and_voice_are_part_of_cache_key(tmp_path):
     cold, _ = tts_cache_key(text, '高冷', cfg.voices['高冷'])
     assert steady == steady_again
     assert steady != cold
+
+
+@pytest.mark.asyncio
+async def test_local_tts_gateway_has_independent_cache_and_voice_allowlist(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv('LOCAL_TTS_CACHE_DIR', str(tmp_path / 'local-cache'))
+    monkeypatch.setenv('LOCAL_TTS_ALLOWED_VOICES', 'custom_voice')
+    gateway = LocalTtsGatewayService()
+    try:
+        assert gateway.cache.root == (tmp_path / 'local-cache').resolve()
+        assert {'default', 'custom_voice'} <= gateway.allowed_voice_keys
+        assert gateway.normalize_voice_key('CUSTOM-VOICE') == 'custom_voice'
+        assert gateway.normalize_voice_key('../bad') is None
+    finally:
+        await gateway.close()
 
 
 @pytest.mark.asyncio

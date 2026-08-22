@@ -23,9 +23,11 @@ from app.api.matches import router as matches_router
 from app.api.moderation import router as moderation_router
 from app.api.account import router as account_router
 from app.api.tts import router as tts_router
+from app.api.local_tts import router as local_tts_router
 from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
 from app.tts.service import get_tts_service
+from app.local_tts.service import get_local_tts_service
 
 DOCS_SHOW = os.getenv('DOCS_SHOW', 'False') == 'True'
 logger.info(f"api文档开启: {DOCS_SHOW}")
@@ -36,9 +38,12 @@ async def lifespan(app: FastAPI):
     # uvicorn 启动时用默认 dictConfig 覆盖了日志配置，这里重新接管 uvicorn 日志到 loguru
     _patch_uvicorn_loggers()
     tts = get_tts_service()
+    local_tts = get_local_tts_service()
     logger.info(f"TTS 服务 available={tts.available} provider=baidu")
+    logger.info(f"单机 TTS 网关 available={local_tts.available} provider=baidu")
     yield
     await tts.close()
+    await local_tts.close()
 
 
 app = FastAPI(title="莲花广麻 Backend", version="0.2.0",
@@ -56,6 +61,8 @@ app.add_middleware(
         # e2e 冒烟用独立前端端口（避免与正在运行的 dev :4173 冲突）
         'http://localhost:4174',
         'http://127.0.0.1:4174',
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
     ],
     allow_origin_regex=r'^https://([\w-]+\.)*lumigrav\.space$',
     allow_credentials=True,
@@ -103,6 +110,7 @@ app.include_router(matches_router)
 app.include_router(moderation_router)
 app.include_router(account_router)
 app.include_router(tts_router)
+app.include_router(local_tts_router)
 app.include_router(ws_router)
 
 

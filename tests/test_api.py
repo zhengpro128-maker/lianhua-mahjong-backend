@@ -55,6 +55,60 @@ async def test_tts_cached_audio_endpoint(server, tmp_path, monkeypatch):
         assert (await http.get('/api/tts/audio/not-a-key.mp3')).status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_local_tts_gateway_validates_profile_and_returns_cached_audio_url(
+        server, tmp_path, monkeypatch):
+    from app.api.local_tts import reset_local_tts_rate_limit_for_tests
+    from app.tts.cache import TtsDiskCache
+
+    cache = TtsDiskCache(tmp_path / 'local-tts-cache', 16 * 1024 * 1024, 30)
+    key = 'c' * 64
+    await cache.put(
+        key, b'ID3-local-audio', provider='baidu', voice_id='4196',
+        style='高冷', text_hash='d' * 64)
+
+    class FakeLocalTts:
+        available = True
+        rate_limit_per_minute = 60
+
+        def __init__(self):
+            self.cache = cache
+            self.calls = []
+
+        def normalize_voice_key(self, value):
+            return value if value in {'deepseek', 'relay_gpt'} else None
+
+        async def ensure_audio(self, text, voice_key, style):
+            self.calls.append((text, voice_key, style))
+            return SimpleNamespace(cache_key=key, cached=True)
+
+    service = FakeLocalTts()
+    reset_local_tts_rate_limit_for_tests()
+    monkeypatch.setattr('app.api.local_tts.get_local_tts_service', lambda: service)
+    async with httpx.AsyncClient(base_url=server['http'], trust_env=False) as http:
+        response = await http.post('/api/local-tts/synthesize', json={
+            'text': '这一手稳住。', 'voiceKey': 'deepseek', 'style': '高冷',
+        })
+        assert response.status_code == 200
+        assert response.json() == {
+            'cacheKey': key,
+            'audioUrl': f'/api/local-tts/audio/{key}.mp3',
+            'cached': True,
+        }
+        assert service.calls == [('这一手稳住。', 'deepseek', '高冷')]
+        audio = await http.get(f'/api/local-tts/audio/{key}.mp3')
+        assert audio.status_code == 200
+        assert audio.content == b'ID3-local-audio'
+        denied = await http.post('/api/local-tts/synthesize', json={
+            'text': '测试。', 'voiceKey': 'unknown', 'style': '稳健',
+        })
+        assert denied.status_code == 400
+        too_long = await http.post('/api/local-tts/synthesize', json={
+            'text': '太' * 31, 'voiceKey': 'deepseek', 'style': '稳健',
+        })
+        assert too_long.status_code == 422
+
+
 async def wait_until(cond, timeout=30.0, interval=0.05) -> None:
     """轮询等待条件成立（跨线程读 room 状态时用）。"""
     deadline = time.time() + timeout

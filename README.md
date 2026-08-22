@@ -218,6 +218,10 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `TTS_CACHE_MAX_MB` | `256` | LRU 容量上限 |
 | `TTS_CACHE_TTL_DAYS` | `30` | 未访问缓存有效期 |
 | `BAIDU_TTS_*_PROVIDER_<ID>` | 空 | 按 LLM providerId 覆盖 VOICE/SPEED/PITCH/VOLUME |
+| `LOCAL_TTS_ENABLED` | `auto` | 独立单机 TTS 网关；auto 跟随百度凭据可用性 |
+| `LOCAL_TTS_CACHE_DIR` | `data/local-tts-cache` | 单机网关独立 MP3/SQLite 缓存 |
+| `LOCAL_TTS_RATE_LIMIT_PER_MINUTE` | `60` | 单 IP 每分钟合成请求上限 |
+| `LOCAL_TTS_ALLOWED_VOICES` | 空 | 额外允许的 voiceKey，逗号分隔 |
 
 ### LLM 大模型（可选，§9 设计文档）
 
@@ -301,6 +305,11 @@ LLM_PROVIDER_KIMI_MODEL=kimi-k2
   不显示 Key/Secret/Token；省略参数时检查默认 provider 的稳健策略。
 - 使用前须在百度语音应用中开通短文本在线合成并领取相应免费资源；错误
   `502: No permission to access data` 表示当前应用没有该接口权限。
+- 单机网关与联机房间链路独立：`POST /api/local-tts/synthesize` 只接受最多 30 字、
+  四种合法策略和服务端白名单 `voiceKey`，返回不可变哈希音频 URL；不接受客户端
+  直接指定百度 `per/spd/pit/vol`。缓存位于 `data/local-tts-cache`，限流按来源 IP
+  执行。浏览器和 vibehub 只拿音频地址，百度 Key/Secret 始终留在服务端。
+- 网关连通性检查：`python -m app.local_tts.check --voice-key deepseek --style 高冷`。
 
 ### 日志说明
 
