@@ -59,11 +59,11 @@ def _normalize_endpoint(base_url: str) -> Optional[str]:
         return None
     if re.match(r'^[a-z][a-z0-9+.-]*://[^/@]*@', value, re.I):
         return None
-    m = re.match(r'^(https)://([^/]+)(/.*)?$', value)
+    m = re.match(r'^(https?)://([^/]+)(/.*)?$', value)
     if not m:
         return None
-    host = m.group(2)
-    if host not in ('localhost', '127.0.0.1') and m.group(1) != 'https:':
+    host = m.group(2).rsplit(':', 1)[0]  # 去掉端口再比对 localhost 白名单
+    if host not in ('localhost', '127.0.0.1') and m.group(1) != 'https':
         return None
     trimmed = value.rstrip('/')
     return trimmed if trimmed.endswith('/chat/completions') else trimmed + '/chat/completions'

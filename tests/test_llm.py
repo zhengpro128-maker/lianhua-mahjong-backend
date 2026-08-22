@@ -87,6 +87,37 @@ class TestParsing:
             parse_llm_output('{"choice":"A9"}', ['A1', 'A2'])
 
 
+# ── 端点规范化（§7.2 安全约束）──────────────────────────────
+
+class TestEndpoint:
+    def test_remote_https_accepted(self):
+        # 回归：远端 https 曾被误判为「协议不支持」（group(1) 不带冒号却比 'https:'）
+        from app.llm.client import _normalize_endpoint
+        assert _normalize_endpoint('https://api.deepseek.com/v1') == \
+            'https://api.deepseek.com/v1/chat/completions'
+        assert _normalize_endpoint('https://api.anthropic.com/v1/') == \
+            'https://api.anthropic.com/v1/chat/completions'
+        assert _normalize_endpoint('https://x.com/chat/completions') == \
+            'https://x.com/chat/completions'
+
+    def test_remote_http_rejected(self):
+        from app.llm.client import _normalize_endpoint
+        assert _normalize_endpoint('http://api.deepseek.com/v1') is None
+
+    def test_localhost_http_allowed(self):
+        from app.llm.client import _normalize_endpoint
+        assert _normalize_endpoint('http://127.0.0.1:8000/v1') == \
+            'http://127.0.0.1:8000/v1/chat/completions'
+        assert _normalize_endpoint('http://localhost:4321') == \
+            'http://localhost:4321/chat/completions'
+
+    def test_userinfo_and_empty_rejected(self):
+        from app.llm.client import _normalize_endpoint
+        assert _normalize_endpoint('https://user:pass@host.com/v1') is None
+        assert _normalize_endpoint('') is None
+        assert _normalize_endpoint('ftp://host.com') is None
+
+
 # ── 候选枚举 ─────────────────────────────────────────────────
 
 class TestCandidates:
