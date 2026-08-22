@@ -8,7 +8,7 @@ LLMPlayer(AIPlayer)：覆盖 request_turn / request_claim；
 """
 
 import asyncio
-from typing import Optional
+from typing import Callable, Optional
 
 from app.game.player import AIPlayer, ClaimContext, TurnContext
 from app.llm.candidates import build_request
@@ -25,13 +25,20 @@ class LLMPlayer(AIPlayer):
     def __init__(self, delays: Optional[dict] = None, random=None,
                  rule_set: Optional[GameRuleSet] = None,
                  config: Optional[LlmServerConfig] = None,
-                 stats: Optional[dict] = None):
+                 stats: Optional[dict] = None,
+                 seat: int = -1,
+                 provider_id: str = '',
+                 on_message: Optional[Callable[[int, str], None]] = None):
         super().__init__(delays=delays, random=random, rule_set=rule_set)
         self.config = config or load_llm_config()
         self.stats = stats if stats is not None else {
             'requests': 0, 'successes': 0, 'fallbacks': 0, 'messages': 0, 'invalid': 0,
         }
         self.requests = 0  # 本座位自建以来请求数（房间预算近似：每座位独立计数）
+        self.seat = seat
+        self.provider_id = provider_id
+        self.on_message = on_message
+        self.message_history: list[str] = []
 
     async def request_turn(self, ctx: TurnContext) -> dict:
         ms = self.delays['after_kong'] if ctx.afterKong else self.delays['turn']
@@ -95,6 +102,13 @@ class LLMPlayer(AIPlayer):
         self.stats['successes'] += 1
         if message:
             self.stats['messages'] += 1
+            self.message_history.append(message)
+            if self.on_message is not None:
+                try:
+                    self.on_message(self.seat, message)
+                except Exception:
+                    # 吐槽属于表现副作用；广播失败不能影响动作执行和对局推进。
+                    pass
         return self._map_action(candidate['action'])
 
     def _map_action(self, action: dict) -> dict:

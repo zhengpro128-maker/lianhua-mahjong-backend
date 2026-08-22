@@ -258,6 +258,9 @@ class RoomSession:
         self._llm_seat_styles: dict[int, str] = {}
         # 开局时传入的服务端默认提供商 id（未指定座位时使用）
         self._llm_default_provider: Optional[str] = None
+        # 当前场次 LLM 吐槽：即时广播给前端，整场结束后逐条写日志。
+        self._llm_messages: list[dict] = []
+        self._llm_message_seq = 0
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
         # 不再中断整场驱动，数据留在队列等下次落库机会重试。
         self._pending_writes: list = []
@@ -580,6 +583,8 @@ class RoomSession:
             item['seat']: item['style'] for item in (llm_seats or []) if item.get('style')
         }
         self._llm_default_provider = default_provider
+        self._llm_messages = []
+        self._llm_message_seq = 0
         self.manager = GameManager(
             mode=self.mode,
             controllers=self._controllers(),
@@ -641,7 +646,10 @@ class RoomSession:
                 if provider is not None:
                     style = self._seat_style(seat_index, provider)
                     controllers.append(LLMPlayer(delays=ai_delays, rule_set=self.rules,
-                                                 config=provider.to_config(style_override=style)))
+                                                 config=provider.to_config(style_override=style),
+                                                 seat=seat_index,
+                                                 provider_id=provider.provider_id,
+                                                 on_message=self._on_llm_message))
                 else:
                     controllers.append(AIPlayer(delays=ai_delays, rule_set=self.rules))
         return controllers
@@ -672,6 +680,61 @@ class RoomSession:
                     # AI 空座：固定种子头像，不随用户变化
                     seeds.append(PLAYER_SEED[seat])
         return seeds
+
+    def _on_llm_message(self, seat: int, text: str) -> None:
+        """LLM 吐槽：记录本场历史并实时广播；失败不影响出牌动作。"""
+        if not text or not 0 <= seat < self.player_count:
+            return
+        self._llm_message_seq += 1
+        entry = {'id': self._llm_message_seq, 'seat': seat, 'text': text}
+        self._llm_messages.append(entry)
+        self.conn.broadcast({'kind': 'llm_message', **entry})
+
+    def _log_llm_match_summary(self) -> None:
+        """整场结束写 LLM 统计，并逐条记录各 AI 的吐槽文本。"""
+        if self.manager is None:
+            return
+        reports = []
+        for seat, controller in enumerate(self.manager.controllers):
+            if not isinstance(controller, LLMPlayer):
+                continue
+            stats = dict(controller.stats)
+            reports.append({
+                'seat': seat,
+                'providerId': controller.provider_id,
+                'model': controller.config.model,
+                'style': controller.config.style,
+                **stats,
+            })
+            logger.bind(
+                room_id=self.room_id,
+                seat=seat,
+                provider_id=controller.provider_id,
+                model=controller.config.model,
+                style=controller.config.style,
+                llm_stats=stats,
+            ).info(
+                'LLM 场次统计 '
+                f'请求={stats.get("requests", 0)} 成功={stats.get("successes", 0)} '
+                f'回退={stats.get("fallbacks", 0)} 吐槽={stats.get("messages", 0)} '
+                f'非法={stats.get("invalid", 0)}')
+        if not reports:
+            return
+        logger.bind(room_id=self.room_id, llm_seats=reports).info(
+            f'LLM 场次汇总 AI座位={len(reports)} 吐槽总数={len(self._llm_messages)}')
+        for entry in self._llm_messages:
+            controller = self.manager.controllers[entry['seat']]
+            identity = {
+                'provider_id': controller.provider_id,
+                'model': controller.config.model,
+                'style': controller.config.style,
+            } if isinstance(controller, LLMPlayer) else {}
+            logger.bind(
+                room_id=self.room_id,
+                seat=entry['seat'],
+                llm_message_id=entry['id'],
+                **identity,
+            ).info(f'LLM 吐槽：{entry["text"]}')
 
     # ── 落库（storage 注入时生效；纯内存态为空操作）─────────
     # 韧性约定：`_persist_*` 全部"入队 + 尝试补写"，落库失败绝不向上抛——
@@ -798,6 +861,7 @@ class RoomSession:
                 {'seat': p.seat, 'name': p.name, 'score': p.score}
                 for p in self.manager.players
             ]
+            self._log_llm_match_summary()
             self.conn.broadcast({
                 'kind': 'match_finished',
                 'roomId': self.room_id,

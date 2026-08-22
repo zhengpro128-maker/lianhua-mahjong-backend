@@ -279,7 +279,8 @@ class FakeClient:
         return item
 
 
-def make_llm_player(monkeypatch, responses, **cfg_overrides):
+def make_llm_player(monkeypatch, responses, *, seat=-1, provider_id='', on_message=None,
+                    **cfg_overrides):
     cfg = dict(
         enabled=True, base_url='https://api.deepseek.com/v1', api_key='sk-x',
         model='deepseek-v4-flash', style='稳健', timeout_s=8.0,
@@ -297,7 +298,13 @@ def make_llm_player(monkeypatch, responses, **cfg_overrides):
             raise item
         return parse_llm_output(item, candidate_ids)
     monkeypatch.setattr('app.game.llm_player.request_llm_decision', fake_decision)
-    player = LLMPlayer(delays={'turn': 0, 'after_kong': 0, 'claim': 0}, config=config)
+    player = LLMPlayer(
+        delays={'turn': 0, 'after_kong': 0, 'claim': 0},
+        config=config,
+        seat=seat,
+        provider_id=provider_id,
+        on_message=on_message,
+    )
     return player, fake
 
 
@@ -312,8 +319,11 @@ class TestLLMPlayer:
         assert fake.calls == 0
 
     def test_turn_legal_choice_executes(self, monkeypatch):
+        messages = []
         player, fake = make_llm_player(
-            monkeypatch, ['{"choice":"A1","message":"稳一手。"}'])
+            monkeypatch, ['{"choice":"A1","message":"稳一手。"}'],
+            seat=2, provider_id='deepseek',
+            on_message=lambda seat, text: messages.append((seat, text)))
         ctx = turn_ctx(hand=['m3', 'm3', 'm5', 'm6', 'p1', 'p2', 'p3', 's1', 's2', 's3',
                              'east', 'west', 'white'])
         action = run(player.request_turn(ctx))
@@ -321,6 +331,8 @@ class TestLLMPlayer:
         assert action['handIndex'] >= 0
         assert player.stats['successes'] == 1
         assert player.stats['messages'] == 1
+        assert player.message_history == ['稳一手。']
+        assert messages == [(2, '稳一手。')]
 
     def test_turn_illegal_choice_falls_back(self, monkeypatch):
         # 返回白名单外的 choice → 解析失败 → 回退启发式（kind=discard 或杠）
@@ -485,6 +497,45 @@ class TestProviderRegistry:
 
 
 class TestPerSeatAssembly:
+    def test_room_broadcasts_messages_and_logs_match_summary(self, monkeypatch):
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+
+        emitted = []
+        logs = []
+        room = RoomSession('LOGS', mode='east', capacity=4, llm_enabled=True)
+        monkeypatch.setattr(room.conn, 'broadcast', lambda message: emitted.append(message))
+        controller = LLMPlayer(
+            config=deepseek_provider(style='话痨').to_config(),
+            seat=1,
+            provider_id='deepseek',
+        )
+        controller.stats.update({
+            'requests': 3, 'successes': 2, 'fallbacks': 1,
+            'messages': 2, 'invalid': 0,
+        })
+        room.manager = SimpleNamespace(controllers=[AIPlayer(), controller, AIPlayer(), AIPlayer()])
+        room._on_llm_message(1, '稳住，先打这张。')
+        assert emitted == [{
+            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '稳住，先打这张。',
+        }]
+
+        class BoundLogger:
+            def __init__(self, context):
+                self.context = context
+
+            def info(self, message):
+                logs.append((self.context, message))
+
+        monkeypatch.setattr(
+            'app.game.room.logger',
+            SimpleNamespace(bind=lambda **context: BoundLogger(context)),
+        )
+        room._log_llm_match_summary()
+        assert any('LLM 场次统计 请求=3 成功=2 回退=1 吐槽=2' in message
+                   for _, message in logs)
+        assert any(message == 'LLM 吐槽：稳住，先打这张。' for _, message in logs)
+
     def test_seat_provider_ids_resolve_per_seat(self, monkeypatch):
         from app.game.player import AIPlayer
         from app.game.room import RoomSession
