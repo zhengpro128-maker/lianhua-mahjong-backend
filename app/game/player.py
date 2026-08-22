@@ -39,6 +39,16 @@ class TurnContext(BaseModel):
     upperLastDiscard: Optional[TileType] = None
     earlyRound: bool = False
     wallCount: int = 0
+    # ── v1.1 LLM 局况/版本（可选；现有控制器忽略）──
+    scores: list[int] = Field(default_factory=list)
+    peers: list = Field(default_factory=list)
+    seatWind: str = ''
+    roundWind: str = ''
+    dealerIndex: int = -1
+    roundIndex: int = 0
+    dihu: bool = False
+    requestId: str = ''
+    stateVersion: str = ''
 
 
 class ClaimContext(BaseModel):
@@ -58,6 +68,16 @@ class ClaimContext(BaseModel):
     upperLastDiscard: Optional[TileType] = None
     earlyRound: bool = False
     wallCount: int = 0
+    # ── v1.1 LLM 局况/版本（可选）──
+    scores: list[int] = Field(default_factory=list)
+    peers: list = Field(default_factory=list)
+    seatWind: str = ''
+    roundWind: str = ''
+    dealerIndex: int = -1
+    roundIndex: int = 0
+    dihu: bool = False
+    requestId: str = ''
+    stateVersion: str = ''
     model_config = {'populate_by_name': True}
 
 

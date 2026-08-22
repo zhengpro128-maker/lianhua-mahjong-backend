@@ -110,13 +110,13 @@ async def test_room_meta_count(server, fresh_rooms, temp_storage):
     async with httpx.AsyncClient(base_url=server['http']) as http:
         resp = await http.get('/api/rooms/meta')
         assert resp.status_code == 200
-        assert resp.json() == {'active': 0, 'max': 4}
+        assert resp.json() == {'active': 0, 'max': 4, 'llmAvailable': False}
 
         for _ in range(2):
             resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})
             assert resp.status_code == 200, resp.text
         resp = await http.get('/api/rooms/meta')
-        assert resp.json() == {'active': 2, 'max': 4}
+        assert resp.json() == {'active': 2, 'max': 4, 'llmAvailable': False}
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,9 @@ from loguru import logger
 
 from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
+from app.game.llm_player import LLMPlayer
 from app.game.remote_player import RemotePlayer
+from app.llm.config import llm_server_available
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import get_default_rule_set
 from app.rules.registry import get_rule_set
@@ -217,10 +219,12 @@ class RoomSession:
     def __init__(self, room_id: str, mode: str = 'east', capacity: int = 4,
                  turn_timeout: float = 12.0, random=None, storage=None,
                  pace: Optional[dict] = None, rule_set: Optional[GameRuleSet] = None,
-                 ruleset_id: str = 'lotus-classic'):
+                 ruleset_id: str = 'lotus-classic', llm_enabled: bool = False):
         self.room_id = room_id
         self.mode = mode
         self.ruleset_id = ruleset_id
+        # 用户请求的 LLM 开关；实际生效值 effective_llm_enabled 还需服务端能力可用（§9.3）
+        self.llm_enabled = llm_enabled
         # capacity = 真人座位上限（2/3/4）；麻将桌固定 4 人，空位由 AI 补足
         self.capacity = capacity
         self.player_count = 4
@@ -573,8 +577,18 @@ class RoomSession:
         """真人联机房间（注入 PLAY_PACE）的 AI 用人类思考速度；测试路径保持即用即答。"""
         return AI_DELAYS if self.pace else None
 
+    @property
+    def llm_available(self) -> bool:
+        """服务端是否配置了完整 LLM（§9.3 能力探测）。"""
+        return llm_server_available()
+
+    @property
+    def effective_llm_enabled(self) -> bool:
+        """本局实际是否使用 LLM：用户请求 && 服务端能力可用。"""
+        return self.llm_enabled and self.llm_available
+
     def _controllers(self) -> list:
-        """装配控制器：空座位 AIPlayer；真人座位 RemotePlayer。
+        """装配控制器：空座位 AI 补位（LLM 开关生效时用 LLMPlayer）；真人座位 RemotePlayer。
 
         AI 思考速度按「开局瞬间」的房间节奏注入（_ai_delays）：真人房间用
         AI_DELAYS 人类节奏，测试路径（pace 为空）保持即用即答。
@@ -586,7 +600,10 @@ class RoomSession:
                 seat.controller.set_ai_delays(ai_delays)
                 controllers.append(seat.controller)
             else:
-                controllers.append(AIPlayer(delays=ai_delays, rule_set=self.rules))
+                if self.effective_llm_enabled:
+                    controllers.append(LLMPlayer(delays=ai_delays, rule_set=self.rules))
+                else:
+                    controllers.append(AIPlayer(delays=ai_delays, rule_set=self.rules))
         return controllers
 
     def _seeds(self) -> list:

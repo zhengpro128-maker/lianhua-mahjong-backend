@@ -24,11 +24,12 @@ RobKongDecision = str
 _SUITED_RE = re.compile(r'^([mps])([1-9])$')
 
 
-def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None) -> dict:
+def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None, random=None) -> dict:
     """决策当前 AI 回合的动作。
 
     view: {hand, melds, exposedMelds, kongBloom}（见 make_turn_view）
     优先级：自摸胡 → 补杠 → 暗杠 → 弃牌。杠前评估是否破坏听牌。
+    random 注入以便引擎建议（LLM 兜底）确定性化；默认 None 维持既有行为。
     """
     rules = rule_set or get_default_rule_set()
     if rules.is_winning_hand(view['hand'], view['exposedMelds']):
@@ -58,7 +59,7 @@ def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None) -> dict:
         return {'kind': 'wind-kong'}
 
     return {'kind': 'discard', 'handIndex': choose_discard_index(
-        view['hand'], rule_set=rules, exposed_melds=view.get('exposedMelds', 0))}
+        view['hand'], random=random, rule_set=rules, exposed_melds=view.get('exposedMelds', 0))}
 
 
 def _can_be_tenpai(after_length: int, exposed_melds: int) -> bool:

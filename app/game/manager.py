@@ -214,6 +214,7 @@ class GameManager:
             settlements=self.settlements,
         )
         self._id_counter = 0
+        self._llm_seq = 0
 
         # 状态
         self.wall: list[TileType] = []
@@ -299,6 +300,60 @@ class GameManager:
         upper_index = (player_index - 1 + len(self.players)) % len(self.players)
         discards = self.players[upper_index].discards
         return discards[-1] if discards else None
+
+    # ── LLM 局况/版本（§6.2/§6.4）───────────────────────────────
+
+    _SEAT_WINDS = ('东', '南', '西', '北')
+    ROUND_LAPS = {'east': '东', 'hanchan': '东', 'hanchan2': '南'}
+
+    def _seat_wind(self, player_index: int) -> str:
+        winds = self._SEAT_WINDS
+        return winds[(player_index - self.dealer) % len(winds)]
+
+    def _round_wind(self) -> str:
+        if self.match_type == 'hanchan' and self.round > 4:
+            return '南'
+        return '东'
+
+    def _peers_snapshot(self) -> list[dict]:
+        """各座位公开弃牌与副露（按座位绝对索引；只读副本）。"""
+        return [
+            {
+                'discards': list(player.discards),
+                'melds': [{'type': meld.type, 'tile': meld.tile, 'tiles': list(meld.tiles)}
+                          for meld in player.melds],
+            }
+            for player in self.players
+        ]
+
+    def _next_request_id(self, kind: str, player_index: int) -> str:
+        self._llm_seq += 1
+        return f'{kind}-{player_index}-{self._llm_seq}'
+
+    def _state_version(self) -> str:
+        tile_count = sum(
+            len(player.hand) + len(player.discards)
+            + sum(len(meld.tiles) for meld in player.melds)
+            for player in self.players
+        )
+        return ':'.join(str(part) for part in (
+            self.round, self.phase, len(self.wall), self._head_drawn,
+            self.current_player, tile_count,
+        ))
+
+    def _llm_meta(self, player_index: int, kind: str, dihu: bool = False) -> dict:
+        """LLM 局况/可见/版本（与前端 llmContext 同构）。"""
+        return {
+            'scores': [player.score for player in self.players],
+            'peers': self._peers_snapshot(),
+            'seatWind': self._seat_wind(player_index),
+            'roundWind': self._round_wind(),
+            'dealerIndex': self.dealer,
+            'roundIndex': self.round,
+            'dihu': dihu,
+            'requestId': self._next_request_id(kind, player_index),
+            'stateVersion': self._state_version(),
+        }
 
     def _early_round_for(self, player_index: int) -> bool:
         """是否早局（弃牌 < 2 张，用于字牌惩罚调权）。"""
@@ -655,6 +710,7 @@ class GameManager:
                 and getattr(self.rules, 'wind_kong', lambda _hand: False)(player.hand)
                 and not skip_draw
             ),
+            **self._llm_meta(player_index, 'turn'),
         )
         action = await self.controllers[player_index].request_turn(ctx)
         # 守卫：游戏可能已在 await 期间结束或轮次已转移
@@ -801,6 +857,7 @@ class GameManager:
             upperLastDiscard=self._upper_last_discard_for(claimant['playerIndex']),
             earlyRound=self._early_round_for(claimant['playerIndex']),
             wallCount=len(self.wall),
+            **self._llm_meta(claimant['playerIndex'], 'claim', dihu=claimant.get('dihu', False)),
         )
         action = await self.controllers[claimant['playerIndex']].request_claim(ctx)
         if self.phase == 'settled':

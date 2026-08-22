@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from app.game.manager import PLAY_PACE
 from app.game.room import RoomError, RoomSession, room_registry
+from app.llm.config import llm_server_available
 from app.storage.db import storage
 
 router = APIRouter(prefix='/api/rooms', tags=['rooms'])
@@ -66,6 +67,9 @@ def _room_response(room: RoomSession) -> dict:
         'status': room.status,
         'creatorSeat': room.creator_seat,
         'timeLimitSeconds': room.lifetime,  # 房间限时（前端静态提示用）
+        'llmEnabled': room.llm_enabled,
+        'effectiveLlmEnabled': room.effective_llm_enabled,
+        'llmAvailable': room.llm_available,
         'seats': [
             None if state is None else {
                 'seat': state.seat,
@@ -85,6 +89,8 @@ class CreateRoomRequest(BaseModel):
     capacity: int = Field(default=4, ge=2, le=4)
     playerId: Optional[str] = Field(default=None, max_length=64)  # 客户端匿名身份（guestId）
     rulesetId: Literal['lotus-classic', 'lotus-legacy'] = 'lotus-classic'
+    # 空座 AI 补位是否使用大模型（服务端未配置时静默降级为 False）
+    llmEnabled: bool = False
 
 
 class JoinRequest(BaseModel):
@@ -120,7 +126,7 @@ def create_room(body: CreateRoomRequest) -> dict:
         # 测试直接构造 RoomSession 不经此路径，保持默认 0 加速
         room = room_registry.create(
         room_id, mode=body.mode, capacity=body.capacity, storage=storage,
-            pace=PLAY_PACE, ruleset_id=body.rulesetId)
+            pace=PLAY_PACE, ruleset_id=body.rulesetId, llm_enabled=body.llmEnabled)
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"创建房间失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})
@@ -139,7 +145,8 @@ def get_room_meta() -> dict:
     避免「meta」被当作房间码匹配。
     """
     room_registry.sweep_expired()
-    return {'active': room_registry.count(), 'max': MAX_ROOMS}
+    return {'active': room_registry.count(), 'max': MAX_ROOMS,
+            'llmAvailable': llm_server_available()}
 
 
 @router.get('/{room_id}')
