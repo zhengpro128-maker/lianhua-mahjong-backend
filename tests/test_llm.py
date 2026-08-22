@@ -14,6 +14,7 @@ from app.game.llm_player import LLMPlayer
 from app.game.player import ClaimContext, TurnContext
 from app.llm.candidates import build_request
 from app.llm.client import extract_json_object, parse_llm_output
+from app.llm.prompt import build_prompt
 from app.llm.validation import validate_action
 from app.rules.registry import get_rule_set
 from app.settlement import settlement_service
@@ -157,6 +158,34 @@ class TestCandidates:
         ids = [c['id'] for c in built['request']['candidates']]
         assert 'C1' in ids
 
+    def test_classic_white_joker_is_not_discard_candidate_while_natural_tiles_exist(self):
+        ctx = turn_ctx(hand=['white', 'm1', 'm2'])
+        built = build_request(ctx, get_rule_set(), 'r1', 'v1', 'turn')
+        discards = [c for c in built['request']['candidates']
+                    if c['action']['kind'] == 'discard']
+        assert [c['label'] for c in discards] == ['出1万', '出2万']
+        assert built['request']['state']['jokerTiles'] == ['白板']
+
+    def test_lotus_double_jokers_and_white_are_protected(self):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = ['m5', 'm6']
+        ctx = turn_ctx(hand=['m5', 'm6', 'white', 'm1'], jokers=['m5', 'm6'])
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        discards = [c for c in built['request']['candidates']
+                    if c['action']['kind'] == 'discard']
+        assert [c['label'] for c in discards] == ['出1万']
+
+    def test_all_wildcards_still_produce_discard_candidates_with_warning(self):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = ['m5', 'm6']
+        ctx = turn_ctx(hand=['m5', 'm6', 'white'], jokers=['m5', 'm6'])
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        discards = [c for c in built['request']['candidates']
+                    if c['action']['kind'] == 'discard']
+        assert [c['label'] for c in discards] == ['出5万', '出6万', '出白板']
+        assert all(any('癞子/精牌' in risk for risk in c['features']['risks'])
+                   for c in discards)
+
 
 # ── 合法性校验（§8.2）──────────────────────────────────────
 
@@ -177,6 +206,49 @@ class TestValidation:
         rules.round_state.joker_tiles = []
         assert validate_action(ctx, {'kind': 'chi', 'optionIndex': 0}, rules)
         assert not validate_action(ctx, {'kind': 'chi', 'optionIndex': 1}, rules)
+
+    def test_rejects_joker_discard_when_natural_tile_exists(self):
+        classic = get_rule_set()
+        classic_ctx = turn_ctx(hand=['white', 'm1'], jokers=['white'])
+        assert not validate_action(classic_ctx, {'kind': 'discard', 'handIndex': 0}, classic)
+        assert validate_action(classic_ctx, {'kind': 'discard', 'handIndex': 1}, classic)
+
+        lotus = get_rule_set('lotus-legacy')
+        lotus.round_state.joker_tiles = ['m5', 'm6']
+        lotus_ctx = turn_ctx(hand=['m5', 'white', 'm1'], jokers=['m5', 'm6'])
+        assert not validate_action(lotus_ctx, {'kind': 'discard', 'handIndex': 0}, lotus)
+        assert not validate_action(lotus_ctx, {'kind': 'discard', 'handIndex': 1}, lotus)
+        assert validate_action(lotus_ctx, {'kind': 'discard', 'handIndex': 2}, lotus)
+
+    def test_all_wildcards_can_discard_to_avoid_empty_action_set(self):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = ['m5', 'm6']
+        ctx = turn_ctx(hand=['m5', 'white'], jokers=['m5', 'm6'])
+        assert validate_action(ctx, {'kind': 'discard', 'handIndex': 0}, rules)
+
+
+class TestPromptRules:
+    def test_classic_prompt_marks_white_and_forbids_other_variant_patterns(self):
+        built = build_request(turn_ctx(hand=['white', 'm1', 'm2']), get_rule_set(),
+                              'r1', 'v1', 'turn')
+        system, user = build_prompt('稳健', built['request'])
+        assert '规则摘要未列出的特殊牌型一律视为不支持' in system
+        assert '不支持七对、十三幺、十三烂、七星十三烂' in user
+        assert '【癞子规则】白板是本玩法的万能牌' in user
+        assert '出白板' not in user
+
+    def test_lotus_prompt_uses_double_joker_and_limited_white_rule(self):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = ['m5', 'm6']
+        ctx = turn_ctx(hand=['m5', 'm6', 'white', 'm1'], jokers=['m5', 'm6'])
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        _, user = build_prompt('稳健', built['request'])
+        assert '翻出的牌面及其同序下一张均为精牌' in user
+        assert '精牌「5万、6万」可代任意牌' in user
+        assert '白板只能替代上述精牌面或白板本身' in user
+        assert '出5万' not in user
+        assert '出6万' not in user
+        assert '出白板' not in user
 
 
 # ── LLMPlayer（mock 供应商）──────────────────────────────────

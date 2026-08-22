@@ -45,7 +45,26 @@ def _safety_band(ctx, tile: str) -> str:
     return '高' if count >= 2 else '中' if count == 1 else '低'
 
 
-def _heuristic_score(hand: list[str], tile: str) -> int:
+def _joker_tiles(ctx, rules: GameRuleSet) -> list[str]:
+    """当前规则的万能牌面；广麻固定白板，莲花读取本局双精牌。"""
+    if rules.code == 'lotus-legacy':
+        configured = list(_g(ctx, 'jokers') or [])
+        if configured:
+            return configured
+        round_state = getattr(rules, 'round_state', None)
+        return list(getattr(round_state, 'jokers', []) or [])
+    return ['white'] if rules.code == 'lianhua_guangma' else []
+
+
+def _protected_discard_tiles(ctx, rules: GameRuleSet) -> set[str]:
+    """LLM 默认必须保留的牌：广麻白板；莲花双精牌 + 白板受限替代牌。"""
+    protected = set(_joker_tiles(ctx, rules))
+    if rules.code == 'lotus-legacy':
+        protected.add('white')
+    return protected
+
+
+def _heuristic_score(hand: list[str], tile: str, protected: set[str]) -> int:
     same = sum(1 for t in hand if t == tile) - 1
     match = _SUITED_RE.match(tile)
     neighbors = 0
@@ -57,7 +76,9 @@ def _heuristic_score(hand: list[str], tile: str) -> int:
         if f'{suit}{rank + 1}' in hand:
             neighbors += 1
     honor = 0 if match else 6
-    return same * 4 + neighbors * 2 + honor
+    # 数值越低越适合打出；癞子/精牌给高额保留惩罚，作为候选兜底保护。
+    wildcard_penalty = 100 if tile in protected else 0
+    return same * 4 + neighbors * 2 + honor + wildcard_penalty
 
 
 def _waits(ctx, hand: list[str], rules: GameRuleSet) -> list[str]:
@@ -106,6 +127,7 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
     }
     kind = action['kind']
     if kind == 'discard':
+        discarded = ctx.hand[action['handIndex']]
         after = ctx.hand[:action['handIndex']] + ctx.hand[action['handIndex'] + 1:]
         ready, waits, effective = _quality(ctx, after, rules)
         feat['ready'] = ready
@@ -113,7 +135,9 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
                          for t in waits] if ready else 'n/a'
         feat['effectiveRemaining'] = effective if ready else 'n/a'
         feat['specialPattern'] = 'none'
-        feat['safety'] = _safety_band(ctx, ctx.hand[action['handIndex']])
+        feat['safety'] = _safety_band(ctx, discarded) if rules.code == 'lotus-legacy' else 'n/a'
+        if discarded in _protected_discard_tiles(ctx, rules):
+            feat['risks'].append('癞子/精牌，通常必须保留；当前无普通牌可打')
         return feat
     if kind in ('peng', 'chi'):
         after = _remove_claimed(ctx, action)
@@ -236,9 +260,15 @@ def _turn_candidates(ctx, rules: GameRuleSet) -> list[dict]:
                 'features': _features_of(ctx, canonical_action('wind-kong'), '中', rules),
                 'legalityKey': 'wind-kong',
             })
+    protected = _protected_discard_tiles(ctx, rules)
+    has_natural_discard = any(tile not in protected for tile in ctx.hand)
     seen: set[str] = set()
     discard_entries = []
     for hand_index, tile in enumerate(ctx.hand):
+        # 策略硬约束：只要还有普通牌，就不把癞子/精牌交给 LLM 选择。
+        # 全手只剩受保护牌时才放开，避免生成空候选导致回合卡死。
+        if has_natural_discard and tile in protected:
+            continue
         if tile in seen:
             continue
         seen.add(tile)
@@ -254,7 +284,10 @@ def _turn_candidates(ctx, rules: GameRuleSet) -> list[dict]:
             },
             'legalityKey': f'discard:{tile}',
         })
-        discard_entries.append({'index': entry_index, 'heuristic': _heuristic_score(ctx.hand, tile)})
+        discard_entries.append({
+            'index': entry_index,
+            'heuristic': _heuristic_score(ctx.hand, tile, protected),
+        })
     bands = _banded_efficiency(discard_entries)
     for candidate in candidates:
         if candidate['action']['kind'] != 'discard':
@@ -374,7 +407,7 @@ def _snapshot(ctx, request_id: str, state_version: str, rules: GameRuleSet,
                        'tiles': [tile_name(t) for t in _muld_tiles(m)]} for m in melds],
         }
 
-    jokers = list(_g(ctx, 'jokers') or [])
+    jokers = _joker_tiles(ctx, rules)
     wall_count = int(_g(ctx, 'wallCount') or 0)
     own_melds = list(_g(ctx, 'melds') or [])
     return {

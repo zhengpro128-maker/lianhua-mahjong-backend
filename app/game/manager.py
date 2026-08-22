@@ -697,7 +697,7 @@ class GameManager:
             skipDraw=skip_draw,
             afterKong=from_tail,
             jokers=list(getattr(self.rules, 'round_state', None).jokers)
-            if self.rules.code == 'lotus-legacy' else [],
+            if self.rules.code == 'lotus-legacy' else ['white'],
             visibleTiles=self._visible_tiles_for(player_index),
             publicTiles=self._public_tiles_for(),
             upperLastDiscard=self._upper_last_discard_for(player_index),
@@ -851,7 +851,7 @@ class GameManager:
             chiOptions=claimant.get('chiOptions', []),
             exposedMelds=structural_meld_count(player),
             jokers=list(getattr(self.rules, 'round_state', None).jokers)
-            if self.rules.code == 'lotus-legacy' else [],
+            if self.rules.code == 'lotus-legacy' else ['white'],
             visibleTiles=self._visible_tiles_for(claimant['playerIndex']),
             publicTiles=self._public_tiles_for(),
             upperLastDiscard=self._upper_last_discard_for(claimant['playerIndex']),

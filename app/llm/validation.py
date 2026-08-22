@@ -5,6 +5,15 @@ from typing import Optional
 from app.rules.base import GameRuleSet
 
 
+def _protected_discard_tiles(ctx, rules: GameRuleSet) -> set[str]:
+    if rules.code == 'lotus-legacy':
+        jokers = list(getattr(ctx, 'jokers', None) or [])
+        if not jokers:
+            jokers = list(getattr(getattr(rules, 'round_state', None), 'jokers', []) or [])
+        return {*jokers, 'white'}
+    return {tile for tile in ctx.hand if rules.is_joker_tile(tile)}
+
+
 def validate_action(ctx, action: dict, rules: GameRuleSet) -> bool:
     """逐类型校验 LLM 返回的动作；win 只允许引擎短路产生（这里一律拒绝）。"""
     kind = action.get('kind')
@@ -12,7 +21,11 @@ def validate_action(ctx, action: dict, rules: GameRuleSet) -> bool:
 
     if kind == 'discard':
         index = action.get('handIndex')
-        return isinstance(index, int) and 0 <= index < len(hand)
+        if not isinstance(index, int) or not 0 <= index < len(hand):
+            return False
+        protected = _protected_discard_tiles(ctx, rules)
+        # LLM 策略保护：有普通牌可打时，不允许弃掉癞子/精牌；全手均为保护牌时放开。
+        return not (hand[index] in protected and any(tile not in protected for tile in hand))
     if kind == 'added-kong':
         index = action.get('meldIndex')
         if not isinstance(index, int) or index < 0 or index >= len(ctx.melds):
