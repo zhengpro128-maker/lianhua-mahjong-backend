@@ -201,41 +201,59 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `LOG_RETENTION` | `30 days` | 日志文件保留时长 |
 | `LOG_TO_FILE` | `1` | 是否写滚动文件；`0` 仅控制台输出（测试/CI 用） |
 | `LLM_ENABLED` | `false` | 启用服务端 LLM 空座补位（未启用时 LLM 开关一律不生效） |
-| `LLM_API_BASE` | 空 | OpenAI 兼容 API 根地址，如 `https://api.deepseek.com/v1` |
-| `LLM_API_KEY` | 空 | API 密钥（与服务端无关的账号密钥） |
+| `LLM_API_BASE` | 空 | OpenAI 兼容 API 根地址（**单提供商兼容路径**，见下） |
+| `LLM_API_KEY` | 空 | API 密钥（服务端持有，不下发） |
 | `LLM_MODEL` | 空 | 模型名，如 `deepseek-chat` |
 | `LLM_TIMEOUT_S` | `8` | 单次决策总预算（秒，含并发排队 + 一次语义重试） |
 | `LLM_POOL_TIMEOUT_S` | `1` | 并发信号量排队等待（秒） |
-| `LLM_STYLE` | `稳健` | 出牌风格：激进 / 稳健 / 话痨 / 高冷 |
+| `LLM_STYLE` | `稳健` | 出牌风格：激进 / 稳健 / 话痨 / 高冷（单提供商路径） |
 | `LLM_CONCURRENCY` | `4` | 决策请求并发上限 |
 | `LLM_MAX_REQUESTS_PER_ROOM` | `0` | 每房间请求预算（0 = 不限；超出后该座位回退启发式） |
 
 ### LLM 大模型（可选，§9 设计文档）
 
-服务端给「空座位 AI 补位」接大模型。配置齐全（`LLM_ENABLED=true` 且
-Base / Key / Model 非空）后，`GET /api/rooms/meta` 的 `llmAvailable` 变为
-`true`；建房时带 `"llmEnabled": true`，空座即装配 LLM 决策（四座均可）：
+服务端给「空座位 AI 补位」接大模型，支持**多提供商注册**（每座位可用不同
+模型/风格，头像与昵称按供应商展示）：
+
+**方式一：多提供商（推荐）**——`backend/.env` 注册若干提供商（Key 全在服务端）：
 
 ```bash
-# backend/.env（gitignored）示例
-LLM_ENABLED=true
-LLM_API_BASE=https://api.deepseek.com/v1
-LLM_API_KEY=sk-xxxx
-LLM_MODEL=deepseek-chat
-LLM_STYLE=稳健
+LLM_PROVIDER_DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+LLM_PROVIDER_DEEPSEEK_API_KEY=sk-xxx
+LLM_PROVIDER_DEEPSEEK_MODEL=deepseek-chat
+LLM_PROVIDER_DEEPSEEK_STYLE=稳健
+LLM_PROVIDER_DEEPSEEK_NICKNAME=大肥鱼
+LLM_PROVIDER_KIMI_BASE_URL=https://api.moonshot.cn/v1
+LLM_PROVIDER_KIMI_API_KEY=sk-yyy
+LLM_PROVIDER_KIMI_MODEL=kimi-k2
 ```
+
+- 提供商 id = 变量名中段（小写）：`deepseek`、`kimi`…；可加 `_STYLE`（四风格）、
+  `_NICKNAME`（缺省按 base URL 推导：DeepSeek=大肥鱼等）、`_TIMEOUT_MS`（毫秒）、
+  `_NAME`（展示名，缺省=id）。
+- 客户端建房时在**房间面板为每个空位选择提供商**（`start` 请求只带
+  `llmSeats: [{seat, providerId}]`，**key 不经过客户端**）；`GET /api/rooms/meta`
+  返回 `llmProviders` 列表（不含 key）。
+- 对局显示：`昵称（策略）` + `img/llm/<供应商英文名>/llm-avatar-<策略>.png`
+  （供应商文件夹：deepseek/kimi/qwen/doubao/minimax/gpt/glm/claude，未知=custom）。
+
+**方式二：单提供商（兼容）**——未注册 `LLM_PROVIDER_*` 时，旧全局配置
+（`LLM_ENABLED=true` + `LLM_API_BASE/API_KEY/MODEL/STYLE`）作为 `id=default`
+的提供商兜底注册。
 
 说明：
 
 - 任何 **OpenAI 兼容** API 均可（Kimi `/v1`、通义 `compatible-mode/v1`、豆包
   `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
-  Base / Key / Model；`LLM_STYLE` 支持四种风格。
+  Base / Key / Model。
 - 特判：DeepSeek 自动关闭思考模式（`thinking:{type:'disabled'}`，防拖慢）；
   Anthropic 自动追加浏览器访问头；`http://127.0.0.1:端口` 本地代理（如
   Ollama）允许使用，远端仅允许 https。
 - 失败兜底：任何一次决策超时 / 网络 / 非法返回都会自动回退启发式 AI
   （每次决策在 `LLM_TIMEOUT_S` 内完成，不会卡住对局）。
 - 大模型临时不可用时**静默降级**：房间自动回退纯 AI 补位，不阻塞对局。
+- Key 只在服务端环境变量/`.env` 中，**不进日志与任何接口响应**；前端
+  右下角「🤖 AI 设置」仅单机模式显示（联机由服务端提供商配置）。
 
 `backend/.env` 不应提交仓库（已在 `.gitignore`）；部署环境的机密经 GitHub Actions Secrets 下发或服务器 `.env` 注入（见 DEPLOY.md）。
 

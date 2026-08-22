@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -289,10 +290,13 @@ class TestRoomAssembly:
     def test_llm_enabled_uses_llm_player(self, monkeypatch):
         from app.game.room import RoomSession
         monkeypatch.setattr('app.game.room.llm_server_available', lambda: True)
+        monkeypatch.setattr('app.game.room.load_llm_providers', lambda: {
+            'ds': deepseek_provider()})
+        monkeypatch.setattr('app.game.room.default_provider_id', lambda: 'ds')
         room = RoomSession('LLMROOM', mode='east', capacity=2, llm_enabled=True)
         assert room.llm_available is True
         assert room.effective_llm_enabled is True
-        # 四人桌固定 4 座；无真人占座时全部为 AI 补位
+        # 四人桌固定 4 座；无真人占座时全部为 LLM 补位（默认提供商）
         controllers = room._controllers()
         assert sum(1 for c in controllers if isinstance(c, LLMPlayer)) == 4
 
@@ -309,6 +313,7 @@ class TestRoomAssembly:
         from app.game.player import AIPlayer
         from app.game.room import RoomSession
         monkeypatch.setattr('app.game.room.llm_server_available', lambda: False)
+        monkeypatch.setattr('app.game.room.load_llm_providers', lambda: {})
         room = RoomSession('OFF', mode='east', capacity=2, llm_enabled=True)
         assert room.llm_available is False
         assert room.effective_llm_enabled is False
@@ -316,7 +321,20 @@ class TestRoomAssembly:
         assert sum(1 for c in controllers if isinstance(c, AIPlayer)) == 4
 
 
-# ── 每座位 LLM 配置 / 形象（联机空位自带配置）────────────────────
+# ── 服务端多提供商 / 形象（§9.7）────────────────────────────────
+
+def deepseek_provider(style='稳健', nickname=''):
+    """测试用 DeepSeek 提供商（key 存服务端；客户端只引用 id）。"""
+    from app.llm.config import LlmProvider
+    return LlmProvider('deepseek', 'DeepSeek', 'https://api.deepseek.com/v1',
+                       'sk-server-ds', 'deepseek-chat', style, nickname)
+
+
+def kimi_provider(style='稳健', nickname='小K'):
+    from app.llm.config import LlmProvider
+    return LlmProvider('kimi', 'Kimi', 'https://api.moonshot.cn/v1',
+                       'sk-server-kimi', 'kimi-k2', style, nickname)
+
 
 class TestPersona:
     def test_provider_folder_and_nickname(self):
@@ -332,82 +350,108 @@ class TestPersona:
         assert display_name('大肥鱼', '激进') == '大肥鱼（激进）'
 
 
-class TestSeatConfig:
-    def test_build_valid_config(self):
-        from app.llm.config import seat_config_from
-        cfg = seat_config_from({
-            'seat': 1, 'baseUrl': 'https://api.deepseek.com/v1', 'apiKey': 'sk-x',
-            'model': 'deepseek-chat', 'style': '话痨', 'timeoutMs': 9000,
-        })
-        assert cfg is not None
-        assert cfg.base_url == 'https://api.deepseek.com/v1'
-        assert cfg.api_key == 'sk-x'
-        assert cfg.style == '话痨'
-        assert cfg.timeout_s == 9.0
+class TestProviderRegistry:
+    def test_env_registry_parsing(self, monkeypatch):
+        monkeypatch.delenv('LLM_PROVIDER_DEEPSEEK_BASE_URL', raising=False)
+        monkeypatch.setenv('LLM_PROVIDER_DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1')
+        monkeypatch.setenv('LLM_PROVIDER_DEEPSEEK_API_KEY', 'sk-srv')
+        monkeypatch.setenv('LLM_PROVIDER_DEEPSEEK_MODEL', 'deepseek-chat')
+        monkeypatch.setenv('LLM_PROVIDER_KIMI_BASE_URL', 'https://api.moonshot.cn/v1')
+        monkeypatch.setenv('LLM_PROVIDER_KIMI_API_KEY', 'sk-k')
+        monkeypatch.setenv('LLM_PROVIDER_KIMI_MODEL', 'kimi-k2')
+        monkeypatch.setenv('LLM_PROVIDER_KIMI_STYLE', '话痨')
+        from app.llm.config import load_llm_providers
+        providers = load_llm_providers()
+        assert set(providers) == {'deepseek', 'kimi'}
+        assert providers['kimi'].style == '话痨'
+        assert providers['kimi'].name == 'kimi'
 
-    def test_invalid_entry_returns_none(self):
-        from app.llm.config import seat_config_from
-        assert seat_config_from({'seat': 1, 'baseUrl': 'https://x.com', 'model': 'm'}) is None
-        assert seat_config_from({'seat': 2, 'baseUrl': '', 'apiKey': 'k', 'model': 'm'}) is None
+    def test_incomplete_provider_skipped(self, monkeypatch):
+        monkeypatch.delenv('LLM_PROVIDER_X_API_KEY', raising=False)
+        monkeypatch.setenv('LLM_PROVIDER_X_BASE_URL', 'https://x.com/v1')
+        monkeypatch.setenv('LLM_PROVIDER_X_MODEL', 'm')  # 缺 key
+        from app.llm.config import load_llm_providers
+        assert 'x' not in load_llm_providers()
 
-    def test_style_and_timeout_normalized(self):
-        from app.llm.config import seat_config_from
-        cfg = seat_config_from({'baseUrl': 'https://x.com', 'apiKey': 'k', 'model': 'm',
-                                'style': '狂暴', 'timeoutMs': 999999})
+    def test_legacy_global_fallback_as_default(self, monkeypatch):
+        from app.llm.config import load_llm_providers
+        monkeypatch.setenv('LLM_ENABLED', 'true')
+        monkeypatch.setenv('LLM_API_BASE', 'https://api.deepseek.com/v1')
+        monkeypatch.setenv('LLM_API_KEY', 'sk-legacy')
+        monkeypatch.setenv('LLM_MODEL', 'deepseek-chat')
+        for key in list(os.environ):
+            if key.startswith('LLM_PROVIDER_'):
+                monkeypatch.delenv(key, raising=False)
+        providers = load_llm_providers()
+        assert 'default' in providers
+        assert providers['default'].api_key == 'sk-legacy'
+
+    def test_default_provider_id(self, monkeypatch):
+        from app.llm.config import default_provider_id
+        monkeypatch.setattr('app.llm.config.load_llm_providers', lambda: {
+            'kimi': kimi_provider(), 'deepseek': deepseek_provider()})
+        assert default_provider_id() == 'kimi'
+
+    def test_to_config_limits(self):
+        cfg = deepseek_provider(style='狂暴', nickname='').to_config()
         assert cfg.style == '稳健'
-        assert cfg.timeout_s == 120.0
-
-    def test_valid_seat_entry_requires_normalizable_url_and_key(self):
-        from app.llm.config import valid_seat_entry
-        assert valid_seat_entry({'seat': 1, 'baseUrl': 'https://api.deepseek.com/v1',
-                                 'apiKey': 'k', 'model': 'm'})
-        assert not valid_seat_entry({'seat': 1, 'baseUrl': 'http://api.deepseek.com/v1',
-                                     'apiKey': 'k', 'model': 'm'})
-        assert not valid_seat_entry({'seat': 1, 'baseUrl': 'https://x.com', 'model': 'm'})
+        assert cfg.api_key == 'sk-server-ds'
+        assert 0.5 <= cfg.timeout_s <= 120.0
 
 
 class TestPerSeatAssembly:
-    def test_seat_configs_override_and_fallback(self, monkeypatch):
+    def test_seat_provider_ids_resolve_per_seat(self, monkeypatch):
         from app.game.player import AIPlayer
         from app.game.room import RoomSession
-        monkeypatch.setattr('app.game.room.llm_server_available', lambda: False)
+        monkeypatch.setattr('app.game.room.llm_server_available', lambda: True)
+        monkeypatch.setattr('app.game.room.load_llm_providers', lambda: {
+            'ds': deepseek_provider(style='激进'), 'kimi': kimi_provider()})
         room = RoomSession('SEATS', mode='east', capacity=4, llm_enabled=True)
-        room._llm_seat_configs = {
-            1: {'seat': 1, 'baseUrl': 'https://api.deepseek.com/v1', 'apiKey': 'sk-d',
-                'model': 'deepseek-chat', 'style': '激进', 'nickname': None, 'timeoutMs': None},
-            3: {'seat': 3, 'baseUrl': 'https://api.moonshot.cn/v1', 'apiKey': 'sk-k',
-                'model': 'kimi-k2', 'style': '稳健', 'nickname': '小K', 'timeoutMs': None},
-        }
-        # 服务端无全局配置：携带座配的座位用 LLMPlayer（各自 config），其余 AIPlayer
+        room._llm_seat_providers = {1: 'ds', 3: 'kimi'}
+        room._llm_default_provider = 'ds'
         controllers = room._controllers()
         assert isinstance(controllers[1], LLMPlayer)
-        assert controllers[1].config.api_key == 'sk-d'
+        assert controllers[1].config.api_key == 'sk-server-ds'
         assert controllers[1].config.style == '激进'
         assert isinstance(controllers[3], LLMPlayer)
-        assert controllers[3].config.api_key == 'sk-k'
+        assert controllers[3].config.api_key == 'sk-server-kimi'
+        # 未指定座位 → 默认提供商 ds
+        assert isinstance(controllers[2], LLMPlayer)
+        assert controllers[2].config.api_key == 'sk-server-ds'
         assert isinstance(controllers[0], AIPlayer)
-        assert isinstance(controllers[2], AIPlayer)
 
-    def test_seed_display_name_and_avatar(self):
+    def test_seed_display_name_and_avatar(self, monkeypatch):
         from app.game.manager import PLAYER_SEED
+        from app.game.player import AIPlayer
         from app.game.room import RoomSession
-        room = RoomSession('SEEDS', mode='east', capacity=4)
-        room._llm_seat_configs = {
-            2: {'seat': 2, 'baseUrl': 'https://api.deepseek.com/v1', 'apiKey': 'k',
-                'model': 'm', 'style': '话痨', 'nickname': '', 'timeoutMs': None},
-        }
+        monkeypatch.setattr('app.game.room.llm_server_available', lambda: True)
+        monkeypatch.setattr('app.game.room.load_llm_providers', lambda: {
+            'ds': deepseek_provider(style='话痨'), 'kimi': kimi_provider()})
+        room = RoomSession('SEEDS', mode='east', capacity=4, llm_enabled=True)
+        room._llm_seat_providers = {2: 'ds'}
+        room._llm_default_provider = 'kimi'
         seeds = room._seeds()
         assert seeds[2]['name'] == '大肥鱼（话痨）'
         assert seeds[2]['avatar'] == 'img/llm/deepseek/llm-avatar-huayao.png'
-        assert seeds[1]['name'] == PLAYER_SEED[1]['name']  # 未配置座位沿用 AI 种子
-
-    def test_effective_with_seat_configs_without_server_config(self, monkeypatch):
-        from app.game.room import RoomSession
+        # 未指定座位 → 默认提供商 kimi
+        assert seeds[1]['name'] == '小K（稳健）'
+        assert seeds[1]['avatar'] == 'img/llm/kimi/llm-avatar-wenjian.png'
+        # 无 LLM 能力时沿用 AI 种子
         monkeypatch.setattr('app.game.room.llm_server_available', lambda: False)
-        room = RoomSession('EF', mode='east', capacity=4, llm_enabled=True)
-        assert room.effective_llm_enabled is False
-        room._llm_seat_configs = {1: {'seat': 1, 'baseUrl': 'https://x.com', 'apiKey': 'k', 'model': 'm'}}
-        assert room.effective_llm_enabled is True
+        room2 = RoomSession('SEEDS2', mode='east', capacity=4, llm_enabled=True)
+        assert room2._seeds()[1]['name'] == PLAYER_SEED[1]['name']
+
+    def test_unknown_provider_falls_back_to_heuristic(self, monkeypatch):
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+        monkeypatch.setattr('app.game.room.llm_server_available', lambda: True)
+        monkeypatch.setattr('app.game.room.load_llm_providers', lambda: {'ds': deepseek_provider()})
+        room = RoomSession('UNK', mode='east', capacity=4, llm_enabled=True)
+        room._llm_seat_providers = {1: 'ghost'}  # 未知 id（开局校验已拦，此处兜底）
+        room._llm_default_provider = 'ds'
+        controllers = room._controllers()
+        assert isinstance(controllers[1], AIPlayer)
+        assert isinstance(controllers[2], LLMPlayer)
 
 
 # ── 局况元数据（§6.2/§6.4）───────────────────────────────────

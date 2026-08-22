@@ -1,4 +1,11 @@
-"""服务端 LLM 配置 —— 环境变量（§9.2）。LLM_ENABLED 默认关，测试/冒烟脚本零影响。"""
+"""服务端 LLM 配置 —— 环境变量（§9.2/§9.7 服务端多提供商）。
+
+- 旧全局配置：LLM_ENABLED + LLM_API_BASE/KEY/MODEL/STYLE...（id=default 的单提供商，
+  仅当未使用 LLM_PROVIDER_* 时作为兜底注册）
+- 多提供商：LLM_PROVIDER_<ID>_{BASE_URL,API_KEY,MODEL,STYLE,NICKNAME,TIMEOUT_MS,NAME}
+  （ID 字母/数字/下划线，如 LLM_PROVIDER_DEEPSEEK_BASE_URL）——Key 全部在服务端，
+  客户端只拿 id；建房/开局引用 providerId。
+"""
 
 import asyncio
 import os
@@ -13,6 +20,8 @@ POOL_TIMEOUT_S_KEY = 'LLM_POOL_TIMEOUT_S'
 STYLE_KEY = 'LLM_STYLE'
 CONCURRENCY_KEY = 'LLM_CONCURRENCY'
 MAX_PER_ROOM_KEY = 'LLM_MAX_REQUESTS_PER_ROOM'
+
+PROVIDER_PREFIX = 'LLM_PROVIDER_'
 
 
 class LlmServerConfig:
@@ -38,6 +47,51 @@ class LlmServerConfig:
         self.max_requests_per_room = max_requests_per_room
 
 
+_STYLES = ('激进', '稳健', '话痨', '高冷')
+_PROVIDER_SUFFIXES = (
+    ('BASE_URL', 'base_url'), ('API_KEY', 'api_key'), ('MODEL', 'model'),
+    ('STYLE', 'style'), ('NICKNAME', 'nickname'), ('TIMEOUT_MS', 'timeout_ms'),
+    ('NAME', 'name'),
+)
+
+
+class LlmProvider:
+    """服务端注册的提供商：Key 全部在服务端；客户端只使用 provider id。"""
+
+    def __init__(self, provider_id: str, name: str = '', base_url: str = '',
+                 api_key: str = '', model: str = '', style: str = '稳健',
+                 nickname: str = '', timeout_ms: Optional[float] = None):
+        self.provider_id = provider_id
+        self.name = name.strip() or provider_id
+        self.base_url = base_url.strip()
+        self.api_key = api_key.strip()
+        self.model = model.strip()
+        self.style = style if style in _STYLES else '稳健'
+        self.nickname = nickname.strip()
+        self.timeout_ms = timeout_ms
+
+    def to_config(self) -> LlmServerConfig:
+        """转单次调用配置（全局池/预算参数从环境读取）。"""
+        global_cfg = load_llm_config()
+        timeout_s = 8.0
+        if self.timeout_ms:
+            try:
+                timeout_s = float(self.timeout_ms) / 1000.0
+            except (TypeError, ValueError):
+                timeout_s = 8.0
+        return LlmServerConfig(
+            enabled=True,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            model=self.model,
+            style=self.style,
+            timeout_s=max(0.5, min(timeout_s, 120.0)),
+            pool_timeout_s=global_cfg.pool_timeout_s,
+            concurrency=global_cfg.concurrency,
+            max_requests_per_room=global_cfg.max_requests_per_room,
+        )
+
+
 def load_llm_config() -> LlmServerConfig:
     """从环境变量读取（每次调用重新读，部署后可热改；值很小无性能顾虑）。"""
     return LlmServerConfig(
@@ -53,52 +107,72 @@ def load_llm_config() -> LlmServerConfig:
     )
 
 
-def llm_server_available(cfg: Optional[LlmServerConfig] = None) -> bool:
-    """服务端 LLM 能力：启用且 Base URL / Key / 模型齐全（§9.3 llmAvailable）。"""
-    cfg = cfg or load_llm_config()
-    return bool(cfg.enabled and cfg.base_url and cfg.api_key and cfg.model)
+def _provider_env_entries() -> dict[str, dict]:
+    """解析 LLM_PROVIDER_<ID>_<SUFFIX> 环境变量 → {id(小写): {字段: 值}}。"""
+    entries: dict[str, dict] = {}
+    for key, value in os.environ.items():
+        if not key.startswith(PROVIDER_PREFIX):
+            continue
+        rest = key[len(PROVIDER_PREFIX):]
+        for suffix, field in _PROVIDER_SUFFIXES:
+            if rest.endswith('_' + suffix):
+                provider_id = rest[:-(len(suffix) + 1)].lower()
+                if provider_id:
+                    entries.setdefault(provider_id, {})[field] = value
+                break
+    return entries
 
 
-# ── 每座位 LLM 配置（联机空位自带配置；key 仅会话内存，不落库/日志/响应）──────
+def load_llm_providers() -> dict[str, LlmProvider]:
+    """服务端提供商注册表 {id: LlmProvider}；非法条目跳过。
 
-_STYLES = ('激进', '稳健', '话痨', '高冷')
-
-
-def seat_config_from(entry: dict) -> Optional[LlmServerConfig]:
-    """从座位配置条目（{baseUrl, apiKey, model, style, timeoutMs}）构建单座配置。
-
-    字段非法 → None（调用方回退启发式 AI）；style 非法归一为稳健；
-    timeoutMs（毫秒）折算为 timeout_s 并限制在 0.5..120s。
+    未配置 LLM_PROVIDER_* 时，旧全局配置（LLM_API_BASE/KEY/MODEL）作为
+    id=default 的单提供商兜底注册（兼容既有部署）。
     """
-    base_url = (entry.get('baseUrl') or '').strip()
-    api_key = (entry.get('apiKey') or '').strip()
-    model = (entry.get('model') or '').strip()
-    style = (entry.get('style') or '稳健').strip()
-    timeout_ms = entry.get('timeoutMs') or None
-    timeout_s = 8.0
-    if timeout_ms:
-        try:
-            timeout_s = float(timeout_ms) / 1000.0
-        except (TypeError, ValueError):
-            timeout_s = 8.0
-    if not (base_url and api_key and model):
-        return None
-    return LlmServerConfig(
-        enabled=True,
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        style=style if style in _STYLES else '稳健',
-        timeout_s=max(0.5, min(timeout_s, 120.0)),
-    )
+    entries = _provider_env_entries()
+    if not entries:
+        legacy = load_llm_config()
+        if legacy.enabled and legacy.base_url and legacy.api_key and legacy.model:
+            return {'default': LlmProvider('default', '服务器默认', legacy.base_url,
+                                           legacy.api_key, legacy.model, legacy.style)}
+        return {}
+    providers: dict[str, LlmProvider] = {}
+    for provider_id, entry in entries.items():
+        base_url = (entry.get('base_url') or '').strip()
+        api_key = (entry.get('api_key') or '').strip()
+        model = (entry.get('model') or '').strip()
+        if not (base_url and api_key and model):
+            continue
+        timeout_ms = None
+        if entry.get('timeout_ms'):
+            try:
+                timeout_ms = float(entry['timeout_ms'])
+            except (TypeError, ValueError):
+                timeout_ms = None
+        providers[provider_id] = LlmProvider(
+            provider_id=provider_id,
+            name=(entry.get('name') or '').strip() or provider_id,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            style=(entry.get('style') or '稳健').strip(),
+            nickname=(entry.get('nickname') or '').strip(),
+            timeout_ms=timeout_ms,
+        )
+    return providers
 
 
-def valid_seat_entry(entry: dict) -> bool:
-    """座位配置条目是否完整合法（baseUrl 可规范化 & key/model 非空）——用于开局前校验。"""
-    from app.llm.client import _normalize_endpoint  # 延迟导入避免循环依赖
-    base_url = (entry.get('baseUrl') or '').strip()
-    return bool(base_url and entry.get('apiKey') and entry.get('model')
-                and _normalize_endpoint(base_url) is not None)
+def default_provider_id() -> Optional[str]:
+    """服务端默认提供商：显式 id=default 优先，否则注册表第一个。"""
+    providers = load_llm_providers()
+    if 'default' in providers:
+        return 'default'
+    return next(iter(providers), None)
+
+
+def llm_server_available(cfg: Optional[LlmServerConfig] = None) -> bool:
+    """服务端 LLM 能力：注册表非空（§9.3 llmAvailable）。"""
+    return bool(load_llm_providers())
 
 
 # 并发信号量（单进程语义，§9.6）；懒创建共享实例。

@@ -23,7 +23,8 @@ from pydantic import BaseModel, Field
 
 from app.game.manager import PLAY_PACE
 from app.game.room import RoomError, RoomSession, room_registry
-from app.llm.config import llm_server_available, valid_seat_entry
+from app.llm.config import default_provider_id, llm_server_available, load_llm_providers
+from app.llm.persona import avatar_url, default_nickname
 from app.storage.db import storage
 
 router = APIRouter(prefix='/api/rooms', tags=['rooms'])
@@ -47,6 +48,21 @@ def _room_or_404(room_id: str) -> RoomSession:
     if room is None:
         raise HTTPException(status_code=404, detail={'code': 'ROOM_NOT_FOUND'})
     return room
+
+
+def _llm_providers_public() -> list[dict]:
+    """服务端提供商公开信息（不含 key）：房主选择用的 id/名称/模型/风格/昵称/头像。"""
+    result = []
+    for provider in load_llm_providers().values():
+        result.append({
+            'id': provider.provider_id,
+            'name': provider.name,
+            'model': provider.model,
+            'style': provider.style,
+            'nickname': provider.nickname or default_nickname(provider.base_url),
+            'avatar': avatar_url(provider.base_url, provider.style),
+        })
+    return result
 
 
 def _verify_seat(room: RoomSession, seat: int, rejoin_code: str) -> None:
@@ -104,22 +120,14 @@ class SeatActionRequest(BaseModel):
     ready: Optional[bool] = None  # ready 动作可选显式指定
 
 
-class SeatLlmConfigRequest(BaseModel):
-    """每座位 LLM 配置（开局携带；apiKey 仅会话内存，不落库/日志/响应）。
-
-    字段刻意不做长度约束：避免 Pydantic 422 在响应中回显包含 apiKey 的请求体。
-    """
+class SeatLlmRequest(BaseModel):
+    """每座位引用的服务端提供商（只带 id；key 不下发/不携带）。"""
     seat: int = Field(ge=0, le=3)
-    baseUrl: str = ''
-    apiKey: str = ''
-    model: str = ''
-    style: str = '稳健'
-    nickname: Optional[str] = Field(default=None, max_length=20)
-    timeoutMs: Optional[float] = None
+    providerId: str = Field(min_length=1, max_length=32)
 
 
 class StartRoomRequest(BaseModel):
-    llmSeats: list[SeatLlmConfigRequest] = Field(default_factory=list)
+    llmSeats: list[SeatLlmRequest] = Field(default_factory=list)
 
 
 # ─── 路由 ────────────────────────────────────────────────
@@ -161,10 +169,12 @@ def get_room_meta() -> dict:
     客户端大厅展示「剩余房间」用。先清扫到期房间，保证计数与实际可建槽位一致
     （对齐 create_room 的 ROOM_LIMIT_REACHED 判定）。定义在 /{room_id} 之前，
     避免「meta」被当作房间码匹配。
+    llmProviders：服务端注册的提供商（不含 key），房主建房时按 id 选择。
     """
     room_registry.sweep_expired()
     return {'active': room_registry.count(), 'max': MAX_ROOMS,
-            'llmAvailable': llm_server_available()}
+            'llmAvailable': llm_server_available(),
+            'llmProviders': _llm_providers_public()}
 
 
 @router.get('/{room_id}')
@@ -239,17 +249,22 @@ async def start_room(room_id: str, body: Optional[StartRoomRequest] = None) -> d
     """开局：所有已占（真人）座位 ready 后触发，独立 game_task 驱动整场。
 
     async 以便 game_task 创建在事件循环线程（与 WS 处理器一致）。
-    body.llmSeats：每座位 LLM 配置（非空时该空位使用对应供应商/模型；
-    含 apiKey，仅会话内存——校验失败只回错误码 INVALID_LLM_SEATS，不回显请求体）。
+    body.llmSeats：每座位引用的服务端提供商 id（空 = 用服务端默认）；
+    未知 id / 重复座位 → 409 INVALID_LLM_SEATS（key 全在服务端，不涉及回显）。
     """
     room = _room_or_404(room_id)
-    entries = [item.model_dump() for item in (body.llmSeats if body else [])]
+    entries = [
+        {'seat': item.seat, 'providerId': item.providerId.strip().lower()}
+        for item in (body.llmSeats if body else [])
+    ]
     if entries:
+        providers = load_llm_providers()
         seats = [entry['seat'] for entry in entries]
-        if len(set(seats)) != len(seats) or not all(valid_seat_entry(entry) for entry in entries):
+        if len(set(seats)) != len(seats) \
+                or not all(entry['providerId'] in providers for entry in entries):
             raise HTTPException(status_code=409, detail={'code': 'INVALID_LLM_SEATS'})
     try:
-        await room.start(llm_seats=entries)
+        await room.start(llm_seats=entries, default_provider=default_provider_id())
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"开局失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})

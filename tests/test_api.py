@@ -112,16 +112,17 @@ async def test_room_meta_count(server, fresh_rooms, temp_storage, monkeypatch):
     backend/.env（可能已配置 LLM）无关。
     """
     monkeypatch.setattr('app.api.rooms.llm_server_available', lambda: False)
+    monkeypatch.setattr('app.api.rooms.load_llm_providers', lambda: {})
     async with httpx.AsyncClient(base_url=server['http']) as http:
         resp = await http.get('/api/rooms/meta')
         assert resp.status_code == 200
-        assert resp.json() == {'active': 0, 'max': 4, 'llmAvailable': False}
+        assert resp.json() == {'active': 0, 'max': 4, 'llmAvailable': False, 'llmProviders': []}
 
         for _ in range(2):
             resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})
             assert resp.status_code == 200, resp.text
         resp = await http.get('/api/rooms/meta')
-        assert resp.json() == {'active': 2, 'max': 4, 'llmAvailable': False}
+        assert resp.json() == {'active': 2, 'max': 4, 'llmAvailable': False, 'llmProviders': []}
 
 
 @pytest.mark.asyncio
@@ -397,12 +398,31 @@ async def test_start_without_ready_rejected(server, fresh_rooms, temp_storage):
 
 
 @pytest.mark.asyncio
-async def test_start_with_per_seat_llm_configs(server, fresh_rooms, temp_storage):
-    """start 携带 llmSeats：非法规格 → 409 INVALID_LLM_SEATS 且不回显 apiKey；
-    合法配置装配到对应空位（LLMPlayer 各自 config + 种子显示名/头像），响应不含 apiKey。"""
+async def test_start_with_per_seat_llm_providers(server, fresh_rooms, temp_storage, monkeypatch):
+    """start 携带 llmSeats（providerId）：未知 id/重复座位 → 409 INVALID_LLM_SEATS；
+    合法 id 装配到对应空位（LLMPlayer 各自 config + 种子显示名/头像）；响应不含 key。"""
     from app.game.llm_player import LLMPlayer
     from app.game.player import AIPlayer
+    from app.llm.config import LlmProvider
+    providers = {
+        'ds': LlmProvider('ds', 'DeepSeek', 'https://api.deepseek.com/v1',
+                          'sk-server-ds', 'deepseek-chat', '话痨'),
+        'kimi': LlmProvider('kimi', 'Kimi', 'https://api.moonshot.cn/v1',
+                            'sk-server-kimi', 'kimi-k2', '稳健', '小K'),
+    }
+    monkeypatch.setattr('app.api.rooms.load_llm_providers', lambda: providers)
+    monkeypatch.setattr('app.game.room.load_llm_providers', lambda: providers)
+    monkeypatch.setattr('app.game.room.llm_server_available', lambda: True)
+    monkeypatch.setattr('app.api.rooms.default_provider_id', lambda: 'ds')
     async with httpx.AsyncClient(base_url=server['http']) as http:
+        meta = (await http.get('/api/rooms/meta')).json()
+        assert meta['llmAvailable'] is True
+        public = {item['id']: item for item in meta['llmProviders']}
+        assert set(public) == {'ds', 'kimi'}
+        assert 'sk-server' not in str(meta)          # key 不下发
+        assert public['kimi']['nickname'] == '小K'
+        assert public['kimi']['avatar'] == 'img/llm/kimi/llm-avatar-wenjian.png'
+
         room_id = (await http.post('/api/rooms',
                                    json={'capacity': 2, 'llmEnabled': True})).json()['roomId']
         join_a = (await http.post(f'/api/rooms/{room_id}/join',
@@ -410,53 +430,42 @@ async def test_start_with_per_seat_llm_configs(server, fresh_rooms, temp_storage
         await http.post(f'/api/rooms/{room_id}/ready',
                         json={'seat': 0, 'rejoinCode': join_a['rejoinCode']})
 
-        # 重复座位 → 409，响应体不回显 apiKey
+        # 重复座位 → 409
         resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
-            {'seat': 1, 'baseUrl': 'https://api.deepseek.com/v1', 'apiKey': 'sk-secret-1',
-             'model': 'm', 'style': '稳健'},
-            {'seat': 1, 'baseUrl': 'https://api.moonshot.cn/v1', 'apiKey': 'sk-secret-2',
-             'model': 'm2', 'style': '激进'},
-        ]})
+            {'seat': 1, 'providerId': 'ds'}, {'seat': 1, 'providerId': 'kimi'}]})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'INVALID_LLM_SEATS'
-        assert 'sk-secret' not in resp.text
 
-        # 远端 http 非法 → 409，同样不回显
-        resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
-            {'seat': 1, 'baseUrl': 'http://api.deepseek.com/v1', 'apiKey': 'sk-secret-3',
-             'model': 'm'},
-        ]})
+        # 未知 providerId → 409
+        resp = await http.post(f'/api/rooms/{room_id}/start',
+                               json={'llmSeats': [{'seat': 1, 'providerId': 'ghost'}]})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'INVALID_LLM_SEATS'
-        assert 'sk-secret' not in resp.text
 
-        # 合法：座位 1/3 各自配置（无服务端全局配置 → 携带座配的空位装配 LLMPlayer）
+        # 合法：座位 1=ds、3=kimi，座位 2 未指定 → 服务端默认（首个 ds）
         resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
-            {'seat': 1, 'baseUrl': 'https://api.deepseek.com/v1', 'apiKey': 'sk-secret-4',
-             'model': 'deepseek-chat', 'style': '话痨'},
-            {'seat': 3, 'baseUrl': 'https://api.moonshot.cn/v1', 'apiKey': 'sk-secret-5',
-             'model': 'kimi-k2', 'style': '稳健', 'nickname': '小K'},
-        ]})
+            {'seat': 1, 'providerId': 'ds'}, {'seat': 3, 'providerId': 'kimi'}]})
         assert resp.status_code == 200, resp.text
-        assert 'sk-secret' not in resp.text
+        assert 'sk-server' not in resp.text
 
         room = rooms.get(room_id)
         assert room.effective_llm_enabled is True
         controllers = room.manager.controllers
         assert isinstance(controllers[1], LLMPlayer)
-        assert controllers[1].config.api_key == 'sk-secret-4'
+        assert controllers[1].config.api_key == 'sk-server-ds'
         assert controllers[1].config.style == '话痨'
         assert isinstance(controllers[3], LLMPlayer)
-        assert controllers[3].config.api_key == 'sk-secret-5'
-        assert isinstance(controllers[2], AIPlayer)
+        assert controllers[3].config.api_key == 'sk-server-kimi'
+        assert isinstance(controllers[2], LLMPlayer)
+        assert controllers[2].config.api_key == 'sk-server-ds'   # 默认提供商
         seeds = room._seeds()
         assert seeds[1]['name'] == '大肥鱼（话痨）'
         assert seeds[1]['avatar'] == 'img/llm/deepseek/llm-avatar-huayao.png'
         assert seeds[3]['name'] == '小K（稳健）'
-        # 房间详情响应同样不回显 apiKey
+        # 房间详情响应不含 key
         detail = await http.get(f'/api/rooms/{room_id}')
         assert detail.status_code == 200
-        assert 'sk-secret' not in detail.text
+        assert 'sk-server' not in detail.text
 
 
 @pytest.mark.asyncio
