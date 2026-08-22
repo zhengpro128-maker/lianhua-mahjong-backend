@@ -254,6 +254,8 @@ class RoomSession:
         # 每座位引用的服务端提供商 id（开局携带 {seat: providerId}，key 全在服务端）；
         # 空 → 使用服务端默认提供商。仅会话内存，不落库/日志/响应。
         self._llm_seat_providers: dict[int, str] = {}
+        # 每座位策略覆盖（激进/稳健/话痨/高冷）；未指定时使用 provider 默认策略。
+        self._llm_seat_styles: dict[int, str] = {}
         # 开局时传入的服务端默认提供商 id（未指定座位时使用）
         self._llm_default_provider: Optional[str] = None
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
@@ -557,7 +559,7 @@ class RoomSession:
         事件循环，与 WS 处理器一致。否则跨循环入队/唤醒会死锁。
         对局已结束（game_task 完成、status=finished）的房间允许再开一局：旧
         manager / match 被新一场替换（旧 match 已落库为 finished 历史）。
-        llm_seats：每座位引用的服务端提供商 id（{seat, providerId}，key 全在服务端）；
+        llm_seats：每座位引用服务端提供商与策略（{seat, providerId, style}，key 全在服务端）；
         default_provider：未指定座位时的默认提供商 id；均为会话内存状态。
         """
         if self.game_task is not None and not self.game_task.done():
@@ -574,6 +576,9 @@ class RoomSession:
             # 单机浏览器 provider/Key 与这里完全无关。
             raise RoomError('LLM_NOT_ENABLED')
         self._llm_seat_providers = {item['seat']: item['providerId'] for item in (llm_seats or [])}
+        self._llm_seat_styles = {
+            item['seat']: item['style'] for item in (llm_seats or []) if item.get('style')
+        }
         self._llm_default_provider = default_provider
         self.manager = GameManager(
             mode=self.mode,
@@ -612,10 +617,14 @@ class RoomSession:
             return self._llm_default_provider
         return default_provider_id()
 
+    def _seat_style(self, seat: int, provider) -> str:
+        """座位显式策略优先；自动选择座位沿用服务端 provider 默认策略。"""
+        return self._llm_seat_styles.get(seat) or provider.style
+
     def _controllers(self) -> list:
         """装配控制器：空座位 AI 补位（LLM 开关生效时用 LLMPlayer）；真人座位 RemotePlayer。
 
-        每座位可引用不同服务端提供商（开局携带 providerId，key 全在服务端）；
+        每座位可引用不同服务端提供商并覆盖策略（开局携带 providerId/style，key 全在服务端）；
         未指定 → 服务端默认提供商；注册表为空 → 启发式 AIPlayer（静默降级）。
         AI 思考速度按「开局瞬间」的房间节奏注入（_ai_delays）：真人房间用
         AI_DELAYS 人类节奏，测试路径（pace 为空）保持即用即答。
@@ -630,8 +639,9 @@ class RoomSession:
             else:
                 provider = providers.get(self._seat_provider_id(seat_index))
                 if provider is not None:
+                    style = self._seat_style(seat_index, provider)
                     controllers.append(LLMPlayer(delays=ai_delays, rule_set=self.rules,
-                                                 config=provider.to_config()))
+                                                 config=provider.to_config(style_override=style)))
                 else:
                     controllers.append(AIPlayer(delays=ai_delays, rule_set=self.rules))
         return controllers
@@ -648,12 +658,13 @@ class RoomSession:
                 if provider is not None:
                     # LLM 空位：按提供商/策略给出头像与显示名（「昵称（策略）」，
                     # 昵称缺省按供应商推导：DeepSeek=大肥鱼等）
+                    style = self._seat_style(seat, provider)
                     seeds.append({
                         'name': display_name(provider.nickname or default_nickname(
                                                  provider.base_url,
                                                  provider_id=provider.provider_id),
-                                             provider.style),
-                        'avatar': avatar_url(provider.base_url, provider.style,
+                                             style),
+                        'avatar': avatar_url(provider.base_url, style,
                                              provider.avatar_folder, provider.provider_id),
                         'score': 1000,
                     })

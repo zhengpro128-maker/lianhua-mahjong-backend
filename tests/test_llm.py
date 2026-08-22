@@ -481,6 +481,7 @@ class TestProviderRegistry:
         assert cfg.style == '稳健'
         assert cfg.api_key == 'sk-server-ds'
         assert 0.5 <= cfg.timeout_s <= 120.0
+        assert deepseek_provider(style='稳健').to_config(style_override='高冷').style == '高冷'
 
 
 class TestPerSeatAssembly:
@@ -492,13 +493,15 @@ class TestPerSeatAssembly:
             'ds': deepseek_provider(style='激进'), 'kimi': kimi_provider()})
         room = RoomSession('SEATS', mode='east', capacity=4, llm_enabled=True)
         room._llm_seat_providers = {1: 'ds', 3: 'kimi'}
+        room._llm_seat_styles = {1: '高冷', 3: '话痨'}
         room._llm_default_provider = 'ds'
         controllers = room._controllers()
         assert isinstance(controllers[1], LLMPlayer)
         assert controllers[1].config.api_key == 'sk-server-ds'
-        assert controllers[1].config.style == '激进'
+        assert controllers[1].config.style == '高冷'
         assert isinstance(controllers[3], LLMPlayer)
         assert controllers[3].config.api_key == 'sk-server-kimi'
+        assert controllers[3].config.style == '话痨'
         # 未指定座位 → 默认提供商 ds
         assert isinstance(controllers[2], LLMPlayer)
         assert controllers[2].config.api_key == 'sk-server-ds'
@@ -513,10 +516,11 @@ class TestPerSeatAssembly:
             'ds': deepseek_provider(style='话痨'), 'kimi': kimi_provider()})
         room = RoomSession('SEEDS', mode='east', capacity=4, llm_enabled=True)
         room._llm_seat_providers = {2: 'ds'}
+        room._llm_seat_styles = {2: '激进'}
         room._llm_default_provider = 'kimi'
         seeds = room._seeds()
-        assert seeds[2]['name'] == '大肥鱼（话痨）'
-        assert seeds[2]['avatar'] == 'img/llm/deepseek/llm-avatar-huayao.png'
+        assert seeds[2]['name'] == '大肥鱼（激进）'
+        assert seeds[2]['avatar'] == 'img/llm/deepseek/llm-avatar-jijin.png'
         # 未指定座位 → 默认提供商 kimi
         assert seeds[1]['name'] == '小K（稳健）'
         assert seeds[1]['avatar'] == 'img/llm/kimi/llm-avatar-wenjian.png'

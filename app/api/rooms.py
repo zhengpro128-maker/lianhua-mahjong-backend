@@ -23,7 +23,8 @@ from pydantic import BaseModel, Field
 
 from app.game.manager import PLAY_PACE
 from app.game.room import RoomError, RoomSession, room_registry
-from app.llm.config import default_provider_id, llm_server_available, load_llm_providers
+from app.llm.config import (LLM_STYLES, default_provider_id,
+                            llm_server_available, load_llm_providers)
 from app.llm.persona import avatar_url, default_nickname
 from app.storage.db import storage
 
@@ -59,6 +60,7 @@ def _llm_providers_public() -> list[dict]:
             'name': provider.name,
             'model': provider.model,
             'style': provider.style,
+            'styles': list(LLM_STYLES),
             'nickname': provider.nickname or default_nickname(
                 provider.base_url, provider_id=provider.provider_id),
             'avatar': avatar_url(provider.base_url, provider.style,
@@ -126,6 +128,7 @@ class SeatLlmRequest(BaseModel):
     """每座位引用的服务端提供商（只带 id；key 不下发/不携带）。"""
     seat: int = Field(ge=0, le=3)
     providerId: str = Field(min_length=1, max_length=32)
+    style: Optional[Literal['激进', '稳健', '话痨', '高冷']] = None
 
 
 class StartRoomRequest(BaseModel):
@@ -251,12 +254,16 @@ async def start_room(room_id: str, body: Optional[StartRoomRequest] = None) -> d
     """开局：所有已占（真人）座位 ready 后触发，独立 game_task 驱动整场。
 
     async 以便 game_task 创建在事件循环线程（与 WS 处理器一致）。
-    body.llmSeats：每座位引用的服务端提供商 id（空 = 用服务端默认）；
+    body.llmSeats：每座位引用服务端提供商 id + 策略（空 = 用服务端默认）；
     未知 id / 重复座位 → 409 INVALID_LLM_SEATS（key 全在服务端，不涉及回显）。
     """
     room = _room_or_404(room_id)
     entries = [
-        {'seat': item.seat, 'providerId': item.providerId.strip().lower()}
+        {
+            'seat': item.seat,
+            'providerId': item.providerId.strip().lower(),
+            'style': item.style,
+        }
         for item in (body.llmSeats if body else [])
     ]
     if entries:

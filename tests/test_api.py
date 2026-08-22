@@ -422,6 +422,7 @@ async def test_start_with_per_seat_llm_providers(server, fresh_rooms, temp_stora
         assert 'sk-server' not in str(meta)          # key 不下发
         assert public['kimi']['nickname'] == '小K'
         assert public['kimi']['avatar'] == 'img/llm/kimi/llm-avatar-wenjian.png'
+        assert public['kimi']['styles'] == ['激进', '稳健', '话痨', '高冷']
 
         # 联机开关与单机设置完全独立：房间未显式启用时，开局不能靠 llmSeats 暗中开启。
         disabled_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
@@ -453,9 +454,10 @@ async def test_start_with_per_seat_llm_providers(server, fresh_rooms, temp_stora
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'INVALID_LLM_SEATS'
 
-        # 合法：座位 1=ds、3=kimi，座位 2 未指定 → 服务端默认（首个 ds）
+        # 合法：每个已配置模型都可按座位覆盖四种策略；座位 2 未指定 → 服务端默认。
         resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
-            {'seat': 1, 'providerId': 'ds'}, {'seat': 3, 'providerId': 'kimi'}]})
+            {'seat': 1, 'providerId': 'ds', 'style': '激进'},
+            {'seat': 3, 'providerId': 'kimi', 'style': '高冷'}]})
         assert resp.status_code == 200, resp.text
         assert 'sk-server' not in resp.text
 
@@ -464,15 +466,17 @@ async def test_start_with_per_seat_llm_providers(server, fresh_rooms, temp_stora
         controllers = room.manager.controllers
         assert isinstance(controllers[1], LLMPlayer)
         assert controllers[1].config.api_key == 'sk-server-ds'
-        assert controllers[1].config.style == '话痨'
+        assert controllers[1].config.style == '激进'
         assert isinstance(controllers[3], LLMPlayer)
         assert controllers[3].config.api_key == 'sk-server-kimi'
         assert isinstance(controllers[2], LLMPlayer)
         assert controllers[2].config.api_key == 'sk-server-ds'   # 默认提供商
         seeds = room._seeds()
-        assert seeds[1]['name'] == '大肥鱼（话痨）'
-        assert seeds[1]['avatar'] == 'img/llm/deepseek/llm-avatar-huayao.png'
-        assert seeds[3]['name'] == '小K（稳健）'
+        assert controllers[3].config.style == '高冷'
+        assert seeds[1]['name'] == '大肥鱼（激进）'
+        assert seeds[1]['avatar'] == 'img/llm/deepseek/llm-avatar-jijin.png'
+        assert seeds[3]['name'] == '小K（高冷）'
+        assert seeds[3]['avatar'] == 'img/llm/kimi/llm-avatar-gaoleng.png'
         # 房间详情响应不含 key
         detail = await http.get(f'/api/rooms/{room_id}')
         assert detail.status_code == 200

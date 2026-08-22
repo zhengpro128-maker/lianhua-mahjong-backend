@@ -47,7 +47,7 @@ class LlmServerConfig:
         self.max_requests_per_room = max_requests_per_room
 
 
-_STYLES = ('激进', '稳健', '话痨', '高冷')
+LLM_STYLES = ('激进', '稳健', '话痨', '高冷')
 _PROVIDER_SUFFIXES = (
     ('BASE_URL', 'base_url'), ('API_KEY', 'api_key'), ('MODEL', 'model'),
     ('STYLE', 'style'), ('NICKNAME', 'nickname'), ('TIMEOUT_MS', 'timeout_ms'),
@@ -67,13 +67,13 @@ class LlmProvider:
         self.base_url = base_url.strip()
         self.api_key = api_key.strip()
         self.model = model.strip()
-        self.style = style if style in _STYLES else '稳健'
+        self.style = style if style in LLM_STYLES else '稳健'
         self.nickname = nickname.strip()
         self.timeout_ms = timeout_ms
         self.avatar_folder = avatar_folder.strip()
 
-    def to_config(self) -> LlmServerConfig:
-        """转单次调用配置（全局池/预算参数从环境读取）。"""
+    def to_config(self, style_override: Optional[str] = None) -> LlmServerConfig:
+        """转单次调用配置；座位可覆盖策略，模型/Key 仍来自服务端注册表。"""
         global_cfg = load_llm_config()
         timeout_s = 8.0
         if self.timeout_ms:
@@ -86,7 +86,7 @@ class LlmProvider:
             base_url=self.base_url,
             api_key=self.api_key,
             model=self.model,
-            style=self.style,
+            style=style_override if style_override in LLM_STYLES else self.style,
             timeout_s=max(0.5, min(timeout_s, 120.0)),
             pool_timeout_s=global_cfg.pool_timeout_s,
             concurrency=global_cfg.concurrency,
