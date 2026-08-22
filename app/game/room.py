@@ -51,6 +51,29 @@ ROOM_LIFETIME = float(os.environ.get('ROOM_LIFETIME', str(60 * 60)))
 _FLUSH_RETRY_DELAY = 0.5   # 秒，终局补写重试间隔
 _FLUSH_RETRY_ATTEMPTS = 5  # 终局补写最大尝试次数
 
+# 胡牌由规则引擎直接判定，不再为唯一合法动作额外请求一次 LLM。这里按策略提供
+# 保底获胜台词，确保大模型座位的自摸/吃胡始终通过同一气泡 + TTS 链路播报。
+_LLM_WIN_LINES = {
+    'self-draw': {
+        '激进': '自摸！这局我收下了！',
+        '稳健': '自摸，稳稳收下。',
+        '话痨': '自摸啦！这手终于等到了！',
+        '高冷': '自摸。',
+    },
+    'discard-win': {
+        '激进': '吃胡！这张我等很久了！',
+        '稳健': '吃胡，多谢送牌。',
+        '话痨': '吃胡啦！这张正好送到手上！',
+        '高冷': '吃胡。',
+    },
+    'robbed-kong-win': {
+        '激进': '抢杠胡！这杠开不得！',
+        '稳健': '抢杠胡，时机刚好。',
+        '话痨': '抢杠胡啦！这张我可等着呢！',
+        '高冷': '抢杠胡。',
+    },
+}
+
 
 def _make_rejoin_code() -> str:
     """8 位重进码：4+4 随机 hex，大写带连字符（如 'K7Q3-M9XP'）。"""
@@ -119,6 +142,8 @@ class WSEvents:
                 'meldIndex': meld_index,
             },
         })
+        if type_ in _LLM_WIN_LINES:
+            self.room._announce_llm_win(actor_index, type_)
 
     def show_score_flow(self, deltas) -> None:
         self.room.conn.broadcast({'kind': 'score_flow', 'deltas': deltas})
@@ -177,6 +202,8 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
             reveal = mgr.phase == 'settled' and mgr.result is not None
             if p.seat != seat and not reveal:
                 data['hand'] = [None] * len(data['hand'])
+            # 前端只对大模型座位抑制牌名/吃碰杠/胡牌原始音效；普通 AI 与真人不变。
+            data['isLlm'] = isinstance(mgr.controllers[p.seat], LLMPlayer)
             players.append(data)
     return {
         'kind': 'state_snapshot',
@@ -719,6 +746,18 @@ class RoomSession:
             generation, entry['id'], seat, text, controller.config.style))
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
+
+    def _announce_llm_win(self, seat: int, action_type: str) -> None:
+        """让 LLM 赢家通过吐槽/TTS 链路播报自摸、吃胡或抢杠胡。"""
+        if self.manager is None or not 0 <= seat < len(self.manager.controllers):
+            return
+        controller = self.manager.controllers[seat]
+        if not isinstance(controller, LLMPlayer):
+            return
+        lines = _LLM_WIN_LINES.get(action_type)
+        if lines is None:
+            return
+        self._on_llm_message(seat, lines.get(controller.config.style, lines['稳健']))
 
     async def _synthesize_llm_audio(self, generation: int, message_id: int,
                                     seat: int, text: str, style: str) -> None:

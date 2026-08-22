@@ -574,6 +574,47 @@ class TestPerSeatAssembly:
         }
         assert room._tts_match_stats['hits'] == 1
 
+    @pytest.mark.parametrize(
+        ('action_type', 'expected_text'),
+        [
+            ('self-draw', '自摸，稳稳收下。'),
+            ('discard-win', '吃胡，多谢送牌。'),
+        ],
+    )
+    def test_llm_winner_uses_message_tts_path_and_is_marked_in_snapshot(
+            self, action_type, expected_text):
+        from app.game.manager import GameManager
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession, WSEvents, build_snapshot
+        from app.models.game import GamePlayer
+
+        emitted = []
+        room = RoomSession('WINVOICE', mode='east', capacity=4, llm_enabled=True)
+        room.conn.broadcast = lambda message: emitted.append(message)
+        controller = LLMPlayer(
+            config=deepseek_provider(style='稳健').to_config(),
+            seat=1,
+            provider_id='deepseek',
+        )
+        controllers = [AIPlayer(), controller, AIPlayer(), AIPlayer()]
+        room.manager = GameManager(controllers=controllers)
+        room.manager.players = [
+            GamePlayer(
+                name=f'P{seat}', avatar='', score=1000, seat=seat,
+                hand=[], discards=[], melds=[], redCount=0, drawnTileIndex=-1,
+            )
+            for seat in range(4)
+        ]
+
+        WSEvents(room).show_table_action(action_type, 1, 0, 'm1', -1)
+
+        assert emitted[0]['kind'] == 'table_action'
+        assert emitted[1] == {
+            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': expected_text,
+        }
+        snapshot = build_snapshot(room, 0)
+        assert [player['isLlm'] for player in snapshot['players']] == [False, True, False, False]
+
     def test_seat_provider_ids_resolve_per_seat(self, monkeypatch):
         from app.game.player import AIPlayer
         from app.game.room import RoomSession
