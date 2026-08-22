@@ -536,6 +536,44 @@ class TestPerSeatAssembly:
                    for _, message in logs)
         assert any(message == 'LLM 吐槽：稳住，先打这张。' for _, message in logs)
 
+    def test_room_broadcasts_tts_audio_after_message(self, monkeypatch):
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+
+        emitted = []
+        room = RoomSession('AUDIO', mode='east', capacity=4, llm_enabled=True)
+        monkeypatch.setattr(room.conn, 'broadcast', lambda message: emitted.append(message))
+        controller = LLMPlayer(
+            config=deepseek_provider(style='高冷').to_config(),
+            seat=1,
+            provider_id='deepseek',
+        )
+        room.manager = SimpleNamespace(controllers=[AIPlayer(), controller, AIPlayer(), AIPlayer()])
+
+        class FakeTtsService:
+            available = True
+
+            async def ensure_audio(self, text, style):
+                assert (text, style) == ('这张先放下。', '高冷')
+                return SimpleNamespace(
+                    audio_url=f'/api/tts/audio/{"a" * 64}.mp3', cached=True)
+
+        monkeypatch.setattr('app.game.room.get_tts_service', lambda: FakeTtsService())
+
+        async def scenario():
+            room._on_llm_message(1, '这张先放下。')
+            await asyncio.gather(*list(room._tts_tasks))
+
+        run(scenario())
+        assert emitted[0] == {
+            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '这张先放下。',
+        }
+        assert emitted[1] == {
+            'kind': 'llm_audio', 'messageId': 1, 'seat': 1,
+            'audioUrl': f'/api/tts/audio/{"a" * 64}.mp3', 'cached': True,
+        }
+        assert room._tts_match_stats['hits'] == 1
+
     def test_seat_provider_ids_resolve_per_seat(self, monkeypatch):
         from app.game.player import AIPlayer
         from app.game.room import RoomSession

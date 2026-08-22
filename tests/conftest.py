@@ -20,6 +20,8 @@ import uvicorn
 # setdefault 保留开发者/CI 显式指定的环境变量。
 os.environ.setdefault('LOG_TO_FILE', '0')
 os.environ.setdefault('LOG_LEVEL', 'WARNING')
+# 测试严禁使用开发机真实百度凭据；TTS 用 FakeClient/临时缓存单独验证。
+os.environ.setdefault('TTS_ENABLED', 'false')
 # 测试服务只监听本机；避免开发机系统代理截获 127.0.0.1 请求并返回 503。
 for _proxy_key in ('NO_PROXY', 'no_proxy'):
     _hosts = [item.strip() for item in os.environ.get(_proxy_key, '').split(',') if item.strip()]

@@ -22,8 +22,10 @@ from app.api.rooms import router as rooms_router
 from app.api.matches import router as matches_router
 from app.api.moderation import router as moderation_router
 from app.api.account import router as account_router
+from app.api.tts import router as tts_router
 from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
+from app.tts.service import get_tts_service
 
 DOCS_SHOW = os.getenv('DOCS_SHOW', 'False') == 'True'
 logger.info(f"api文档开启: {DOCS_SHOW}")
@@ -33,7 +35,10 @@ logger.info(f"api文档开启: {DOCS_SHOW}")
 async def lifespan(app: FastAPI):
     # uvicorn 启动时用默认 dictConfig 覆盖了日志配置，这里重新接管 uvicorn 日志到 loguru
     _patch_uvicorn_loggers()
+    tts = get_tts_service()
+    logger.info(f"TTS 服务 available={tts.available} provider=baidu")
     yield
+    await tts.close()
 
 
 app = FastAPI(title="莲花广麻 Backend", version="0.2.0",
@@ -97,6 +102,7 @@ app.include_router(rooms_router)
 app.include_router(matches_router)
 app.include_router(moderation_router)
 app.include_router(account_router)
+app.include_router(tts_router)
 app.include_router(ws_router)
 
 

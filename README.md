@@ -209,6 +209,14 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `LLM_STYLE` | `稳健` | 出牌风格：激进 / 稳健 / 话痨 / 高冷（单提供商路径） |
 | `LLM_CONCURRENCY` | `4` | 决策请求并发上限 |
 | `LLM_MAX_REQUESTS_PER_ROOM` | `0` | 每房间请求预算（0 = 不限；超出后该座位回退启发式） |
+| `TTS_ENABLED` | `auto` | 百度 TTS；auto = 检测到凭据即启用 |
+| `BAIDU_TTS_API_KEY` / `BAIDU_TTS_SECRET_KEY` | 本地凭据文件 | 百度语音应用凭据，环境变量优先 |
+| `BAIDU_TTS_CREDENTIAL_FILE` | `docs/百度api-key.txt` | 开发机凭据文件（已 gitignore） |
+| `TTS_CONCURRENCY` | `2` | 百度合成并发，最高限制为 3 |
+| `TTS_TIMEOUT_S` | `5` | 单次鉴权/合成超时 |
+| `TTS_CACHE_DIR` | `data/tts-cache` | MP3 + SQLite 元数据缓存目录 |
+| `TTS_CACHE_MAX_MB` | `256` | LRU 容量上限 |
+| `TTS_CACHE_TTL_DAYS` | `30` | 未访问缓存有效期 |
 
 ### LLM 大模型（可选，§9 设计文档）
 
@@ -270,6 +278,22 @@ LLM_PROVIDER_KIMI_MODEL=kimi-k2
   右下角「🤖 AI 设置」仅单机模式显示（联机由服务端提供商配置）。
 
 `backend/.env` 不应提交仓库（已在 `.gitignore`）；部署环境的机密经 GitHub Actions Secrets 下发或服务器 `.env` 注入（见 DEPLOY.md）。
+
+### 百度 TTS 与音频缓存
+
+- LLM 文字吐槽先通过 `llm_message` 广播；TTS 在后台异步生成，完成后广播
+  `llm_audio`，不会阻塞出牌。
+- 缓存键包含规范化文本、音色、策略、语速、音调、音量、情绪和格式；同一 key
+  并发请求只调用百度一次。
+- 音频存放在 `data/tts-cache/<hash前缀>/<hash>.mp3`，SQLite 记录命中次数和
+  最近访问时间；每 6 小时按 TTL/LRU 清理。
+- 四种策略默认使用百度基础音库，可用 `BAIDU_TTS_VOICE_AGGRESSIVE`、
+  `BAIDU_TTS_VOICE_STEADY`、`BAIDU_TTS_VOICE_TALKATIVE`、
+  `BAIDU_TTS_VOICE_COLD` 及对应 SPEED/PITCH/VOLUME/EMOTION 变量覆盖。
+- 安全连通性检查：`python -m app.tts.check`。输出只包含可用状态、音频字节数或
+  百度业务错误码，不显示 Key/Secret/Token。
+- 使用前须在百度语音应用中开通短文本在线合成并领取相应免费资源；错误
+  `502: No permission to access data` 表示当前应用没有该接口权限。
 
 ### 日志说明
 

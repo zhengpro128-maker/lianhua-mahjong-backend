@@ -29,6 +29,7 @@ from app.game.remote_player import RemotePlayer
 from app.llm.config import (default_provider_id, llm_server_available,
                             load_llm_providers)
 from app.llm.persona import avatar_url, default_nickname, display_name
+from app.tts.service import get_tts_service
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import get_default_rule_set
 from app.rules.registry import get_rule_set
@@ -261,6 +262,12 @@ class RoomSession:
         # 当前场次 LLM 吐槽：即时广播给前端，整场结束后逐条写日志。
         self._llm_messages: list[dict] = []
         self._llm_message_seq = 0
+        self._tts_tasks: set[asyncio.Task] = set()
+        self._tts_match_generation = 0
+        self._tts_match_stats = {
+            'requests': 0, 'hits': 0, 'misses': 0,
+            'successes': 0, 'failures': 0,
+        }
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
         # 不再中断整场驱动，数据留在队列等下次落库机会重试。
         self._pending_writes: list = []
@@ -578,6 +585,8 @@ class RoomSession:
             # 联机 LLM 是房间级服务端功能，不能由开局参数暗中开启，也不能静默忽略。
             # 单机浏览器 provider/Key 与这里完全无关。
             raise RoomError('LLM_NOT_ENABLED')
+        await self._cancel_tts_tasks()
+        self._tts_match_generation += 1
         self._llm_seat_providers = {item['seat']: item['providerId'] for item in (llm_seats or [])}
         self._llm_seat_styles = {
             item['seat']: item['style'] for item in (llm_seats or []) if item.get('style')
@@ -585,6 +594,10 @@ class RoomSession:
         self._llm_default_provider = default_provider
         self._llm_messages = []
         self._llm_message_seq = 0
+        self._tts_match_stats = {
+            'requests': 0, 'hits': 0, 'misses': 0,
+            'successes': 0, 'failures': 0,
+        }
         self.manager = GameManager(
             mode=self.mode,
             controllers=self._controllers(),
@@ -689,6 +702,66 @@ class RoomSession:
         entry = {'id': self._llm_message_seq, 'seat': seat, 'text': text}
         self._llm_messages.append(entry)
         self.conn.broadcast({'kind': 'llm_message', **entry})
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 同步单测/维护脚本没有事件循环：保留文字广播，不启动装饰性 TTS。
+            return
+        service = get_tts_service()
+        if not service.available or self.manager is None:
+            return
+        controller = self.manager.controllers[seat]
+        if not isinstance(controller, LLMPlayer):
+            return
+        self._tts_match_stats['requests'] += 1
+        generation = self._tts_match_generation
+        task = loop.create_task(self._synthesize_llm_audio(
+            generation, entry['id'], seat, text, controller.config.style))
+        self._tts_tasks.add(task)
+        task.add_done_callback(self._tts_tasks.discard)
+
+    async def _synthesize_llm_audio(self, generation: int, message_id: int,
+                                    seat: int, text: str, style: str) -> None:
+        try:
+            audio = await get_tts_service().ensure_audio(text, style)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            audio = None
+        if generation != self._tts_match_generation:
+            return
+        if audio is None:
+            self._tts_match_stats['failures'] += 1
+            return
+        self._tts_match_stats['successes'] += 1
+        self._tts_match_stats['hits' if audio.cached else 'misses'] += 1
+        self.conn.broadcast({
+            'kind': 'llm_audio',
+            'messageId': message_id,
+            'seat': seat,
+            'audioUrl': audio.audio_url,
+            'cached': audio.cached,
+        })
+
+    async def _cancel_tts_tasks(self) -> None:
+        tasks = list(self._tts_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tts_tasks.clear()
+
+    async def _drain_tts_tasks(self, timeout: float = 2.0) -> None:
+        tasks = list(self._tts_tasks)
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in pending:
+            task.cancel()
+            self._tts_match_stats['failures'] += 1
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._tts_tasks.difference_update(done | pending)
 
     def _log_llm_match_summary(self) -> None:
         """整场结束写 LLM 统计，并逐条记录各 AI 的吐槽文本。"""
@@ -722,6 +795,13 @@ class RoomSession:
             return
         logger.bind(room_id=self.room_id, llm_seats=reports).info(
             f'LLM 场次汇总 AI座位={len(reports)} 吐槽总数={len(self._llm_messages)}')
+        logger.bind(room_id=self.room_id, tts_stats=dict(self._tts_match_stats)).info(
+            'TTS 场次统计 '
+            f'请求={self._tts_match_stats["requests"]} '
+            f'命中={self._tts_match_stats["hits"]} '
+            f'未命中={self._tts_match_stats["misses"]} '
+            f'成功={self._tts_match_stats["successes"]} '
+            f'失败={self._tts_match_stats["failures"]}')
         for entry in self._llm_messages:
             controller = self.manager.controllers[entry['seat']]
             identity = {
@@ -861,6 +941,7 @@ class RoomSession:
                 {'seat': p.seat, 'name': p.name, 'score': p.score}
                 for p in self.manager.players
             ]
+            await self._drain_tts_tasks()
             self._log_llm_match_summary()
             self.conn.broadcast({
                 'kind': 'match_finished',
@@ -895,6 +976,9 @@ class RoomSession:
         此时一律正常取消游戏任务。
         """
         self.status = 'closed'
+        for task in list(self._tts_tasks):
+            task.cancel()
+        self._tts_tasks.clear()
         self.conn.broadcast({'kind': 'room_closed'})
         logger.bind(room_id=self.room_id).info("房间关闭")
         try:

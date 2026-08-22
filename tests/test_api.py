@@ -11,6 +11,7 @@ start 走 REST（uvicorn 事件循环），对局 AI 补位自动打完。
 
 import asyncio
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -31,6 +32,27 @@ def temp_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(matches_api, 'storage', s)
     monkeypatch.setattr(moderation_api, 'storage', s)
     return s
+
+
+@pytest.mark.asyncio
+async def test_tts_cached_audio_endpoint(server, tmp_path, monkeypatch):
+    from app.tts.cache import TtsDiskCache
+
+    cache = TtsDiskCache(tmp_path / 'tts-cache', 16 * 1024 * 1024, 30)
+    key = 'a' * 64
+    await cache.put(
+        key, b'ID3-audio', provider='baidu', voice_id='0',
+        style='稳健', text_hash='b' * 64)
+    monkeypatch.setattr(
+        'app.api.tts.get_tts_service',
+        lambda: SimpleNamespace(cache=cache),
+    )
+    async with httpx.AsyncClient(base_url=server['http'], trust_env=False) as http:
+        response = await http.get(f'/api/tts/audio/{key}.mp3')
+        assert response.status_code == 200
+        assert response.headers['content-type'].startswith('audio/mpeg')
+        assert response.content == b'ID3-audio'
+        assert (await http.get('/api/tts/audio/not-a-key.mp3')).status_code == 404
 
 
 async def wait_until(cond, timeout=30.0, interval=0.05) -> None:
