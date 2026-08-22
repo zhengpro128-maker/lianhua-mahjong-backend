@@ -200,6 +200,42 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `LOG_ROTATION` | `10 MB` | 日志文件滚动大小 |
 | `LOG_RETENTION` | `30 days` | 日志文件保留时长 |
 | `LOG_TO_FILE` | `1` | 是否写滚动文件；`0` 仅控制台输出（测试/CI 用） |
+| `LLM_ENABLED` | `false` | 启用服务端 LLM 空座补位（未启用时 LLM 开关一律不生效） |
+| `LLM_API_BASE` | 空 | OpenAI 兼容 API 根地址，如 `https://api.deepseek.com/v1` |
+| `LLM_API_KEY` | 空 | API 密钥（与服务端无关的账号密钥） |
+| `LLM_MODEL` | 空 | 模型名，如 `deepseek-chat` |
+| `LLM_TIMEOUT_S` | `8` | 单次决策总预算（秒，含并发排队 + 一次语义重试） |
+| `LLM_POOL_TIMEOUT_S` | `1` | 并发信号量排队等待（秒） |
+| `LLM_STYLE` | `稳健` | 出牌风格：激进 / 稳健 / 话痨 / 高冷 |
+| `LLM_CONCURRENCY` | `4` | 决策请求并发上限 |
+| `LLM_MAX_REQUESTS_PER_ROOM` | `0` | 每房间请求预算（0 = 不限；超出后该座位回退启发式） |
+
+### LLM 大模型（可选，§9 设计文档）
+
+服务端给「空座位 AI 补位」接大模型。配置齐全（`LLM_ENABLED=true` 且
+Base / Key / Model 非空）后，`GET /api/rooms/meta` 的 `llmAvailable` 变为
+`true`；建房时带 `"llmEnabled": true`，空座即装配 LLM 决策（四座均可）：
+
+```bash
+# backend/.env（gitignored）示例
+LLM_ENABLED=true
+LLM_API_BASE=https://api.deepseek.com/v1
+LLM_API_KEY=sk-xxxx
+LLM_MODEL=deepseek-chat
+LLM_STYLE=稳健
+```
+
+说明：
+
+- 任何 **OpenAI 兼容** API 均可（Kimi `/v1`、通义 `compatible-mode/v1`、豆包
+  `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
+  Base / Key / Model；`LLM_STYLE` 支持四种风格。
+- 特判：DeepSeek 自动关闭思考模式（`thinking:{type:'disabled'}`，防拖慢）；
+  Anthropic 自动追加浏览器访问头；`http://127.0.0.1:端口` 本地代理（如
+  Ollama）允许使用，远端仅允许 https。
+- 失败兜底：任何一次决策超时 / 网络 / 非法返回都会自动回退启发式 AI
+  （每次决策在 `LLM_TIMEOUT_S` 内完成，不会卡住对局）。
+- 大模型临时不可用时**静默降级**：房间自动回退纯 AI 补位，不阻塞对局。
 
 `backend/.env` 不应提交仓库（已在 `.gitignore`）；部署环境的机密经 GitHub Actions Secrets 下发或服务器 `.env` 注入（见 DEPLOY.md）。
 
