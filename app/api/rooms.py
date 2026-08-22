@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from app.game.manager import PLAY_PACE
 from app.game.room import RoomError, RoomSession, room_registry
-from app.llm.config import llm_server_available
+from app.llm.config import llm_server_available, valid_seat_entry
 from app.storage.db import storage
 
 router = APIRouter(prefix='/api/rooms', tags=['rooms'])
@@ -102,6 +102,24 @@ class SeatActionRequest(BaseModel):
     seat: int = Field(ge=0, le=3)
     rejoinCode: str
     ready: Optional[bool] = None  # ready 动作可选显式指定
+
+
+class SeatLlmConfigRequest(BaseModel):
+    """每座位 LLM 配置（开局携带；apiKey 仅会话内存，不落库/日志/响应）。
+
+    字段刻意不做长度约束：避免 Pydantic 422 在响应中回显包含 apiKey 的请求体。
+    """
+    seat: int = Field(ge=0, le=3)
+    baseUrl: str = ''
+    apiKey: str = ''
+    model: str = ''
+    style: str = '稳健'
+    nickname: Optional[str] = Field(default=None, max_length=20)
+    timeoutMs: Optional[float] = None
+
+
+class StartRoomRequest(BaseModel):
+    llmSeats: list[SeatLlmConfigRequest] = Field(default_factory=list)
 
 
 # ─── 路由 ────────────────────────────────────────────────
@@ -217,14 +235,21 @@ def ready_room(room_id: str, body: SeatActionRequest) -> dict:
 
 
 @router.post('/{room_id}/start')
-async def start_room(room_id: str) -> dict:
+async def start_room(room_id: str, body: Optional[StartRoomRequest] = None) -> dict:
     """开局：所有已占（真人）座位 ready 后触发，独立 game_task 驱动整场。
 
     async 以便 game_task 创建在事件循环线程（与 WS 处理器一致）。
+    body.llmSeats：每座位 LLM 配置（非空时该空位使用对应供应商/模型；
+    含 apiKey，仅会话内存——校验失败只回错误码 INVALID_LLM_SEATS，不回显请求体）。
     """
     room = _room_or_404(room_id)
+    entries = [item.model_dump() for item in (body.llmSeats if body else [])]
+    if entries:
+        seats = [entry['seat'] for entry in entries]
+        if len(set(seats)) != len(seats) or not all(valid_seat_entry(entry) for entry in entries):
+            raise HTTPException(status_code=409, detail={'code': 'INVALID_LLM_SEATS'})
     try:
-        await room.start()
+        await room.start(llm_seats=entries)
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"开局失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})

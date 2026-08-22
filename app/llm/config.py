@@ -59,6 +59,48 @@ def llm_server_available(cfg: Optional[LlmServerConfig] = None) -> bool:
     return bool(cfg.enabled and cfg.base_url and cfg.api_key and cfg.model)
 
 
+# ── 每座位 LLM 配置（联机空位自带配置；key 仅会话内存，不落库/日志/响应）──────
+
+_STYLES = ('激进', '稳健', '话痨', '高冷')
+
+
+def seat_config_from(entry: dict) -> Optional[LlmServerConfig]:
+    """从座位配置条目（{baseUrl, apiKey, model, style, timeoutMs}）构建单座配置。
+
+    字段非法 → None（调用方回退启发式 AI）；style 非法归一为稳健；
+    timeoutMs（毫秒）折算为 timeout_s 并限制在 0.5..120s。
+    """
+    base_url = (entry.get('baseUrl') or '').strip()
+    api_key = (entry.get('apiKey') or '').strip()
+    model = (entry.get('model') or '').strip()
+    style = (entry.get('style') or '稳健').strip()
+    timeout_ms = entry.get('timeoutMs') or None
+    timeout_s = 8.0
+    if timeout_ms:
+        try:
+            timeout_s = float(timeout_ms) / 1000.0
+        except (TypeError, ValueError):
+            timeout_s = 8.0
+    if not (base_url and api_key and model):
+        return None
+    return LlmServerConfig(
+        enabled=True,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        style=style if style in _STYLES else '稳健',
+        timeout_s=max(0.5, min(timeout_s, 120.0)),
+    )
+
+
+def valid_seat_entry(entry: dict) -> bool:
+    """座位配置条目是否完整合法（baseUrl 可规范化 & key/model 非空）——用于开局前校验。"""
+    from app.llm.client import _normalize_endpoint  # 延迟导入避免循环依赖
+    base_url = (entry.get('baseUrl') or '').strip()
+    return bool(base_url and entry.get('apiKey') and entry.get('model')
+                and _normalize_endpoint(base_url) is not None)
+
+
 # 并发信号量（单进程语义，§9.6）；懒创建共享实例。
 _semaphore: Optional[asyncio.Semaphore] = None
 

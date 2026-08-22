@@ -105,8 +105,13 @@ async def test_room_count_limit(server, fresh_rooms, temp_storage):
 
 
 @pytest.mark.asyncio
-async def test_room_meta_count(server, fresh_rooms, temp_storage):
-    """GET /api/rooms/meta 返回在册房间数与上限，随建房递增（大厅「剩余房间」数据源）。"""
+async def test_room_meta_count(server, fresh_rooms, temp_storage, monkeypatch):
+    """GET /api/rooms/meta 返回在册房间数与上限，随建房递增（大厅「剩余房间」数据源）。
+
+    llmAvailable 为服务端能力探测：本用例 monkeypatch 为 False 保证与开发机
+    backend/.env（可能已配置 LLM）无关。
+    """
+    monkeypatch.setattr('app.api.rooms.llm_server_available', lambda: False)
     async with httpx.AsyncClient(base_url=server['http']) as http:
         resp = await http.get('/api/rooms/meta')
         assert resp.status_code == 200
@@ -389,6 +394,69 @@ async def test_start_without_ready_rejected(server, fresh_rooms, temp_storage):
         resp = await http.post(f'/api/rooms/{room_id}/start')
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'ALREADY_STARTED'
+
+
+@pytest.mark.asyncio
+async def test_start_with_per_seat_llm_configs(server, fresh_rooms, temp_storage):
+    """start 携带 llmSeats：非法规格 → 409 INVALID_LLM_SEATS 且不回显 apiKey；
+    合法配置装配到对应空位（LLMPlayer 各自 config + 种子显示名/头像），响应不含 apiKey。"""
+    from app.game.llm_player import LLMPlayer
+    from app.game.player import AIPlayer
+    async with httpx.AsyncClient(base_url=server['http']) as http:
+        room_id = (await http.post('/api/rooms',
+                                   json={'capacity': 2, 'llmEnabled': True})).json()['roomId']
+        join_a = (await http.post(f'/api/rooms/{room_id}/join',
+                                  json={'nickname': '甲'})).json()
+        await http.post(f'/api/rooms/{room_id}/ready',
+                        json={'seat': 0, 'rejoinCode': join_a['rejoinCode']})
+
+        # 重复座位 → 409，响应体不回显 apiKey
+        resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
+            {'seat': 1, 'baseUrl': 'https://api.deepseek.com/v1', 'apiKey': 'sk-secret-1',
+             'model': 'm', 'style': '稳健'},
+            {'seat': 1, 'baseUrl': 'https://api.moonshot.cn/v1', 'apiKey': 'sk-secret-2',
+             'model': 'm2', 'style': '激进'},
+        ]})
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'INVALID_LLM_SEATS'
+        assert 'sk-secret' not in resp.text
+
+        # 远端 http 非法 → 409，同样不回显
+        resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
+            {'seat': 1, 'baseUrl': 'http://api.deepseek.com/v1', 'apiKey': 'sk-secret-3',
+             'model': 'm'},
+        ]})
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'INVALID_LLM_SEATS'
+        assert 'sk-secret' not in resp.text
+
+        # 合法：座位 1/3 各自配置（无服务端全局配置 → 携带座配的空位装配 LLMPlayer）
+        resp = await http.post(f'/api/rooms/{room_id}/start', json={'llmSeats': [
+            {'seat': 1, 'baseUrl': 'https://api.deepseek.com/v1', 'apiKey': 'sk-secret-4',
+             'model': 'deepseek-chat', 'style': '话痨'},
+            {'seat': 3, 'baseUrl': 'https://api.moonshot.cn/v1', 'apiKey': 'sk-secret-5',
+             'model': 'kimi-k2', 'style': '稳健', 'nickname': '小K'},
+        ]})
+        assert resp.status_code == 200, resp.text
+        assert 'sk-secret' not in resp.text
+
+        room = rooms.get(room_id)
+        assert room.effective_llm_enabled is True
+        controllers = room.manager.controllers
+        assert isinstance(controllers[1], LLMPlayer)
+        assert controllers[1].config.api_key == 'sk-secret-4'
+        assert controllers[1].config.style == '话痨'
+        assert isinstance(controllers[3], LLMPlayer)
+        assert controllers[3].config.api_key == 'sk-secret-5'
+        assert isinstance(controllers[2], AIPlayer)
+        seeds = room._seeds()
+        assert seeds[1]['name'] == '大肥鱼（话痨）'
+        assert seeds[1]['avatar'] == 'img/llm/deepseek/llm-avatar-huayao.png'
+        assert seeds[3]['name'] == '小K（稳健）'
+        # 房间详情响应同样不回显 apiKey
+        detail = await http.get(f'/api/rooms/{room_id}')
+        assert detail.status_code == 200
+        assert 'sk-secret' not in detail.text
 
 
 @pytest.mark.asyncio

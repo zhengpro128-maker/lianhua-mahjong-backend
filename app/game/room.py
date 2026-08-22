@@ -26,7 +26,8 @@ from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.llm_player import LLMPlayer
 from app.game.remote_player import RemotePlayer
-from app.llm.config import llm_server_available
+from app.llm.config import llm_server_available, seat_config_from
+from app.llm.persona import avatar_url, default_nickname, display_name
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import get_default_rule_set
 from app.rules.registry import get_rule_set
@@ -249,6 +250,9 @@ class RoomSession:
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
         self.match_id: Optional[str] = None  # 落库用；storage 为 None 时保持 None
+        # 每座位 LLM 配置（开局携带，{seat: 条目}）；条目含 apiKey 但仅存会话内存：
+        # 不落库、不进日志与任何响应。空 → 全局服务端配置。
+        self._llm_seat_configs: dict[int, dict] = {}
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
         # 不再中断整场驱动，数据留在队列等下次落库机会重试。
         self._pending_writes: list = []
@@ -542,13 +546,15 @@ class RoomSession:
 
     # ── 开局驱动 ─────────────────────────────────────────
 
-    async def start(self) -> None:
+    async def start(self, llm_seats: Optional[list] = None) -> None:
         """REST start：所有已占（真人）座位 ready 后开局，独立 game_task 驱动整场。
 
         必须 await（async）以便 game_task 创建在当前事件循环 —— 即 uvicorn 的
         事件循环，与 WS 处理器一致。否则跨循环入队/唤醒会死锁。
         对局已结束（game_task 完成、status=finished）的房间允许再开一局：旧
         manager / match 被新一场替换（旧 match 已落库为 finished 历史）。
+        llm_seats：每座位 LLM 配置列表（含 apiKey，仅会话内存，不落库/日志/响应）；
+        为空时沿用服务端全局配置。
         """
         if self.game_task is not None and not self.game_task.done():
             raise RoomError('ALREADY_STARTED')
@@ -559,6 +565,7 @@ class RoomSession:
                 raise RoomError('NOT_ALL_READY')
         if not any(s is not None for s in self.seats):
             raise RoomError('ROOM_EMPTY')
+        self._llm_seat_configs = {item['seat']: item for item in (llm_seats or [])}
         self.manager = GameManager(
             mode=self.mode,
             controllers=self._controllers(),
@@ -584,23 +591,28 @@ class RoomSession:
 
     @property
     def effective_llm_enabled(self) -> bool:
-        """本局实际是否使用 LLM：用户请求 && 服务端能力可用。"""
-        return self.llm_enabled and self.llm_available
+        """本局实际是否使用 LLM：用户请求 && （服务端能力可用 或 携带了座位配置）。"""
+        return self.llm_enabled and (self.llm_available or bool(self._llm_seat_configs))
 
     def _controllers(self) -> list:
         """装配控制器：空座位 AI 补位（LLM 开关生效时用 LLMPlayer）；真人座位 RemotePlayer。
 
+        每座位自带 LLM 配置优先（不同座位可用不同供应商/模型，key 仅会话内存）；
+        无座配时回退服务端全局配置；再不可用则启发式 AIPlayer。
         AI 思考速度按「开局瞬间」的房间节奏注入（_ai_delays）：真人房间用
         AI_DELAYS 人类节奏，测试路径（pace 为空）保持即用即答。
         """
         ai_delays = self._ai_delays()
         controllers = []
-        for seat in self.seats:
+        for seat_index, seat in enumerate(self.seats):
             if seat is not None:
                 seat.controller.set_ai_delays(ai_delays)
                 controllers.append(seat.controller)
             else:
-                if self.effective_llm_enabled:
+                cfg = seat_config_from(self._llm_seat_configs.get(seat_index, {}))
+                if cfg is not None:
+                    controllers.append(LLMPlayer(delays=ai_delays, rule_set=self.rules, config=cfg))
+                elif self.effective_llm_enabled:
                     controllers.append(LLMPlayer(delays=ai_delays, rule_set=self.rules))
                 else:
                     controllers.append(AIPlayer(delays=ai_delays, rule_set=self.rules))
@@ -613,8 +625,19 @@ class RoomSession:
                 # 真人头像 = join 时按 player_id 持久化分配的 URL（空串 → 前端座位默认）
                 seeds.append({'name': state.nickname, 'avatar': state.avatar, 'score': 1000})
             else:
-                # AI 空座：固定种子头像，不随用户变化
-                seeds.append(PLAYER_SEED[seat])
+                entry = self._llm_seat_configs.get(seat)
+                if entry:
+                    # LLM 空位：按供应商/策略给出头像与显示名（与前端单机 persona 规则一致）
+                    base_url = entry.get('baseUrl') or ''
+                    nickname = (entry.get('nickname') or '').strip() or default_nickname(base_url)
+                    seeds.append({
+                        'name': display_name(nickname, entry.get('style') or '稳健'),
+                        'avatar': avatar_url(base_url, entry.get('style') or '稳健'),
+                        'score': 1000,
+                    })
+                else:
+                    # AI 空座：固定种子头像，不随用户变化
+                    seeds.append(PLAYER_SEED[seat])
         return seeds
 
     # ── 落库（storage 注入时生效；纯内存态为空操作）─────────
