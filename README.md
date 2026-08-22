@@ -236,6 +236,12 @@ LLM_PROVIDER_KIMI_MODEL=kimi-k2
   返回 `llmProviders` 列表（不含 key）。
 - 对局显示：`昵称（策略）` + `img/llm/<供应商英文名>/llm-avatar-<策略>.png`
   （供应商文件夹：deepseek/kimi/qwen/doubao/minimax/gpt/glm/claude，未知=custom）。
+- **中转站 / 聚合 API 就是一个提供商**：`BASE_URL` 填中转站地址（如
+  `https://xx.com/api/v1`）、`API_KEY` 填中转站的 key、`MODEL` 按**中转站文档**
+  的模型名填。同中转站可注册多个 id（**同 key 不同 model/风格/昵称**），
+  实现每座位不同模型；中转站域名不会触发 DeepSeek/Anthropic 官方特判，
+  按普通 OpenAI 兼容处理；较慢的中转站可配 `_TIMEOUT_MS`（如 15000），
+  按量计费建议同时设 `LLM_MAX_REQUESTS_PER_ROOM` 控费。
 
 **方式二：单提供商（兼容）**——未注册 `LLM_PROVIDER_*` 时，旧全局配置
 （`LLM_ENABLED=true` + `LLM_API_BASE/API_KEY/MODEL/STYLE`）作为 `id=default`
