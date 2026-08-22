@@ -2,7 +2,7 @@
 
 - 旧全局配置：LLM_ENABLED + LLM_API_BASE/KEY/MODEL/STYLE...（id=default 的单提供商，
   仅当未使用 LLM_PROVIDER_* 时作为兜底注册）
-- 多提供商：LLM_PROVIDER_<ID>_{BASE_URL,API_KEY,MODEL,STYLE,NICKNAME,TIMEOUT_MS,NAME}
+- 多提供商：LLM_PROVIDER_<ID>_{BASE_URL,API_KEY,MODEL,STYLE,NICKNAME,TIMEOUT_MS,NAME,AVATAR_FOLDER}
   （ID 字母/数字/下划线，如 LLM_PROVIDER_DEEPSEEK_BASE_URL）——Key 全部在服务端，
   客户端只拿 id；建房/开局引用 providerId。
 """
@@ -51,7 +51,7 @@ _STYLES = ('激进', '稳健', '话痨', '高冷')
 _PROVIDER_SUFFIXES = (
     ('BASE_URL', 'base_url'), ('API_KEY', 'api_key'), ('MODEL', 'model'),
     ('STYLE', 'style'), ('NICKNAME', 'nickname'), ('TIMEOUT_MS', 'timeout_ms'),
-    ('NAME', 'name'),
+    ('AVATAR_FOLDER', 'avatar_folder'), ('NAME', 'name'),
 )
 
 
@@ -60,7 +60,8 @@ class LlmProvider:
 
     def __init__(self, provider_id: str, name: str = '', base_url: str = '',
                  api_key: str = '', model: str = '', style: str = '稳健',
-                 nickname: str = '', timeout_ms: Optional[float] = None):
+                 nickname: str = '', timeout_ms: Optional[float] = None,
+                 avatar_folder: str = ''):
         self.provider_id = provider_id
         self.name = name.strip() or provider_id
         self.base_url = base_url.strip()
@@ -69,6 +70,7 @@ class LlmProvider:
         self.style = style if style in _STYLES else '稳健'
         self.nickname = nickname.strip()
         self.timeout_ms = timeout_ms
+        self.avatar_folder = avatar_folder.strip()
 
     def to_config(self) -> LlmServerConfig:
         """转单次调用配置（全局池/预算参数从环境读取）。"""
@@ -158,6 +160,7 @@ def load_llm_providers() -> dict[str, LlmProvider]:
             style=(entry.get('style') or '稳健').strip(),
             nickname=(entry.get('nickname') or '').strip(),
             timeout_ms=timeout_ms,
+            avatar_folder=(entry.get('avatar_folder') or '').strip(),
         )
     return providers
 

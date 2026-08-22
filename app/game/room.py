@@ -569,6 +569,10 @@ class RoomSession:
                 raise RoomError('NOT_ALL_READY')
         if not any(s is not None for s in self.seats):
             raise RoomError('ROOM_EMPTY')
+        if llm_seats and not self.effective_llm_enabled:
+            # 联机 LLM 是房间级服务端功能，不能由开局参数暗中开启，也不能静默忽略。
+            # 单机浏览器 provider/Key 与这里完全无关。
+            raise RoomError('LLM_NOT_ENABLED')
         self._llm_seat_providers = {item['seat']: item['providerId'] for item in (llm_seats or [])}
         self._llm_default_provider = default_provider
         self.manager = GameManager(
@@ -645,9 +649,12 @@ class RoomSession:
                     # LLM 空位：按提供商/策略给出头像与显示名（「昵称（策略）」，
                     # 昵称缺省按供应商推导：DeepSeek=大肥鱼等）
                     seeds.append({
-                        'name': display_name(provider.nickname or default_nickname(provider.base_url),
+                        'name': display_name(provider.nickname or default_nickname(
+                                                 provider.base_url,
+                                                 provider_id=provider.provider_id),
                                              provider.style),
-                        'avatar': avatar_url(provider.base_url, provider.style),
+                        'avatar': avatar_url(provider.base_url, provider.style,
+                                             provider.avatar_folder, provider.provider_id),
                         'score': 1000,
                     })
                 else:

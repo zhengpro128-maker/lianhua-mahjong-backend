@@ -28,20 +28,52 @@ _PROFILES = [
     (re.compile(r'api\.anthropic\.com', re.I), 'claude', 'Claude'),
 ]
 
+_ID_PROFILES = {
+    'deepseek': ('deepseek', '大肥鱼'),
+    'kimi': ('kimi', 'Kimi'),
+    'moonshot': ('kimi', 'Kimi'),
+    'qwen': ('qwen', '千问'),
+    'doubao': ('doubao', '豆包'),
+    'minimax': ('minimax', 'MiniMax'),
+    'gpt': ('gpt', 'GPT'),
+    'openai': ('gpt', 'GPT'),
+    'glm': ('glm', '智谱'),
+    'claude': ('claude', 'Claude'),
+    'anthropic': ('claude', 'Claude'),
+}
 
-def provider_folder(base_url: str) -> str:
-    """供应商英文文件夹名；未知供应商为 custom。"""
+
+def _profile_from_id(provider_id: str) -> tuple[str, str] | None:
+    """代理 Base URL 无法识别时，从 provider id 的安全 token 推导形象。"""
+    tokens = [item for item in re.split(r'[^a-z0-9]+', (provider_id or '').lower()) if item]
+    for token in reversed(tokens):
+        if token in _ID_PROFILES:
+            return _ID_PROFILES[token]
+    return None
+
+
+def provider_folder(base_url: str, avatar_folder: str = '', provider_id: str = '') -> str:
+    """供应商头像文件夹：显式配置 > 官方 Base URL > provider id > custom。"""
+    override = (avatar_folder or '').strip().lower()
+    if override and re.fullmatch(r'[a-z0-9_-]+', override):
+        return override
     for pattern, folder, _ in _PROFILES:
         if pattern.search(base_url or ''):
             return folder
+    inferred = _profile_from_id(provider_id)
+    if inferred:
+        return inferred[0]
     return 'custom'
 
 
-def default_nickname(base_url: str, fallback: str = 'AI玩家') -> str:
+def default_nickname(base_url: str, fallback: str = 'AI玩家', provider_id: str = '') -> str:
     """供应商默认昵称；未知供应商回退 fallback。"""
     for pattern, _, nickname in _PROFILES:
         if pattern.search(base_url or ''):
             return nickname
+    inferred = _profile_from_id(provider_id)
+    if inferred:
+        return inferred[1]
     return fallback or 'AI玩家'
 
 
@@ -50,9 +82,10 @@ def style_file(style: Optional[str]) -> str:
     return _STYLE_FILES.get(style or '稳健', _STYLE_FILES['稳健'])
 
 
-def avatar_url(base_url: str, style: Optional[str]) -> str:
+def avatar_url(base_url: str, style: Optional[str], avatar_folder: str = '',
+               provider_id: str = '') -> str:
     """头像相对 URL（前端以 BASE_URL 解析）：img/llm/<folder>/<策略文件>。"""
-    return f'img/llm/{provider_folder(base_url)}/{style_file(style)}'
+    return f'img/llm/{provider_folder(base_url, avatar_folder, provider_id)}/{style_file(style)}'
 
 
 def display_name(nickname: str, style: Optional[str]) -> str:

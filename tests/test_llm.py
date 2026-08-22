@@ -343,16 +343,26 @@ class TestPersona:
         assert provider_folder('https://api.moonshot.cn/v1') == 'kimi'
         assert provider_folder('https://open.bigmodel.cn/api/paas/v4') == 'glm'
         assert provider_folder('https://my.proxy.local/v1') == 'custom'
+        assert provider_folder('https://my.proxy.local/v1', provider_id='relay_gpt') == 'gpt'
+        assert provider_folder('https://my.proxy.local/v1', avatar_folder='claude',
+                               provider_id='relay_gpt') == 'claude'
         assert default_nickname('https://api.deepseek.com/v1') == '大肥鱼'
         assert default_nickname('https://x.com/v1', fallback='AI玩家') == 'AI玩家'
+        assert default_nickname('https://x.com/v1', provider_id='relay_gpt') == 'GPT'
         assert avatar_url('https://api.deepseek.com/v1', '激进') == \
             'img/llm/deepseek/llm-avatar-jijin.png'
+        assert avatar_url('https://my.proxy.local/v1', '稳健',
+                          provider_id='relay_gpt') == \
+            'img/llm/gpt/llm-avatar-wenjian.png'
         assert display_name('大肥鱼', '激进') == '大肥鱼（激进）'
 
 
 class TestProviderRegistry:
     def test_env_registry_parsing(self, monkeypatch):
-        monkeypatch.delenv('LLM_PROVIDER_DEEPSEEK_BASE_URL', raising=False)
+        # 与开发机 backend/.env 隔离，只验证本用例声明的注册表。
+        for key in list(os.environ):
+            if key.startswith('LLM_PROVIDER_'):
+                monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv('LLM_PROVIDER_DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1')
         monkeypatch.setenv('LLM_PROVIDER_DEEPSEEK_API_KEY', 'sk-srv')
         monkeypatch.setenv('LLM_PROVIDER_DEEPSEEK_MODEL', 'deepseek-chat')
@@ -360,11 +370,13 @@ class TestProviderRegistry:
         monkeypatch.setenv('LLM_PROVIDER_KIMI_API_KEY', 'sk-k')
         monkeypatch.setenv('LLM_PROVIDER_KIMI_MODEL', 'kimi-k2')
         monkeypatch.setenv('LLM_PROVIDER_KIMI_STYLE', '话痨')
+        monkeypatch.setenv('LLM_PROVIDER_KIMI_AVATAR_FOLDER', 'kimi')
         from app.llm.config import load_llm_providers
         providers = load_llm_providers()
         assert set(providers) == {'deepseek', 'kimi'}
         assert providers['kimi'].style == '话痨'
         assert providers['kimi'].name == 'kimi'
+        assert providers['kimi'].avatar_folder == 'kimi'
 
     def test_incomplete_provider_skipped(self, monkeypatch):
         monkeypatch.delenv('LLM_PROVIDER_X_API_KEY', raising=False)

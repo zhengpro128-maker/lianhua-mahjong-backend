@@ -59,8 +59,10 @@ def _llm_providers_public() -> list[dict]:
             'name': provider.name,
             'model': provider.model,
             'style': provider.style,
-            'nickname': provider.nickname or default_nickname(provider.base_url),
-            'avatar': avatar_url(provider.base_url, provider.style),
+            'nickname': provider.nickname or default_nickname(
+                provider.base_url, provider_id=provider.provider_id),
+            'avatar': avatar_url(provider.base_url, provider.style,
+                                 provider.avatar_folder, provider.provider_id),
         })
     return result
 

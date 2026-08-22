@@ -423,6 +423,17 @@ async def test_start_with_per_seat_llm_providers(server, fresh_rooms, temp_stora
         assert public['kimi']['nickname'] == '小K'
         assert public['kimi']['avatar'] == 'img/llm/kimi/llm-avatar-wenjian.png'
 
+        # 联机开关与单机设置完全独立：房间未显式启用时，开局不能靠 llmSeats 暗中开启。
+        disabled_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        disabled_join = (await http.post(f'/api/rooms/{disabled_id}/join',
+                                         json={'nickname': '乙'})).json()
+        await http.post(f'/api/rooms/{disabled_id}/ready',
+                        json={'seat': 0, 'rejoinCode': disabled_join['rejoinCode']})
+        resp = await http.post(f'/api/rooms/{disabled_id}/start', json={
+            'llmSeats': [{'seat': 1, 'providerId': 'ds'}]})
+        assert resp.status_code == 409
+        assert resp.json()['detail']['code'] == 'LLM_NOT_ENABLED'
+
         room_id = (await http.post('/api/rooms',
                                    json={'capacity': 2, 'llmEnabled': True})).json()['roomId']
         join_a = (await http.post(f'/api/rooms/{room_id}/join',
