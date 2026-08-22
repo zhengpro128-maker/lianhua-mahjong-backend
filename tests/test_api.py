@@ -109,6 +109,19 @@ async def test_local_tts_gateway_validates_profile_and_returns_cached_audio_url(
         assert too_long.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_local_tts_gateway_allows_local_dev_and_vibehub_origins(server):
+    async with httpx.AsyncClient(base_url=server['http'], trust_env=False) as http:
+        for origin in ('http://127.0.0.1:5181', 'https://room.lumigrav.space'):
+            response = await http.options('/api/local-tts/synthesize', headers={
+                'Origin': origin,
+                'Access-Control-Request-Method': 'POST',
+                'Access-Control-Request-Headers': 'content-type',
+            })
+            assert response.status_code == 200
+            assert response.headers['access-control-allow-origin'] == origin
+
+
 async def wait_until(cond, timeout=30.0, interval=0.05) -> None:
     """轮询等待条件成立（跨线程读 room 状态时用）。"""
     deadline = time.time() + timeout
