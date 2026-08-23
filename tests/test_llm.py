@@ -323,7 +323,7 @@ class TestLLMPlayer:
         player, fake = make_llm_player(
             monkeypatch, ['{"choice":"A1","message":"稳一手。"}'],
             seat=2, provider_id='deepseek',
-            on_message=lambda seat, text: messages.append((seat, text)))
+            on_message=lambda seat, text, priority: messages.append((seat, text, priority)))
         ctx = turn_ctx(hand=['m3', 'm3', 'm5', 'm6', 'p1', 'p2', 'p3', 's1', 's2', 's3',
                              'east', 'west', 'white'])
         action = run(player.request_turn(ctx))
@@ -332,7 +332,7 @@ class TestLLMPlayer:
         assert player.stats['successes'] == 1
         assert player.stats['messages'] == 1
         assert player.message_history == ['稳一手。']
-        assert messages == [(2, '稳一手。')]
+        assert messages == [(2, '稳一手。', 'normal')]
 
     def test_turn_illegal_choice_falls_back(self, monkeypatch):
         # 返回白名单外的 choice → 解析失败 → 回退启发式（kind=discard 或杠）
@@ -517,7 +517,7 @@ class TestPerSeatAssembly:
         room.manager = SimpleNamespace(controllers=[AIPlayer(), controller, AIPlayer(), AIPlayer()])
         room._on_llm_message(1, '稳住，先打这张。')
         assert emitted == [{
-            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '稳住，先打这张。',
+            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '稳住，先打这张。', 'priority': 'normal',
         }]
 
         class BoundLogger:
@@ -566,11 +566,11 @@ class TestPerSeatAssembly:
 
         run(scenario())
         assert emitted[0] == {
-            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '这张先放下。',
+            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '这张先放下。', 'priority': 'normal',
         }
         assert emitted[1] == {
             'kind': 'llm_audio', 'messageId': 1, 'seat': 1,
-            'audioUrl': f'/api/tts/audio/{"a" * 64}.mp3', 'cached': True,
+            'audioUrl': f'/api/tts/audio/{"a" * 64}.mp3', 'cached': True, 'priority': 'normal',
         }
         assert room._tts_match_stats['hits'] == 1
 
@@ -610,7 +610,7 @@ class TestPerSeatAssembly:
 
         assert emitted[0]['kind'] == 'table_action'
         assert emitted[1] == {
-            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': expected_text,
+            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': expected_text, 'priority': 'important',
         }
         snapshot = build_snapshot(room, 0)
         assert [player['isLlm'] for player in snapshot['players']] == [False, True, False, False]

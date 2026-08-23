@@ -29,6 +29,7 @@ from app.game.remote_player import RemotePlayer
 from app.llm.config import (default_provider_id, llm_server_available,
                             load_llm_providers)
 from app.llm.persona import avatar_url, default_nickname, display_name
+from app.llm.speech_policy import LlmSpeechPolicy, compact_speech_text
 from app.tts.service import get_tts_service
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import get_default_rule_set
@@ -289,6 +290,7 @@ class RoomSession:
         # 当前场次 LLM 吐槽：即时广播给前端，整场结束后逐条写日志。
         self._llm_messages: list[dict] = []
         self._llm_message_seq = 0
+        self._llm_speech_policy = LlmSpeechPolicy()
         self._tts_tasks: set[asyncio.Task] = set()
         self._tts_match_generation = 0
         self._tts_match_stats = {
@@ -621,6 +623,7 @@ class RoomSession:
         self._llm_default_provider = default_provider
         self._llm_messages = []
         self._llm_message_seq = 0
+        self._llm_speech_policy.reset()
         self._tts_match_stats = {
             'requests': 0, 'hits': 0, 'misses': 0,
             'successes': 0, 'failures': 0,
@@ -721,12 +724,24 @@ class RoomSession:
                     seeds.append(PLAYER_SEED[seat])
         return seeds
 
-    def _on_llm_message(self, seat: int, text: str) -> None:
+    def _on_llm_message(self, seat: int, text: str,
+                        priority: str = 'normal') -> None:
         """LLM 吐槽：记录本场历史并实时广播；失败不影响出牌动作。"""
         if not text or not 0 <= seat < self.player_count:
             return
+        controller = None
+        if self.manager is not None and 0 <= seat < len(self.manager.controllers):
+            controller = self.manager.controllers[seat]
+        style = controller.config.style if isinstance(controller, LLMPlayer) else '稳健'
+        priority = 'important' if priority == 'important' else 'normal'
+        if not self._llm_speech_policy.admit(seat, style, priority):
+            return
+        text = compact_speech_text(text)
+        if not text:
+            return
         self._llm_message_seq += 1
-        entry = {'id': self._llm_message_seq, 'seat': seat, 'text': text}
+        entry = {'id': self._llm_message_seq, 'seat': seat, 'text': text,
+                 'priority': priority}
         self._llm_messages.append(entry)
         self.conn.broadcast({'kind': 'llm_message', **entry})
         try:
@@ -737,14 +752,13 @@ class RoomSession:
         service = get_tts_service()
         if not service.available or self.manager is None:
             return
-        controller = self.manager.controllers[seat]
         if not isinstance(controller, LLMPlayer):
             return
         self._tts_match_stats['requests'] += 1
         generation = self._tts_match_generation
         task = loop.create_task(self._synthesize_llm_audio(
             generation, entry['id'], seat, text, controller.config.style,
-            controller.provider_id))
+            controller.provider_id, priority))
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
@@ -758,11 +772,12 @@ class RoomSession:
         lines = _LLM_WIN_LINES.get(action_type)
         if lines is None:
             return
-        self._on_llm_message(seat, lines.get(controller.config.style, lines['稳健']))
+        self._on_llm_message(seat, lines.get(controller.config.style, lines['稳健']),
+                             'important')
 
     async def _synthesize_llm_audio(self, generation: int, message_id: int,
                                     seat: int, text: str, style: str,
-                                    provider_id: str) -> None:
+                                    provider_id: str, priority: str) -> None:
         try:
             audio = await get_tts_service().ensure_audio(text, style, provider_id)
         except asyncio.CancelledError:
@@ -782,6 +797,7 @@ class RoomSession:
             'seat': seat,
             'audioUrl': audio.audio_url,
             'cached': audio.cached,
+            'priority': priority,
         })
 
     async def _cancel_tts_tasks(self) -> None:

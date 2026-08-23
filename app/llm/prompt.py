@@ -14,13 +14,21 @@ _RULE_SUMMARIES = {
     )),
 }
 
+_STYLE_SPEECH_GUIDE = {
+    '话痨': '话痨可以较常给吐槽，但不要每次决策都说话。',
+    '激进': '激进只在进攻或关键选择时给吐槽，普通摸打多省略 message。',
+    '稳健': '稳健仅偶尔点评关键选择，大多数普通摸打省略 message。',
+    '高冷': '高冷应极少说话，除非关键动作，否则省略 message。',
+}
+
 
 def build_prompt(style: str, request: dict) -> tuple[str, str]:
     state = request['state']
     system = (
         f'你是广东麻将桌上的牌友，风格：{style}。\n'
         '你的任务只有一件事：从候选动作列表中选择一个编号。\n'
-        '你可以额外给出一句 ≤30 字的牌桌吐槽；吐槽会通过独立事件展示，不参与动作执行。\n'
+        '你可以额外给出一句 ≤16 字的牌桌吐槽；吐槽会通过独立事件展示，不参与动作执行。\n'
+        f'{_STYLE_SPEECH_GUIDE.get(style, _STYLE_SPEECH_GUIDE["稳健"])}\n'
         '候选动作均已由游戏引擎判定合法；当前玩法的规则摘要和候选特征是唯一权威事实。\n'
         '只按当前玩法决策，严禁套用国标麻将、日麻或其他麻将规则；规则摘要未列出的特殊牌型一律视为不支持。\n'
         '你绝对不能：输出候选列表之外的编号、解释思考过程、输出多个候选、评价规则合法性。\n'
@@ -68,7 +76,7 @@ def build_prompt(style: str, request: dict) -> tuple[str, str]:
         lines.append(_candidate_line(candidate, state['ruleCode']))
     lines.append('【输出】严格 JSON，不要输出任何其他内容：')
     lines.append('{"choice": "A1", "message": "就你了！"}')
-    lines.append('choice 必须是上面列出的编号；message 可省略（输出空字符串或省略字段），≤30 字。')
+    lines.append('choice 必须是上面列出的编号；message 可省略（输出空字符串或省略字段），≤16 字。')
     return system, '\n'.join(lines)
 
 

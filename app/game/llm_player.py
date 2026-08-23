@@ -19,6 +19,10 @@ from app.llm.validation import validate_action
 from app.rules.base import GameRuleSet
 
 
+IMPORTANT_SPEECH_ACTIONS = {
+    'gang', 'peng', 'chi', 'added-kong', 'concealed-kong', 'wind-kong',
+}
+
 class LLMPlayer(AIPlayer):
     """LLM 驱动的 AI 玩家（联机空座补位用；超时/断线代打仍用 AIPlayer）。"""
 
@@ -28,7 +32,7 @@ class LLMPlayer(AIPlayer):
                  stats: Optional[dict] = None,
                  seat: int = -1,
                  provider_id: str = '',
-                 on_message: Optional[Callable[[int, str], None]] = None):
+                 on_message: Optional[Callable[[int, str, str], None]] = None):
         super().__init__(delays=delays, random=random, rule_set=rule_set)
         self.config = config or load_llm_config()
         self.stats = stats if stats is not None else {
@@ -105,7 +109,9 @@ class LLMPlayer(AIPlayer):
             self.message_history.append(message)
             if self.on_message is not None:
                 try:
-                    self.on_message(self.seat, message)
+                    action_kind = candidate['action']['kind']
+                    priority = 'important' if action_kind in IMPORTANT_SPEECH_ACTIONS else 'normal'
+                    self.on_message(self.seat, message, priority)
                 except Exception:
                     # 吐槽属于表现副作用；广播失败不能影响动作执行和对局推进。
                     pass
