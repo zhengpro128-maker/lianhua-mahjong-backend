@@ -12,3 +12,5 @@ tests/
 *.db
 .env
 .env.*
+config/tts.yml
+config/secrets/

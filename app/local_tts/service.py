@@ -1,62 +1,45 @@
-"""单机 TTS 网关服务：独立缓存、音色白名单与百度合成实例。"""
+"""单机 TTS 网关：独立缓存、音色白名单与共享 provider 路由。"""
 
-from dataclasses import replace
-import os
-from pathlib import Path
 from typing import Optional
 
+from app.tts.config import TtsConfig, load_tts_config, normalize_voice_key
 from app.tts.service import TtsAudio, TtsService
-from app.tts.config import BACKEND_ROOT, load_tts_config
-
-
-def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
-    try:
-        return max(minimum, min(maximum, int(os.environ.get(name, str(default)))))
-    except ValueError:
-        return default
 
 
 class LocalTtsGatewayService:
     """与联机 RoomSession 完全解耦的单机语音服务。"""
 
-    def __init__(self):
-        base = load_tts_config()
-        enabled_raw = os.environ.get('LOCAL_TTS_ENABLED', 'auto').strip().lower()
-        enabled = base.available if enabled_raw == 'auto' else enabled_raw == 'true'
-        cache_dir = Path(os.environ.get(
-            'LOCAL_TTS_CACHE_DIR', str(BACKEND_ROOT / 'data' / 'local-tts-cache'))).resolve()
-        config = replace(
-            base,
-            enabled=enabled,
-            cache_dir=cache_dir,
-            cache_max_mb=_bounded_int('LOCAL_TTS_CACHE_MAX_MB', 128, 16, 2048),
-            cache_ttl_days=_bounded_int('LOCAL_TTS_CACHE_TTL_DAYS', 30, 1, 365),
-        )
-        self.tts = TtsService(config)
+    def __init__(self, config: Optional[TtsConfig] = None,
+                 tts: Optional[TtsService] = None):
+        self.config = config or load_tts_config()
+        self.tts = tts or TtsService(
+            self.config, cache_config=self.config.cache.local)
         configured = {
-            item.strip().lower().replace('-', '_')
-            for item in os.environ.get('LOCAL_TTS_ALLOWED_VOICES', '').split(',')
-            if item.strip()
+            normalize_voice_key(item)
+            for item in self.config.local_gateway.allowed_voice_keys
+            if normalize_voice_key(item)
         }
-        self.allowed_voice_keys = frozenset({'default', *config.provider_voices, *configured})
-        self.rate_limit_per_minute = _bounded_int(
-            'LOCAL_TTS_RATE_LIMIT_PER_MINUTE', 60, 1, 600)
+        self.allowed_voice_keys = frozenset({
+            'default', *self.config.voice_keys, *configured,
+        })
+        self.rate_limit_per_minute = self.config.local_gateway.rate_limit_per_minute
 
     @property
     def available(self) -> bool:
-        return self.tts.available
+        return self.config.local_gateway.enabled and self.tts.available
 
     @property
     def cache(self):
         return self.tts.cache
 
     def normalize_voice_key(self, voice_key: str) -> Optional[str]:
-        normalized = voice_key.strip().lower().replace('-', '_')
+        normalized = normalize_voice_key(voice_key)
         return normalized if normalized in self.allowed_voice_keys else None
 
-    async def ensure_audio(self, text: str, voice_key: str, style: str) -> Optional[TtsAudio]:
+    async def ensure_audio(self, text: str, voice_key: str,
+                           style: str) -> Optional[TtsAudio]:
         normalized = self.normalize_voice_key(voice_key)
-        if normalized is None:
+        if normalized is None or not self.available:
             return None
         provider_id = '' if normalized == 'default' else normalized
         return await self.tts.ensure_audio(text, style, provider_id)

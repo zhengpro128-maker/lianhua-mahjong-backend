@@ -1,40 +1,39 @@
-"""安全的百度 TTS 连通性检查：不输出任何凭据或 Token。"""
+"""安全检查 TTS 主用/降级链路；不输出任何凭据。"""
 
 import argparse
 import asyncio
+from pathlib import Path
 
-from dotenv import load_dotenv
-
-from app.llm.config import default_provider_id
-from app.tts.baidu import BaiduTtsClient
-from app.tts.config import BACKEND_ROOT, TTS_STYLES, load_tts_config
+from app.tts.config import DEFAULT_CONFIG_FILE, TTS_STYLES, load_tts_config
+from app.tts.service import TtsService
 
 
-async def _main(provider_id: str, style: str) -> None:
-    # 独立检查命令不会经过 FastAPI/storage 启动链，须在这里显式加载 backend/.env。
-    load_dotenv(BACKEND_ROOT / '.env', override=False)
-    config = load_tts_config()
-    print(f'TTS available={config.available}')
-    if not config.available:
-        return
-    effective_provider = provider_id or default_provider_id() or ''
-    voice = config.voice_for(style, effective_provider)
-    print(
-        f'TTS profile provider={effective_provider or "default"} style={style} '
-        f'voice={voice.voice_id} speed={voice.speed} pitch={voice.pitch} volume={voice.volume}')
-    client = BaiduTtsClient(config)
+async def _main(config_file: Path, voice_key: str, style: str) -> int:
+    config = load_tts_config(config_file)
+    service = TtsService(config)
     try:
-        audio = await client.synthesize('莲花麻将语音测试。', voice)
-        print(f'TTS success bytes={len(audio)}')
-    except Exception as exc:
-        print(f'TTS failed {type(exc).__name__}: {exc}')
+        providers = ','.join(service.available_providers) or 'none'
+        print(
+            f'TTS available={service.available} providers={providers} '
+            f'route={"->".join(config.provider_names)}')
+        if not service.available:
+            return 1
+        audio = await service.ensure_audio('莲花麻将语音测试。', style, voice_key)
+        if audio is None:
+            print('TTS failed')
+            return 1
+        print(
+            f'TTS success provider={audio.provider} bytes={audio.size_bytes} '
+            f'cached={audio.cached}')
+        return 0
     finally:
-        await client.close()
+        await service.close()
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='安全检查百度 TTS 配置与连通性')
-    parser.add_argument('--provider', default='', help='LLM providerId，例如 deepseek')
-    parser.add_argument('--style', choices=TTS_STYLES, default='稳健', help='AI 策略')
+    parser = argparse.ArgumentParser(description='检查 TTS 主用与百度故障降级链路')
+    parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG_FILE)
+    parser.add_argument('--voice-key', default='default')
+    parser.add_argument('--style', choices=TTS_STYLES, default='稳健')
     args = parser.parse_args()
-    asyncio.run(_main(args.provider, args.style))
+    raise SystemExit(asyncio.run(_main(args.config, args.voice_key, args.style)))

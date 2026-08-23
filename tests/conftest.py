@@ -10,6 +10,8 @@ test_ws.py / test_api.py 共用：
 """
 
 import os
+from pathlib import Path
+import tempfile
 import threading
 import time
 
@@ -20,8 +22,6 @@ import uvicorn
 # setdefault 保留开发者/CI 显式指定的环境变量。
 os.environ.setdefault('LOG_TO_FILE', '0')
 os.environ.setdefault('LOG_LEVEL', 'WARNING')
-# 测试严禁使用开发机真实百度凭据；TTS 用 FakeClient/临时缓存单独验证。
-os.environ.setdefault('TTS_ENABLED', 'false')
 # 测试服务只监听本机；避免开发机系统代理截获 127.0.0.1 请求并返回 503。
 for _proxy_key in ('NO_PROXY', 'no_proxy'):
     _hosts = [item.strip() for item in os.environ.get(_proxy_key, '').split(',') if item.strip()]
@@ -29,6 +29,18 @@ for _proxy_key in ('NO_PROXY', 'no_proxy'):
         if _host not in _hosts:
             _hosts.append(_host)
     os.environ[_proxy_key] = ','.join(_hosts)
+
+# 测试严禁读取开发机真实 TTS YAML/凭据；服务 fixture 使用系统临时缓存。
+from app.tts import config as tts_config
+_test_tts_root = Path(tempfile.gettempdir()) / 'lianhua-test-tts'
+_test_tts_root.mkdir(parents=True, exist_ok=True)
+_test_tts_config = _test_tts_root / 'disabled.yml'
+_test_tts_config.write_text(
+    'version: 1\nenabled: false\ncache:\n'
+    f'  room: {{dir: "{(_test_tts_root / "room").as_posix()}", max_mb: 16, ttl_days: 1}}\n'
+    f'  local: {{dir: "{(_test_tts_root / "local").as_posix()}", max_mb: 16, ttl_days: 1}}\n',
+    encoding='utf-8')
+tts_config.DEFAULT_CONFIG_FILE = _test_tts_config
 
 from app.main import app
 from app.game.room import room_registry as rooms

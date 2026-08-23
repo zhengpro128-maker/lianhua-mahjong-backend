@@ -1,13 +1,13 @@
 # 部署指南 · GitHub Actions → GHCR → 服务器（仅后端）
 
 > 本仓库（后端）的每个 `master` push 会由 GitHub Actions 自动：
-> 构建后端镜像 → 推 GHCR → scp `docker-compose.prod.yml` 到服务器 → `docker compose pull && up -d`。
+> 构建后端镜像 → 推 GHCR → scp `docker-compose.yml` 到服务器 → `docker compose pull && up -d`。
 >
 > 前端不在此流水线内（另行托管/部署）。
 
 ```
 后端仓库 push ──► Actions ──► build 镜像 ──► push ghcr.io ──► 服务器 docker compose pull && up -d
-                  └── scp docker-compose.prod.yml ──► 服务器
+                  └── scp docker-compose.yml ──► 服务器
 ```
 
 ---
@@ -34,10 +34,13 @@ docker compose version        # 需要 docker compose v2 插件
 # 部署目录（workflow 会在此目录放 compose 文件）
 sudo mkdir -p /opt/python-project/lianhua-mahjong-backend
 cd /opt/python-project/lianhua-mahjong-backend
-# 运行时配置：docker-compose.prod.yml 会从同目录的 .env 加载全部变量。
+# 运行时配置：docker-compose.yml 会从同目录的 .env 加载数据库/LLM 等变量。
 # 按需填写完整配置；例如走 PostgreSQL 时至少设置：
 echo 'PG_PASSWORD=你的密码' > .env
-# LLM/TTS 等其他服务的配置也放在这个 .env 中，不要提交到 Git
+# TTS 使用 config/tts.yml，并通过其中的 credential_file 引用 config/secrets/。
+mkdir -p config/secrets
+cp config/tts.example.yml config/tts.yml
+# 填入 config/secrets/火山apikey.txt 和 百度api-key.txt；这些文件都不要提交到 Git。
 ```
 
 ### 1.3 GHCR 包可见性
@@ -80,8 +83,8 @@ git add -A && git commit -m "ci: deploy backend" && git push
 ```bash
 ssh 服务器
 cd /opt/python-project/lianhua-mahjong-backend
-docker compose -f docker-compose.prod.yml ps                       # 运行状态
-docker compose -f docker-compose.prod.yml logs -f --tail=100       # 日志
+docker compose -f docker-compose.yml ps                       # 运行状态
+docker compose -f docker-compose.yml logs -f --tail=100       # 日志
 # 回滚：把 compose 里 image 的 tag 从 latest 改回 sha-<commit>，再 pull && up
 ```
 

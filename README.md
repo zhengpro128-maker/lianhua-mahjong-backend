@@ -134,8 +134,7 @@ backend/
 ├─ data/                      # SQLite 运行时数据（gitignored）
 ├─ DEPLOY.md                  # 部署指南
 ├─ Dockerfile                 # python:3.11-slim + 单 uvicorn worker
-├─ docker-compose.yml         # 本地构建版
-├─ docker-compose.prod.yml    # 生产镜像版（供 CI scp 到服务器 pull 运行）
+├─ docker-compose.yml         # 本地/服务器 Compose 配置
 ├─ LICENSE
 └─ pyproject.toml
 ```
@@ -204,24 +203,14 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `LLM_API_BASE` | 空 | OpenAI 兼容 API 根地址（**单提供商兼容路径**，见下） |
 | `LLM_API_KEY` | 空 | API 密钥（服务端持有，不下发） |
 | `LLM_MODEL` | 空 | 模型名，如 `deepseek-chat` |
-| `LLM_TIMEOUT_S` | `8` | 单次决策总预算（秒，含并发排队 + 一次语义重试） |
+| `LLM_TIMEOUT_S` | `20` | 单次决策总预算（秒，含并发排队 + 一次语义重试） |
 | `LLM_POOL_TIMEOUT_S` | `1` | 并发信号量排队等待（秒） |
 | `LLM_STYLE` | `稳健` | 出牌风格：激进 / 稳健 / 话痨 / 高冷（单提供商路径） |
 | `LLM_CONCURRENCY` | `4` | 决策请求并发上限 |
 | `LLM_MAX_REQUESTS_PER_ROOM` | `0` | 每房间请求预算（0 = 不限；超出后该座位回退启发式） |
-| `TTS_ENABLED` | `auto` | 百度 TTS；auto = 检测到凭据即启用 |
-| `BAIDU_TTS_API_KEY` / `BAIDU_TTS_SECRET_KEY` | 本地凭据文件 | 百度语音应用凭据，环境变量优先 |
-| `BAIDU_TTS_CREDENTIAL_FILE` | `docs/百度api-key.txt` | 开发机凭据文件（已 gitignore） |
-| `TTS_CONCURRENCY` | `2` | 百度合成并发，最高限制为 3 |
-| `TTS_TIMEOUT_S` | `5` | 单次鉴权/合成超时 |
-| `TTS_CACHE_DIR` | `data/tts-cache` | MP3 + SQLite 元数据缓存目录 |
-| `TTS_CACHE_MAX_MB` | `256` | LRU 容量上限 |
-| `TTS_CACHE_TTL_DAYS` | `30` | 未访问缓存有效期 |
-| `BAIDU_TTS_*_PROVIDER_<ID>` | 空 | 按 LLM providerId 覆盖 VOICE/SPEED/PITCH/VOLUME |
-| `LOCAL_TTS_ENABLED` | `auto` | 独立单机 TTS 网关；auto 跟随百度凭据可用性 |
-| `LOCAL_TTS_CACHE_DIR` | `data/local-tts-cache` | 单机网关独立 MP3/SQLite 缓存 |
-| `LOCAL_TTS_RATE_LIMIT_PER_MINUTE` | `60` | 单 IP 每分钟合成请求上限 |
-| `LOCAL_TTS_ALLOWED_VOICES` | 空 | 额外允许的 voiceKey，逗号分隔 |
+
+TTS 不再读取环境变量；provider、音色、缓存、超时和故障降级统一配置在
+`config/tts.yml`，结构参考 `config/tts.example.yml`。
 
 ### LLM 大模型（可选，§9 设计文档）
 
@@ -282,33 +271,34 @@ LLM_PROVIDER_KIMI_MODEL=kimi-k2
 - Key 只在服务端环境变量/`.env` 中，**不进日志与任何接口响应**；前端
   右下角「🤖 AI 设置」仅单机模式显示（联机由服务端提供商配置）。
 
-`backend/.env` 不应提交仓库（已在 `.gitignore`）；部署环境的机密经 GitHub Actions Secrets 下发或服务器 `.env` 注入（见 DEPLOY.md）。
+`backend/.env` 不应提交仓库（已在 `.gitignore`）；这里仅存数据库和 LLM 等环境配置。
+TTS 凭据放在 `config/secrets/`，由 `config/tts.yml` 引用，两者同样严禁提交。
 
-### 百度 TTS 与音频缓存
+### 火山引擎 TTS、百度故障降级与音频缓存
 
 - LLM 文字吐槽先通过 `llm_message` 广播；TTS 在后台异步生成，完成后广播
   `llm_audio`，不会阻塞出牌。
-- 缓存键包含规范化文本、音色、策略、语速、音调、音量、情绪和格式；同一 key
-  并发请求只调用百度一次。
+- 主 provider 使用火山引擎豆包语音合成 V3 SSE（`seed-tts-2.0`，MP3/24 kHz）；
+  火山超时、网络、鉴权、额度或业务失败时自动切换到百度。
+- 百度只保留一个中性音色，所有 LLM provider 和策略故障降级时共用；不再维护
+  provider 级百度音色环境变量。
+- 每个 provider 有独立负缓存和全局冷却期。冷却期内直接走百度；冷却结束后重新
+  尝试火山，不会被已经生成的百度缓存永久黏住。
+- 缓存键包含 provider、接口版本、资源 ID、规范化文本、音色、策略、语速、音调、
+  音量和格式；同一 key 的并发请求只调用上游一次。
 - 音频存放在 `data/tts-cache/<hash前缀>/<hash>.mp3`，SQLite 记录命中次数和
   最近访问时间；每 6 小时按 TTL/LRU 清理。
-- 四种策略默认使用百度基础音库，可用 `BAIDU_TTS_VOICE_AGGRESSIVE`、
-  `BAIDU_TTS_VOICE_STEADY`、`BAIDU_TTS_VOICE_TALKATIVE`、
-  `BAIDU_TTS_VOICE_COLD` 及对应 SPEED/PITCH/VOLUME/EMOTION 变量覆盖。
-- 不同模型可按稳定的 LLM providerId 配置专属声音，例如
-  `BAIDU_TTS_VOICE_PROVIDER_DEEPSEEK=4196`、
-  `BAIDU_TTS_SPEED_PROVIDER_DEEPSEEK=7`；`relay_gpt` 对应环境变量后缀
-  `RELAY_GPT`。每个字段独立按“provider 专属值 → 当前策略值 → 稳健默认值”解析，
-  因此也可只覆盖 VOICE、继续沿用策略的语速/音调/音量。
-- 安全连通性检查：`python -m app.tts.check --provider deepseek --style 激进`。
-  命令会加载 `backend/.env` 并输出最终采用的 profile、音频字节数或百度业务错误码，
-  不显示 Key/Secret/Token；省略参数时检查默认 provider 的稳健策略。
-- 使用前须在百度语音应用中开通短文本在线合成并领取相应免费资源；错误
-  `502: No permission to access data` 表示当前应用没有该接口权限。
+- 配置步骤：复制 `config/tts.example.yml` 为 `config/tts.yml`，把火山和百度凭据
+  文件放入 `config/secrets/`；真实配置和 secrets 已由 `.gitignore` 排除。
+- 安全连通性检查：`python -m app.tts.check --voice-key deepseek --style 激进`。
+  输出实际命中的 provider、音频字节数和缓存状态，不显示 Key/Secret/Token。
+- 火山返回 `45000030 requested resource not granted` 表示 API Key 本身有效，但账号尚未
+  获得 YAML 中 `resource_id` 对应的语音合成资源授权；须在火山语音控制台开通相应
+  `seed-tts-2.0` 资源后再检查，期间服务会自动使用百度。
 - 单机网关与联机房间链路独立：`POST /api/local-tts/synthesize` 只接受最多 30 字、
   四种合法策略和服务端白名单 `voiceKey`，返回不可变哈希音频 URL；不接受客户端
-  直接指定百度 `per/spd/pit/vol`。缓存位于 `data/local-tts-cache`，限流按来源 IP
-  执行。浏览器和 vibehub 只拿音频地址，百度 Key/Secret 始终留在服务端。
+  直接指定上游参数。缓存位于 `data/local-tts-cache`，限流按来源 IP执行；浏览器和
+  vibehub 只拿音频地址，所有上游凭据始终留在服务端。
 - 网关连通性检查：`python -m app.local_tts.check --voice-key deepseek --style 高冷`。
 
 ### 日志说明
@@ -345,7 +335,7 @@ LLM_PROVIDER_KIMI_MODEL=kimi-k2
 
 部署流程与一次性准备（GitHub Actions → GHCR → 服务器）见 **[DEPLOY.md](./DEPLOY.md)**。要点：
 
-- 后端是独立仓库（`ghcr.io/bestguo2020/lianhua-mahjong-backend`），每个 `master` push 自动构建镜像 → 推 GHCR → scp `docker-compose.prod.yml` → 服务器 `docker compose pull && up -d`。
+- 后端是独立仓库（`ghcr.io/bestguo2020/lianhua-mahjong-backend`），每个 `master` push 自动构建镜像 → 推 GHCR → scp `docker-compose.yml` → 服务器 `docker compose pull && up -d`。
 - 实时对局强依赖长连接 WebSocket + 服务端内存态（`room_registry`），不适合边缘函数 / 无服务器运行时。
 - 前端另行托管；如需要可前置 Nginx / EdgeOne 反代 `/api` 与 `/ws`（WebSocket 空闲超时上限 300s，客户端 20s 心跳维持）。
 - 存储：默认 SQLite（`mahjong_data` 卷持久化 `/app/data`）；设 `PG_PASSWORD` 自动走 PostgreSQL。

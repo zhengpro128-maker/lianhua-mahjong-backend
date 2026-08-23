@@ -11,8 +11,10 @@ dependencies = [
     # 运行时实际依赖（此前仅装进 venv，未声明，导致新环境/Docker 安装缺库）
     "psycopg[binary]>=3.1",
     "python-dotenv>=1.0",
-    # LLM / 百度 TTS 的异步 HTTP 客户端（生产运行时必需）。
+    # LLM / 火山与百度 TTS 的异步 HTTP 客户端（生产运行时必需）。
     "httpx>=0.27.0",
+    # TTS provider、音色、缓存和降级策略统一从 YAML 加载。
+    "PyYAML>=6.0.2",
     # 日志：统一 loguru 输出（拦截 stdlib logging，见 app/logging_config.py）
     "loguru>=0.7.0",
 ]

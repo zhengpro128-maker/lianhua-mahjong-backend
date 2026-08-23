@@ -1,50 +1,86 @@
-"""百度 TTS、文本/音色缓存与 single-flight 测试（不访问外网）。"""
+"""火山主用、百度降级、YAML 配置与 TTS 缓存测试（不访问外网）。"""
 
 import asyncio
+import base64
 from datetime import datetime, timedelta, timezone
-import os
+import json
 from pathlib import Path
 
 import httpx
 import pytest
 
-from app.tts.baidu import BaiduTtsClient, TtsProviderError
-from app.tts.cache import TtsDiskCache
-from app.tts.config import TtsConfig, TtsVoiceProfile, load_tts_config
-from app.tts.service import TtsService, normalize_tts_text, tts_cache_key
 from app.local_tts.service import LocalTtsGatewayService
+from app.tts.baidu import BaiduTtsClient
+from app.tts.cache import TtsDiskCache
+from app.tts.config import (
+    BaiduProviderConfig,
+    BaiduVoiceConfig,
+    LocalTtsConfig,
+    TtsCacheBucketConfig,
+    TtsCacheConfig,
+    TtsConfig,
+    TtsConfigError,
+    TtsProvidersConfig,
+    TtsRuntimeConfig,
+    VolcengineProviderConfig,
+    load_tts_config,
+)
+from app.tts.provider import TtsProviderError
+from app.tts.service import TtsService, normalize_tts_text, tts_cache_key
+from app.tts.volcengine import VolcengineTtsClient
 
 
 def config(tmp_path: Path) -> TtsConfig:
     return TtsConfig(
         enabled=True,
-        api_key='api-key',
-        secret_key='secret-key',
-        cuid='test-cuid',
-        timeout_s=2.0,
-        concurrency=2,
-        cache_dir=tmp_path / 'tts-cache',
-        cache_max_mb=16,
-        cache_ttl_days=30,
-        negative_ttl_s=30.0,
-        voices={
-            '激进': TtsVoiceProfile(3, 7, 6, 7),
-            '稳健': TtsVoiceProfile(0, 5, 5, 6),
-            '话痨': TtsVoiceProfile(4, 6, 6, 7),
-            '高冷': TtsVoiceProfile(1, 4, 4, 6),
-        },
+        runtime=TtsRuntimeConfig(
+            total_timeout_s=2.0, concurrency=2,
+            negative_ttl_s=30.0, provider_cooldown_s=60.0),
+        cache=TtsCacheConfig(
+            room=TtsCacheBucketConfig(
+                dir=tmp_path / 'tts-cache', max_mb=16, ttl_days=30),
+            local=TtsCacheBucketConfig(
+                dir=tmp_path / 'local-cache', max_mb=16, ttl_days=30),
+        ),
+        local_gateway=LocalTtsConfig(
+            enabled=True, rate_limit_per_minute=60,
+            allowed_voice_keys=('custom_voice',)),
+        providers=TtsProvidersConfig(
+            volcengine=VolcengineProviderConfig(
+                enabled=True, api_key='volc-key', timeout_s=2.0),
+            baidu=BaiduProviderConfig(
+                enabled=True, api_key='baidu-key', secret_key='baidu-secret',
+                timeout_s=2.0, voice=BaiduVoiceConfig(voice_id=0)),
+        ),
     )
 
 
-class FakeBaiduClient:
-    def __init__(self, audio: bytes = b'ID3-fake-mp3', error: Exception | None = None):
+class FakeProvider:
+    cache_version = 1
+
+    def __init__(self, provider_id: str, *, audio: bytes = b'ID3-audio',
+                 error: Exception | None = None, delay: float = 0.01,
+                 timeout_s: float = 1.0):
+        self.provider_id = provider_id
         self.audio = audio
         self.error = error
+        self.delay = delay
+        self.timeout_s = timeout_s
+        self.available = True
         self.calls = 0
 
-    async def synthesize(self, text, voice):
+    def profile_for(self, style, voice_key):
+        return {'style': style, 'voiceKey': voice_key, 'voiceId': f'{self.provider_id}-voice'}
+
+    def cache_identity(self, profile):
+        return dict(profile)
+
+    def profile_id(self, profile):
+        return profile['voiceId']
+
+    async def synthesize(self, text, profile):
         self.calls += 1
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
         return self.audio
@@ -53,80 +89,101 @@ class FakeBaiduClient:
         pass
 
 
-def test_credential_file_is_read_without_environment(monkeypatch, tmp_path):
-    credential = tmp_path / '百度api-key.txt'
-    credential.write_text('API Key：abc123\nSecret Key：secret456\n', encoding='utf-8')
-    monkeypatch.delenv('BAIDU_TTS_API_KEY', raising=False)
-    monkeypatch.delenv('BAIDU_TTS_SECRET_KEY', raising=False)
-    monkeypatch.setenv('TTS_ENABLED', 'auto')
-    cfg = load_tts_config(credential)
+def test_yaml_credentials_are_loaded_and_redacted(tmp_path):
+    secrets = tmp_path / 'secrets'
+    secrets.mkdir()
+    (secrets / 'volc.txt').write_text(
+        'apikey：volc-secret-value\nappid：legacy-app\nAccessToken：legacy-token\n',
+        encoding='utf-8')
+    (secrets / 'baidu.txt').write_text(
+        'API Key：baidu-api-value\nSecret Key：baidu-secret-value\n', encoding='utf-8')
+    path = tmp_path / 'tts.yml'
+    path.write_text('''
+version: 1
+enabled: true
+providers:
+  volcengine:
+    enabled: true
+    credential_file: secrets/volc.txt
+  baidu:
+    enabled: true
+    credential_file: secrets/baidu.txt
+''', encoding='utf-8')
+    cfg = load_tts_config(path)
     assert cfg.available is True
-    assert cfg.api_key == 'abc123'
-    assert cfg.secret_key == 'secret456'
-    assert 'abc123' not in repr(cfg)
+    assert cfg.providers.volcengine.api_key.get_secret_value() == 'volc-secret-value'
+    assert cfg.providers.baidu.secret_key.get_secret_value() == 'baidu-secret-value'
+    assert 'volc-secret-value' not in repr(cfg)
+    assert 'baidu-secret-value' not in repr(cfg)
 
 
-def test_invalid_optional_environment_values_fall_back(monkeypatch, tmp_path):
-    monkeypatch.setenv('TTS_TIMEOUT_S', 'invalid')
-    monkeypatch.setenv('TTS_CONCURRENCY', 'invalid')
-    monkeypatch.setenv('TTS_CACHE_MAX_MB', 'invalid')
-    monkeypatch.setenv('TTS_CACHE_TTL_DAYS', 'invalid')
-    monkeypatch.setenv('TTS_NEGATIVE_TTL_S', 'invalid')
-    cfg = load_tts_config(tmp_path / 'missing.txt')
-    assert (cfg.timeout_s, cfg.concurrency) == (5.0, 2)
-    assert (cfg.cache_max_mb, cfg.cache_ttl_days, cfg.negative_ttl_s) == (256, 30, 30.0)
+def test_yaml_rejects_unknown_fields(tmp_path):
+    path = tmp_path / 'tts.yml'
+    path.write_text('version: 1\nenabled: false\nunknown: true\n', encoding='utf-8')
+    with pytest.raises(TtsConfigError, match='invalid TTS config'):
+        load_tts_config(path)
 
 
-def test_provider_voice_overrides_style_per_field(monkeypatch, tmp_path):
-    prefixes = (
-        'BAIDU_TTS_VOICE_PROVIDER_', 'BAIDU_TTS_SPEED_PROVIDER_',
-        'BAIDU_TTS_PITCH_PROVIDER_', 'BAIDU_TTS_VOLUME_PROVIDER_',
-    )
-    for env_name in list(os.environ):
-        if env_name.startswith(prefixes):
-            monkeypatch.delenv(env_name, raising=False)
-    monkeypatch.setenv('BAIDU_TTS_VOICE_PROVIDER_DEEPSEEK', '4196')
-    monkeypatch.setenv('BAIDU_TTS_SPEED_PROVIDER_DEEPSEEK', '7')
-    monkeypatch.setenv('BAIDU_TTS_PITCH_PROVIDER_DEEPSEEK', '6')
-    monkeypatch.setenv('BAIDU_TTS_VOLUME_PROVIDER_DEEPSEEK', '7')
-    monkeypatch.setenv('BAIDU_TTS_VOICE_PROVIDER_RELAY_GPT', '4195')
-    monkeypatch.setenv('BAIDU_TTS_SPEED_PROVIDER_RELAY_GPT', 'invalid')
-
-    cfg = load_tts_config(tmp_path / 'missing.txt')
-    assert cfg.voice_for('高冷', 'deepseek') == TtsVoiceProfile(4196, 7, 6, 7)
-    talkative = cfg.voices['话痨']
-    relay = cfg.voice_for('话痨', 'relay-gpt')
-    assert relay == TtsVoiceProfile(
-        4195, talkative.speed, talkative.pitch, talkative.volume,
-        talkative.emotion,
-    )
-    assert cfg.voice_for('稳健', 'unknown') == cfg.voices['稳健']
+def test_missing_yaml_disables_tts(tmp_path):
+    cfg = load_tts_config(tmp_path / 'missing.yml')
+    assert cfg.enabled is False
+    assert cfg.available is False
 
 
-def test_text_normalization_and_voice_are_part_of_cache_key(tmp_path):
-    cfg = config(tmp_path)
-    text = normalize_tts_text('  AI  打出癞子  ')
-    assert text == '人工智能 打出赖子'
-    steady, _ = tts_cache_key(text, '稳健', cfg.voices['稳健'])
-    steady_again, _ = tts_cache_key(text, '稳健', cfg.voices['稳健'])
-    cold, _ = tts_cache_key(text, '高冷', cfg.voices['高冷'])
-    assert steady == steady_again
-    assert steady != cold
+def test_baidu_fallback_uses_one_voice_for_all_styles(tmp_path):
+    cfg = config(tmp_path).providers.baidu
+    client = BaiduTtsClient(cfg, httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(500))))
+    try:
+        aggressive = client.profile_for('激进', 'deepseek')
+        cold = client.profile_for('高冷', 'relay_gpt')
+        assert aggressive == cold == cfg.voice
+        assert aggressive.voice_id == 0
+    finally:
+        asyncio.run(client.close())
 
 
 @pytest.mark.asyncio
-async def test_local_tts_gateway_has_independent_cache_and_voice_allowlist(
-        monkeypatch, tmp_path):
-    monkeypatch.setenv('LOCAL_TTS_CACHE_DIR', str(tmp_path / 'local-cache'))
-    monkeypatch.setenv('LOCAL_TTS_ALLOWED_VOICES', 'custom_voice')
-    gateway = LocalTtsGatewayService()
-    try:
-        assert gateway.cache.root == (tmp_path / 'local-cache').resolve()
-        assert {'default', 'custom_voice'} <= gateway.allowed_voice_keys
-        assert gateway.normalize_voice_key('CUSTOM-VOICE') == 'custom_voice'
-        assert gateway.normalize_voice_key('../bad') is None
-    finally:
-        await gateway.close()
+async def test_volcengine_v3_sse_request_and_audio_chunks(tmp_path):
+    requests = []
+    first = base64.b64encode(b'ID3-').decode()
+    second = base64.b64encode(b'audio').decode()
+
+    async def handler(request: httpx.Request):
+        requests.append(request)
+        body = (
+            f'data: {json.dumps({"code": 20000000, "data": first})}\n\n'
+            f'data: {json.dumps({"code": 20000000, "data": second})}\n\n')
+        return httpx.Response(200, text=body, headers={'Content-Type': 'text/event-stream'})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = VolcengineTtsClient(config(tmp_path).providers.volcengine, http)
+    profile = client.profile_for('激进', 'deepseek')
+    assert await client.synthesize('稳住。', profile) == b'ID3-audio'
+    request = requests[0]
+    assert request.headers['x-api-key'] == 'volc-key'
+    assert request.headers['x-api-resource-id'] == 'seed-tts-2.0'
+    payload = json.loads(request.content)
+    assert payload['req_params']['speaker'] == 'zh_female_vv_uranus_bigtts'
+    assert payload['req_params']['audio_params'] == {
+        'format': 'mp3', 'speech_rate': 15,
+        'loudness_rate': 10, 'bit_rate': 64000,
+    }
+    assert payload['req_params']['sample_rate'] == 24000
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_volcengine_business_error_is_provider_error(tmp_path):
+    async def handler(request: httpx.Request):
+        body = f'data: {json.dumps({"code": 55000000, "message": "bad speaker"})}\n\n'
+        return httpx.Response(200, text=body)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = VolcengineTtsClient(config(tmp_path).providers.volcengine, http)
+    with pytest.raises(TtsProviderError, match='55000000'):
+        await client.synthesize('稳住。', client.profile_for('稳健', 'default'))
+    await http.aclose()
 
 
 @pytest.mark.asyncio
@@ -140,77 +197,155 @@ async def test_baidu_client_caches_token_and_accepts_audio_response(tmp_path):
         return httpx.Response(200, content=b'ID3-audio', headers={'Content-Type': 'audio/mp3'})
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    client = BaiduTtsClient(config(tmp_path), http)
-    assert await client.synthesize('稳住。', TtsVoiceProfile(0)) == b'ID3-audio'
-    assert await client.synthesize('再来。', TtsVoiceProfile(0)) == b'ID3-audio'
+    client = BaiduTtsClient(config(tmp_path).providers.baidu, http)
+    voice = client.profile_for('稳健', 'default')
+    assert await client.synthesize('稳住。', voice) == b'ID3-audio'
+    assert await client.synthesize('再来。', voice) == b'ID3-audio'
     assert sum('oauth' in url for url in calls) == 1
     await http.aclose()
 
 
-@pytest.mark.asyncio
-async def test_baidu_json_error_is_not_treated_as_audio(tmp_path):
-    async def handler(request: httpx.Request):
-        if 'oauth' in str(request.url):
-            return httpx.Response(200, json={'access_token': 'token', 'expires_in': 3600})
-        return httpx.Response(200, json={'err_no': 500, 'err_msg': 'bad voice'})
-
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    client = BaiduTtsClient(config(tmp_path), http)
-    with pytest.raises(TtsProviderError):
-        await client.synthesize('稳住。', TtsVoiceProfile(0))
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_disk_cache_round_trip_and_path_validation(tmp_path):
-    cache = TtsDiskCache(tmp_path / 'cache', 16 * 1024 * 1024, 30)
-    key = 'a' * 64
-    written = await cache.put(
-        key, b'ID3-cache', provider='baidu', voice_id='0', style='稳健', text_hash='b' * 64)
-    assert written.cached is False and written.path.is_file()
-    loaded = await cache.get(key)
-    assert loaded is not None and loaded.cached is True
-    assert loaded.path.read_bytes() == b'ID3-cache'
-    assert cache.path_for_key('../secret') is None
+def test_text_normalization_and_provider_are_part_of_cache_key(tmp_path):
+    cfg = config(tmp_path)
+    text = normalize_tts_text('  AI  打出癞子  ')
+    assert text == '人工智能 打出赖子'
+    volc = FakeProvider('volcengine')
+    baidu = FakeProvider('baidu')
+    profile = volc.profile_for('稳健', 'default')
+    steady, _ = tts_cache_key(text, '稳健', volc, profile)
+    steady_again, _ = tts_cache_key(text, '稳健', volc, profile)
+    fallback, _ = tts_cache_key(text, '稳健', baidu, baidu.profile_for('稳健', 'default'))
+    assert steady == steady_again
+    assert steady != fallback
 
 
 @pytest.mark.asyncio
-async def test_singleflight_and_persistent_cache_call_provider_once(tmp_path):
-    fake = FakeBaiduClient()
-    service = TtsService(config(tmp_path), client=fake)
+async def test_primary_success_does_not_call_fallback(tmp_path):
+    primary = FakeProvider('volcengine', audio=b'ID3-volc')
+    fallback = FakeProvider('baidu', audio=b'ID3-baidu')
+    service = TtsService(config(tmp_path), providers={
+        'volcengine': primary, 'baidu': fallback,
+    })
+    audio = await service.ensure_audio('这一手稳住。', '稳健', 'deepseek')
+    assert audio is not None and audio.provider == 'volcengine'
+    assert primary.calls == 1 and fallback.calls == 0
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_primary_failure_automatically_falls_back_to_baidu(tmp_path):
+    primary = FakeProvider(
+        'volcengine', error=TtsProviderError('network', 'down', cooldown=True))
+    fallback = FakeProvider('baidu', audio=b'ID3-baidu')
+    service = TtsService(config(tmp_path), providers={
+        'volcengine': primary, 'baidu': fallback,
+    })
+    audio = await service.ensure_audio('火山故障。', '稳健', 'default')
+    assert audio is not None and audio.provider == 'baidu'
+    assert primary.calls == 1 and fallback.calls == 1
+    assert service.stats['fallbacks'] == 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_primary_timeout_preserves_budget_for_baidu_fallback(tmp_path):
+    primary = FakeProvider('volcengine', delay=0.2, timeout_s=0.02)
+    fallback = FakeProvider('baidu', audio=b'ID3-baidu')
+    service = TtsService(config(tmp_path), providers={
+        'volcengine': primary, 'baidu': fallback,
+    })
+    audio = await service.ensure_audio('超时降级。', '稳健')
+    assert audio is not None and audio.provider == 'baidu'
+    assert primary.calls == 1 and fallback.calls == 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_circuit_skips_repeated_primary_failures(tmp_path):
+    primary = FakeProvider(
+        'volcengine', error=TtsProviderError('quota', 'quota', cooldown=True))
+    fallback = FakeProvider('baidu')
+    service = TtsService(config(tmp_path), providers={
+        'volcengine': primary, 'baidu': fallback,
+    })
+    assert (await service.ensure_audio('第一句。', '稳健')).provider == 'baidu'
+    assert (await service.ensure_audio('第二句。', '稳健')).provider == 'baidu'
+    assert primary.calls == 1
+    assert fallback.calls == 2
+    assert service.stats['circuitSkips'] >= 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_primary_recovers_instead_of_sticking_to_cached_fallback(tmp_path):
+    primary = FakeProvider(
+        'volcengine', audio=b'ID3-volc',
+        error=TtsProviderError('network', 'down', cooldown=True))
+    fallback = FakeProvider('baidu', audio=b'ID3-baidu')
+    service = TtsService(config(tmp_path), providers={
+        'volcengine': primary, 'baidu': fallback,
+    })
+    first = await service.ensure_audio('恢复测试。', '稳健')
+    assert first is not None and first.provider == 'baidu'
+    primary.error = None
+    service._provider_cooldown.clear()
+    service._negative.clear()
+    recovered = await service.ensure_audio('恢复测试。', '稳健')
+    assert recovered is not None and recovered.provider == 'volcengine'
+    assert primary.calls == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_singleflight_and_persistent_cache_call_primary_once(tmp_path):
+    primary = FakeProvider('volcengine')
+    fallback = FakeProvider('baidu')
+    service = TtsService(config(tmp_path), providers={
+        'volcengine': primary, 'baidu': fallback,
+    })
     results = await asyncio.gather(*[
-        service.ensure_audio('这一手稳住。', '稳健') for _ in range(10)
+        service.ensure_audio('并发合成。', '稳健') for _ in range(10)
     ])
-    assert fake.calls == 1
-    assert all(item is not None for item in results)
-    # 其余请求要么等待同一生成任务，要么在线程调度较慢时直接命中刚写入的缓存。
+    assert primary.calls == 1 and fallback.calls == 0
+    assert all(item is not None and item.provider == 'volcengine' for item in results)
     assert service.stats['singleflightWaits'] + service.stats['hits'] == 9
-    cached = await service.ensure_audio('这一手稳住。', '稳健')
+    cached = await service.ensure_audio('并发合成。', '稳健')
     assert cached is not None and cached.cached is True
-    assert fake.calls == 1
+    assert primary.calls == 1
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_uses_negative_cache(tmp_path):
-    fake = FakeBaiduClient(error=TtsProviderError('provider', 'bad'))
-    service = TtsService(config(tmp_path), client=fake)
-    assert await service.ensure_audio('失败。', '稳健') is None
-    assert await service.ensure_audio('失败。', '稳健') is None
-    assert fake.calls == 1
-    assert service.stats['negativeHits'] == 1
-    await service.close()
+async def test_local_tts_gateway_has_independent_cache_and_voice_allowlist(tmp_path):
+    cfg = config(tmp_path)
+    primary = FakeProvider('volcengine')
+    fallback = FakeProvider('baidu')
+    tts = TtsService(
+        cfg, providers={'volcengine': primary, 'baidu': fallback},
+        cache_config=cfg.cache.local)
+    gateway = LocalTtsGatewayService(cfg, tts)
+    try:
+        assert gateway.cache.root == (tmp_path / 'local-cache').resolve()
+        assert {'default', 'deepseek', 'relay_gpt', 'custom_voice'} <= gateway.allowed_voice_keys
+        assert gateway.normalize_voice_key('CUSTOM-VOICE') == 'custom_voice'
+        assert gateway.normalize_voice_key('../bad') is None
+    finally:
+        await gateway.close()
 
 
 @pytest.mark.asyncio
-async def test_cleanup_removes_expired_metadata_and_file(tmp_path):
+async def test_disk_cache_round_trip_and_cleanup(tmp_path):
     cache = TtsDiskCache(tmp_path / 'cache', 16 * 1024 * 1024, 1)
     key = 'c' * 64
     item = await cache.put(
-        key, b'ID3-old', provider='baidu', voice_id='0', style='稳健', text_hash='d' * 64)
+        key, b'ID3-old', provider='volcengine', voice_id='speaker',
+        style='稳健', text_hash='d' * 64)
+    loaded = await cache.get(key)
+    assert loaded is not None and loaded.path.read_bytes() == b'ID3-old'
     old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
     with cache._connect() as conn:
         conn.execute('UPDATE tts_cache SET last_accessed_at=? WHERE cache_key=?', (old, key))
     result = await cache.cleanup()
     assert result['removed'] == 1
     assert not item.path.exists()
+    assert cache.path_for_key('../secret') is None

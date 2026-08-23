@@ -5,6 +5,9 @@ data/
 logs/
 *.pyc
 .env
+# TTS 运行配置和凭据由部署机只读挂载，模板可提交、真实值严禁提交。
+config/tts.yml
+config/secrets/
 # 本地服务凭据（例如百度 TTS API Key/Secret Key），严禁提交。
 docs/*api-key*.txt
 # pip install . / wheel 构建产物（PEP 517）

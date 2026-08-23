@@ -1,192 +1,351 @@
-"""TTS 配置：环境变量优先，本地凭据文件仅作开发机回退。"""
+"""TTS YAML 配置、凭据文件加载与严格校验。"""
 
-from dataclasses import dataclass, field
-import os
+from __future__ import annotations
+
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
+import yaml
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CREDENTIAL_FILE = BACKEND_ROOT / 'docs' / '百度api-key.txt'
+DEFAULT_CONFIG_FILE = BACKEND_ROOT / 'config' / 'tts.yml'
 TTS_STYLES = ('激进', '稳健', '话痨', '高冷')
+ProviderName = Literal['volcengine', 'baidu']
 
 
-@dataclass(frozen=True)
-class TtsVoiceProfile:
-    voice_id: int
-    speed: int = 5
-    pitch: int = 5
-    volume: int = 6
-    emotion: str = ''
+class TtsConfigError(RuntimeError):
+    """TTS 配置文件缺失语法、结构或取值要求。"""
 
 
-@dataclass(frozen=True)
-class TtsVoiceOverride:
-    """按 LLM providerId 覆盖音色参数；未配置字段继续继承策略配置。"""
-    voice_id: Optional[int] = None
-    speed: Optional[int] = None
-    pitch: Optional[int] = None
-    volume: Optional[int] = None
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra='forbid', frozen=True)
 
 
-@dataclass(frozen=True, repr=False)
-class TtsConfig:
-    enabled: bool
-    api_key: str
-    secret_key: str
-    cuid: str
-    timeout_s: float
-    concurrency: int
-    cache_dir: Path
-    cache_max_mb: int
-    cache_ttl_days: int
-    negative_ttl_s: float
-    voices: dict[str, TtsVoiceProfile]
-    provider_voices: dict[str, TtsVoiceOverride] = field(default_factory=dict)
+class TtsRouteConfig(_StrictModel):
+    primary: ProviderName = 'volcengine'
+    fallback: Optional[ProviderName] = 'baidu'
+
+    @model_validator(mode='after')
+    def providers_must_differ(self):
+        if self.fallback == self.primary:
+            raise ValueError('route.fallback must differ from route.primary')
+        return self
+
+
+class TtsRuntimeConfig(_StrictModel):
+    total_timeout_s: float = Field(default=7.0, ge=1.0, le=30.0)
+    concurrency: int = Field(default=2, ge=1, le=8)
+    negative_ttl_s: float = Field(default=30.0, ge=1.0, le=300.0)
+    provider_cooldown_s: float = Field(default=60.0, ge=1.0, le=1800.0)
+
+
+class TtsCacheBucketConfig(_StrictModel):
+    dir: Path
+    max_mb: int = Field(ge=16, le=4096)
+    ttl_days: int = Field(ge=1, le=365)
+
+
+class TtsCacheConfig(_StrictModel):
+    room: TtsCacheBucketConfig = Field(default_factory=lambda: TtsCacheBucketConfig(
+        dir=Path('data/tts-cache'), max_mb=256, ttl_days=30))
+    local: TtsCacheBucketConfig = Field(default_factory=lambda: TtsCacheBucketConfig(
+        dir=Path('data/local-tts-cache'), max_mb=128, ttl_days=30))
+
+
+class LocalTtsConfig(_StrictModel):
+    enabled: bool = True
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=600)
+    allowed_voice_keys: tuple[str, ...] = ()
+
+    @field_validator('allowed_voice_keys')
+    @classmethod
+    def validate_voice_keys(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = []
+        for value in values:
+            item = normalize_voice_key(value)
+            if not item:
+                raise ValueError(f'invalid local voice key: {value!r}')
+            if item not in normalized:
+                normalized.append(item)
+        return tuple(normalized)
+
+
+class VolcengineAudioConfig(_StrictModel):
+    format: Literal['mp3'] = 'mp3'
+    sample_rate: Literal[8000, 16000, 22050, 24000, 32000, 44100, 48000] = 24000
+    bit_rate: int = Field(default=64000, ge=16000, le=320000)
+
+
+class VolcengineVoiceConfig(_StrictModel):
+    speaker: str = Field(min_length=1, max_length=120)
+
+    @field_validator('speaker')
+    @classmethod
+    def validate_speaker(cls, value: str) -> str:
+        item = value.strip()
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+', item):
+            raise ValueError('speaker contains unsupported characters')
+        return item
+
+
+class VolcengineStyleConfig(_StrictModel):
+    speech_rate: int = Field(default=0, ge=-50, le=100)
+    pitch_rate: int = Field(default=0, ge=-12, le=12)
+    loudness_rate: int = Field(default=0, ge=-50, le=100)
+
+
+def _default_volcengine_voices() -> dict[str, VolcengineVoiceConfig]:
+    # 火山官方 V3 示例使用的 TTS 2.0 音色；部署可在 YAML 中按 voiceKey 替换。
+    voice = VolcengineVoiceConfig(speaker='zh_female_vv_uranus_bigtts')
+    return {'default': voice, 'deepseek': voice, 'relay_gpt': voice}
+
+
+def _default_volcengine_styles() -> dict[str, VolcengineStyleConfig]:
+    return {
+        '激进': VolcengineStyleConfig(speech_rate=15, pitch_rate=1, loudness_rate=10),
+        '稳健': VolcengineStyleConfig(),
+        '话痨': VolcengineStyleConfig(speech_rate=10, pitch_rate=1, loudness_rate=5),
+        '高冷': VolcengineStyleConfig(speech_rate=-10, pitch_rate=-1, loudness_rate=-5),
+    }
+
+
+class VolcengineProviderConfig(_StrictModel):
+    enabled: bool = False
+    api_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    app_id: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    access_token: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    secret_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    credential_file: Optional[Path] = None
+    endpoint: str = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse'
+    resource_id: str = Field(default='seed-tts-2.0', min_length=1, max_length=80)
+    uid: str = Field(default='lianhua-mahjong-server', min_length=1, max_length=80)
+    timeout_s: float = Field(default=4.0, ge=1.0, le=20.0)
+    audio: VolcengineAudioConfig = Field(default_factory=VolcengineAudioConfig)
+    voices: dict[str, VolcengineVoiceConfig] = Field(default_factory=_default_volcengine_voices)
+    styles: dict[str, VolcengineStyleConfig] = Field(default_factory=_default_volcengine_styles)
+
+    @field_validator('endpoint')
+    @classmethod
+    def validate_endpoint(cls, value: str) -> str:
+        endpoint = value.strip().rstrip('/')
+        if not endpoint.startswith('https://'):
+            raise ValueError('volcengine endpoint must use https')
+        return endpoint
+
+    @field_validator('resource_id')
+    @classmethod
+    def validate_resource_id(cls, value: str) -> str:
+        item = value.strip()
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+', item):
+            raise ValueError('invalid volcengine resource_id')
+        return item
+
+    @field_validator('voices')
+    @classmethod
+    def validate_voices(cls, values: dict[str, VolcengineVoiceConfig]):
+        normalized: dict[str, VolcengineVoiceConfig] = {}
+        for key, value in values.items():
+            item = normalize_voice_key(key)
+            if not item:
+                raise ValueError(f'invalid volcengine voice key: {key!r}')
+            normalized[item] = value
+        if 'default' not in normalized:
+            raise ValueError('volcengine voices must include default')
+        return normalized
+
+    @field_validator('styles')
+    @classmethod
+    def validate_styles(cls, values: dict[str, VolcengineStyleConfig]):
+        unknown = set(values) - set(TTS_STYLES)
+        if unknown:
+            raise ValueError(f'unknown TTS styles: {sorted(unknown)}')
+        if '稳健' not in values:
+            raise ValueError('volcengine styles must include 稳健')
+        return values
 
     @property
     def available(self) -> bool:
-        return self.enabled and bool(self.api_key and self.secret_key)
-
-    def voice_for(self, style: str, provider_id: str = '') -> TtsVoiceProfile:
-        """provider 专属字段优先，缺失字段回退当前策略，再回退稳健策略。"""
-        base = self.voices.get(style) or self.voices['稳健']
-        provider_key = provider_id.strip().lower().replace('-', '_')
-        override = self.provider_voices.get(provider_key)
-        if override is None:
-            return base
-        return TtsVoiceProfile(
-            voice_id=base.voice_id if override.voice_id is None else override.voice_id,
-            speed=base.speed if override.speed is None else override.speed,
-            pitch=base.pitch if override.pitch is None else override.pitch,
-            volume=base.volume if override.volume is None else override.volume,
-            emotion=base.emotion,
+        return self.enabled and bool(
+            self.api_key.get_secret_value()
+            or (self.app_id.get_secret_value() and self.access_token.get_secret_value())
         )
 
+    def voice_for(self, voice_key: str) -> VolcengineVoiceConfig:
+        return self.voices.get(normalize_voice_key(voice_key)) or self.voices['default']
 
-def _clamp_int(value: str | int, minimum: int, maximum: int, default: int) -> int:
-    try:
-        return max(minimum, min(maximum, int(value)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _clamp_float(value: str | float, minimum: float, maximum: float,
-                 default: float) -> float:
-    try:
-        return max(minimum, min(maximum, float(value)))
-    except (TypeError, ValueError):
-        return default
+    def style_for(self, style: str) -> VolcengineStyleConfig:
+        return self.styles.get(style) or self.styles['稳健']
 
 
-def _int_at_least(value: str | int, minimum: int, default: int) -> int:
-    try:
-        return max(minimum, int(value))
-    except (TypeError, ValueError):
-        return default
+class BaiduVoiceConfig(_StrictModel):
+    voice_id: int = Field(default=0, ge=0, le=99999)
+    speed: int = Field(default=5, ge=0, le=15)
+    pitch: int = Field(default=5, ge=0, le=15)
+    volume: int = Field(default=7, ge=0, le=15)
+    emotion: Literal['', 'neutral', 'happy', 'down', 'angry', 'surprise', 'fear'] = ''
 
 
-def _optional_clamped_int(value: Optional[str], minimum: int,
-                          maximum: int) -> Optional[int]:
-    if value is None or not value.strip():
+class BaiduProviderConfig(_StrictModel):
+    enabled: bool = False
+    api_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    secret_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    credential_file: Optional[Path] = None
+    cuid: str = Field(default='lianhua-mahjong-server', min_length=1, max_length=60)
+    timeout_s: float = Field(default=3.0, ge=1.0, le=20.0)
+    voice: BaiduVoiceConfig = Field(default_factory=BaiduVoiceConfig)
+
+    @property
+    def available(self) -> bool:
+        return self.enabled and bool(
+            self.api_key.get_secret_value() and self.secret_key.get_secret_value())
+
+
+class TtsProvidersConfig(_StrictModel):
+    volcengine: VolcengineProviderConfig = Field(default_factory=VolcengineProviderConfig)
+    baidu: BaiduProviderConfig = Field(default_factory=BaiduProviderConfig)
+
+    def get(self, name: ProviderName):
+        return self.volcengine if name == 'volcengine' else self.baidu
+
+
+class TtsConfig(_StrictModel):
+    version: Literal[1] = 1
+    enabled: bool = False
+    route: TtsRouteConfig = Field(default_factory=TtsRouteConfig)
+    runtime: TtsRuntimeConfig = Field(default_factory=TtsRuntimeConfig)
+    cache: TtsCacheConfig = Field(default_factory=TtsCacheConfig)
+    local_gateway: LocalTtsConfig = Field(default_factory=LocalTtsConfig)
+    providers: TtsProvidersConfig = Field(default_factory=TtsProvidersConfig)
+    source_path: Path = Field(default=DEFAULT_CONFIG_FILE, exclude=True, repr=False)
+
+    @property
+    def available(self) -> bool:
+        if not self.enabled:
+            return False
+        return any(self.providers.get(name).available for name in self.provider_names)
+
+    @property
+    def provider_names(self) -> tuple[ProviderName, ...]:
+        names = [self.route.primary]
+        if self.route.fallback is not None:
+            names.append(self.route.fallback)
+        return tuple(names)
+
+    @property
+    def voice_keys(self) -> frozenset[str]:
+        return frozenset({'default', *self.providers.volcengine.voices})
+
+
+def normalize_voice_key(value: str) -> str:
+    item = str(value or '').strip().lower().replace('-', '_')
+    return item if re.fullmatch(r'[a-z0-9_]{1,40}', item) else ''
+
+
+def _resolve_relative(path: Optional[Path], base: Path) -> Optional[Path]:
+    if path is None:
         return None
-    try:
-        return max(minimum, min(maximum, int(value)))
-    except ValueError:
-        return None
+    return (path if path.is_absolute() else base / path).resolve()
 
 
-def _read_credential_file(path: Path) -> tuple[str, str]:
-    """读取两行 API Key/Secret Key；永不记录文件内容。"""
+def _read_credential_file(path: Optional[Path]) -> dict[str, str]:
+    """读取标记式凭据文件；调用方和日志永不输出值。"""
+    if path is None:
+        return {}
     try:
-        entries = {}
-        for raw in path.read_text(encoding='utf-8').splitlines():
+        entries: dict[str, str] = {}
+        unlabelled: list[str] = []
+        for raw in path.read_text(encoding='utf-8-sig').splitlines():
             line = raw.strip()
-            if not line:
+            if not line or line.startswith('#'):
                 continue
             separator = next((item for item in (':', '：', '=') if item in line), None)
             if separator is None:
+                unlabelled.append(line)
                 continue
             label, value = line.split(separator, 1)
-            entries[label.strip().lower().replace(' ', '_')] = value.strip()
-        return entries.get('api_key', ''), entries.get('secret_key', '')
-    except OSError:
-        return '', ''
+            key = re.sub(r'[\s_-]+', '', label.strip().lower())
+            if value.strip():
+                entries[key] = value.strip()
+        if unlabelled and 'apikey' not in entries:
+            entries['apikey'] = unlabelled[0]
+        return entries
+    except OSError as exc:
+        raise TtsConfigError(f'cannot read TTS credential file: {path}') from exc
 
 
-def _voice(style: str, defaults: tuple[int, int, int, int]) -> TtsVoiceProfile:
-    prefix = {
-        '激进': 'AGGRESSIVE', '稳健': 'STEADY',
-        '话痨': 'TALKATIVE', '高冷': 'COLD',
-    }[style]
-    voice_id, speed, pitch, volume = defaults
-    emotion = os.environ.get(f'BAIDU_TTS_EMOTION_{prefix}', '').strip()
-    if emotion not in ('', 'neutral', 'happy', 'down', 'angry', 'surprise', 'fear'):
-        emotion = ''
-    return TtsVoiceProfile(
-        voice_id=_clamp_int(os.environ.get(f'BAIDU_TTS_VOICE_{prefix}', voice_id), 0, 99999, voice_id),
-        speed=_clamp_int(os.environ.get(f'BAIDU_TTS_SPEED_{prefix}', speed), 0, 15, speed),
-        pitch=_clamp_int(os.environ.get(f'BAIDU_TTS_PITCH_{prefix}', pitch), 0, 15, pitch),
-        volume=_clamp_int(os.environ.get(f'BAIDU_TTS_VOLUME_{prefix}', volume), 0, 15, volume),
-        emotion=emotion,
-    )
+def _secret(value: SecretStr, *fallbacks: str) -> SecretStr:
+    current = value.get_secret_value().strip()
+    if current:
+        return SecretStr(current)
+    return SecretStr(next((item.strip() for item in fallbacks if item and item.strip()), ''))
 
 
-def _provider_voices() -> dict[str, TtsVoiceOverride]:
-    """扫描 BAIDU_TTS_<FIELD>_PROVIDER_<ID> 动态提供商配置。"""
-    prefixes = {
-        'BAIDU_TTS_VOICE_PROVIDER_': ('voice_id', 0, 99999),
-        'BAIDU_TTS_SPEED_PROVIDER_': ('speed', 0, 15),
-        'BAIDU_TTS_PITCH_PROVIDER_': ('pitch', 0, 15),
-        'BAIDU_TTS_VOLUME_PROVIDER_': ('volume', 0, 15),
-    }
-    entries: dict[str, dict[str, int]] = {}
-    for env_name, raw_value in os.environ.items():
-        for prefix, (field_name, minimum, maximum) in prefixes.items():
-            if not env_name.startswith(prefix):
-                continue
-            provider_id = env_name[len(prefix):].strip().lower()
-            if not provider_id or not provider_id.replace('_', '').isalnum():
-                break
-            value = _optional_clamped_int(raw_value, minimum, maximum)
-            if value is not None:
-                entries.setdefault(provider_id, {})[field_name] = value
-            break
-    return {
-        provider_id: TtsVoiceOverride(**values)
-        for provider_id, values in entries.items()
-    }
+def _hydrate_credentials(config: TtsConfig, config_dir: Path) -> TtsConfig:
+    volc = config.providers.volcengine
+    volc_file = _resolve_relative(volc.credential_file, config_dir)
+    volc_entries = _read_credential_file(volc_file)
+    volc = volc.model_copy(update={
+        'credential_file': volc_file,
+        'api_key': _secret(volc.api_key, volc_entries.get('apikey', ''),
+                           volc_entries.get('appkey', '')),
+        'app_id': _secret(volc.app_id, volc_entries.get('appid', '')),
+        'access_token': _secret(volc.access_token, volc_entries.get('accesstoken', '')),
+        'secret_key': _secret(volc.secret_key, volc_entries.get('secretkey', '')),
+    })
+
+    baidu = config.providers.baidu
+    baidu_file = _resolve_relative(baidu.credential_file, config_dir)
+    baidu_entries = _read_credential_file(baidu_file)
+    baidu = baidu.model_copy(update={
+        'credential_file': baidu_file,
+        'api_key': _secret(baidu.api_key, baidu_entries.get('apikey', '')),
+        'secret_key': _secret(baidu.secret_key, baidu_entries.get('secretkey', '')),
+    })
+
+    providers = config.providers.model_copy(update={
+        'volcengine': volc,
+        'baidu': baidu,
+    })
+    return config.model_copy(update={'providers': providers})
 
 
-def load_tts_config(credential_file: Optional[Path] = None) -> TtsConfig:
-    file_path = credential_file or Path(os.environ.get(
-        'BAIDU_TTS_CREDENTIAL_FILE', str(DEFAULT_CREDENTIAL_FILE)))
-    file_api_key, file_secret_key = _read_credential_file(file_path)
-    api_key = os.environ.get('BAIDU_TTS_API_KEY', '').strip() or file_api_key
-    secret_key = os.environ.get('BAIDU_TTS_SECRET_KEY', '').strip() or file_secret_key
-    enabled_raw = os.environ.get('TTS_ENABLED', 'auto').strip().lower()
-    enabled = bool(api_key and secret_key) if enabled_raw == 'auto' else enabled_raw == 'true'
-    cache_dir = Path(os.environ.get(
-        'TTS_CACHE_DIR', str(BACKEND_ROOT / 'data' / 'tts-cache'))).resolve()
-    voices = {
-        # 默认均使用基础音库，部署时可在试听后用环境变量覆盖。
-        '激进': _voice('激进', (3, 7, 6, 7)),
-        '稳健': _voice('稳健', (0, 5, 5, 6)),
-        '话痨': _voice('话痨', (4, 6, 6, 7)),
-        '高冷': _voice('高冷', (1, 4, 4, 6)),
-    }
-    return TtsConfig(
-        enabled=enabled,
-        api_key=api_key,
-        secret_key=secret_key,
-        cuid=os.environ.get('BAIDU_TTS_CUID', 'lianhua-mahjong-server')[:60],
-        timeout_s=_clamp_float(os.environ.get('TTS_TIMEOUT_S', '5'), 1.0, 20.0, 5.0),
-        concurrency=_clamp_int(os.environ.get('TTS_CONCURRENCY', '2'), 1, 3, 2),
-        cache_dir=cache_dir,
-        cache_max_mb=_int_at_least(os.environ.get('TTS_CACHE_MAX_MB', '256'), 16, 256),
-        cache_ttl_days=_int_at_least(os.environ.get('TTS_CACHE_TTL_DAYS', '30'), 1, 30),
-        negative_ttl_s=_clamp_float(
-            os.environ.get('TTS_NEGATIVE_TTL_S', '30'), 1.0, 300.0, 30.0),
-        voices=voices,
-        provider_voices=_provider_voices(),
-    )
+def _resolve_cache_paths(config: TtsConfig) -> TtsConfig:
+    room = config.cache.room.model_copy(update={
+        'dir': _resolve_relative(config.cache.room.dir, BACKEND_ROOT),
+    })
+    local = config.cache.local.model_copy(update={
+        'dir': _resolve_relative(config.cache.local.dir, BACKEND_ROOT),
+    })
+    return config.model_copy(update={
+        'cache': config.cache.model_copy(update={'room': room, 'local': local}),
+    })
+
+
+def load_tts_config(config_file: Optional[Path] = None) -> TtsConfig:
+    path = (config_file or DEFAULT_CONFIG_FILE).resolve()
+    if not path.is_file():
+        return _resolve_cache_paths(TtsConfig(source_path=path))
+    try:
+        raw = yaml.safe_load(path.read_text(encoding='utf-8-sig'))
+    except (OSError, yaml.YAMLError) as exc:
+        raise TtsConfigError(f'cannot parse TTS config: {path}') from exc
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise TtsConfigError('TTS config root must be a mapping')
+    try:
+        config = TtsConfig.model_validate({**raw, 'source_path': path})
+    except ValueError as exc:
+        raise TtsConfigError(f'invalid TTS config: {exc}') from exc
+    config = _hydrate_credentials(config, path.parent)
+    return _resolve_cache_paths(config)

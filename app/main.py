@@ -39,8 +39,12 @@ async def lifespan(app: FastAPI):
     _patch_uvicorn_loggers()
     tts = get_tts_service()
     local_tts = get_local_tts_service()
-    logger.info(f"TTS 服务 available={tts.available} provider=baidu")
-    logger.info(f"单机 TTS 网关 available={local_tts.available} provider=baidu")
+    providers = ','.join(tts.available_providers) or 'none'
+    logger.info(
+        f"TTS 服务 available={tts.available} providers={providers} "
+        f"route={'->'.join(tts.config.provider_names)}")
+    logger.info(
+        f"单机 TTS 网关 available={local_tts.available} providers={providers}")
     yield
     await tts.close()
     await local_tts.close()
