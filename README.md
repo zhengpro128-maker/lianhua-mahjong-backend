@@ -261,6 +261,8 @@ LLM_PROVIDER_KIMI_MODEL=kimi-k2
   `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
   Base / Key / Model。
 - 特判：DeepSeek 自动关闭思考模式（`thinking:{type:'disabled'}`，防拖慢）；
+  百炼 `qwen3.5`～`qwen3.8` 自动设置 `enable_thinking=false` 并请求 JSON Object，
+  未显式配置 `TIMEOUT_MS` 时使用 8 秒决策预算；
   Anthropic 自动追加浏览器访问头；`http://127.0.0.1:端口` 本地代理（如
   Ollama）允许使用，远端仅允许 https。
 - 失败兜底：任何一次决策超时 / 网络 / 非法返回都会自动回退启发式 AI

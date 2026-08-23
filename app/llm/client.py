@@ -11,8 +11,9 @@ import time
 from typing import Optional
 
 import httpx
+from loguru import logger
 
-from app.llm.config import LlmServerConfig, llm_semaphore
+from app.llm.config import LlmServerConfig, is_qwen_thinking_model, llm_semaphore
 
 
 class LlmClientError(Exception):
@@ -141,7 +142,7 @@ def parse_llm_output(raw: str, candidate_ids: list[str]) -> tuple[str, str]:
 
 async def _call_once(cfg: LlmServerConfig, system: str, user: str,
                      budget_s: float, max_tokens: int = 64,
-                     strict_length: bool = True) -> str:
+                     strict_length: bool = True, attempt_no: int = 1) -> str:
     endpoint = _normalize_endpoint(cfg.base_url)
     if endpoint is None:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'baseUrl 非法（userinfo 或协议不支持）')
@@ -165,16 +166,48 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     }
     if _is_deepseek(cfg.base_url):
         payload['thinking'] = {'type': 'disabled'}   # §V4：关闭默认思考模式
+    if is_qwen_thinking_model(cfg.base_url, cfg.model):
+        payload['enable_thinking'] = False
+        payload['response_format'] = {'type': 'json_object'}
     client = get_llm_client()
+    request_started = time.monotonic()
     try:
         async with llm_semaphore():
             response = await client.post(
                 endpoint, headers=headers, json=payload, timeout=budget_s)
     except httpx.TimeoutException as exc:
+        elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
+        logger.bind(
+            llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
+            llm_attempt=attempt_no,
+            llm_elapsed_ms=elapsed_ms,
+            llm_error='timeout',
+        ).warning(
+            f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
+            f'attempt={attempt_no} elapsed={elapsed_ms}ms kind=timeout')
         raise LlmClientError(LlmClientError.KIND_TIMEOUT, '请求超时') from exc
     except httpx.HTTPError as exc:
+        elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
+        logger.bind(
+            llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
+            llm_attempt=attempt_no,
+            llm_elapsed_ms=elapsed_ms,
+            llm_error='network',
+        ).warning(
+            f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
+            f'attempt={attempt_no} elapsed={elapsed_ms}ms kind=network')
         raise LlmClientError(LlmClientError.KIND_NETWORK, f'网络错误: {exc}') from exc
     if response.status_code != 200:
+        elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
+        logger.bind(
+            llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
+            llm_attempt=attempt_no,
+            llm_elapsed_ms=elapsed_ms,
+            llm_http_status=response.status_code, llm_error='http',
+        ).warning(
+            f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
+            f'attempt={attempt_no} elapsed={elapsed_ms}ms '
+            f'kind=http status={response.status_code}')
         detail = response.text[:200]
         raise LlmClientError(LlmClientError.KIND_HTTP, f'HTTP {response.status_code}: {detail}')
     try:
@@ -190,6 +223,23 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
     if first.get('finish_reason') == 'length' and strict_length:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'finish_reason=length（输出被截断）')
+    usage = body.get('usage') if isinstance(body.get('usage'), dict) else {}
+    details = usage.get('completion_tokens_details') \
+        if isinstance(usage.get('completion_tokens_details'), dict) else {}
+    elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
+    logger.bind(
+        llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
+        llm_attempt=attempt_no,
+        llm_elapsed_ms=elapsed_ms,
+        llm_finish_reason=first.get('finish_reason'),
+        llm_completion_tokens=usage.get('completion_tokens'),
+        llm_reasoning_tokens=details.get('reasoning_tokens'),
+    ).info(
+        f'LLM 请求完成 provider={cfg.provider_id or "default"} model={cfg.model} '
+        f'attempt={attempt_no} elapsed={elapsed_ms}ms '
+        f'finish={first.get("finish_reason")} '
+        f'completionTokens={usage.get("completion_tokens")} '
+        f'reasoningTokens={details.get("reasoning_tokens")}')
     return message
 
 
@@ -208,7 +258,9 @@ async def request_llm_decision(cfg: LlmServerConfig, system: str, user: str,
         left = cfg.timeout_s - (time.monotonic() - started)
         if left <= 0:
             raise LlmClientError(LlmClientError.KIND_TIMEOUT, '总预算耗尽')
-        raw = await _call_once(cfg, system, messages_http_user, budget_s=left)
+        raw = await _call_once(
+            cfg, system, messages_http_user, budget_s=left,
+            attempt_no=2 if error_for_retry is not None else 1)
         try:
             return parse_llm_output(raw, candidate_ids)
         except LlmClientError as exc:
@@ -222,4 +274,10 @@ async def request_llm_decision(cfg: LlmServerConfig, system: str, user: str,
         if exc.kind != LlmClientError.KIND_PARSE or error_for_retry is not None:
             raise
         error_for_retry = exc.args[0] if exc.args else '解析失败'
+        logger.bind(
+            llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
+            llm_retry_reason=error_for_retry,
+        ).info(
+            f'LLM 语义重试 provider={cfg.provider_id or "default"} '
+            f'model={cfg.model} reason={error_for_retry}')
         return await attempt(_feedback_retry(user, error_for_retry, candidate_ids))

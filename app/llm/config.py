@@ -9,6 +9,7 @@
 
 import asyncio
 import os
+import re
 from typing import Optional
 
 ENABLED_KEY = 'LLM_ENABLED'
@@ -23,6 +24,17 @@ MAX_PER_ROOM_KEY = 'LLM_MAX_REQUESTS_PER_ROOM'
 
 PROVIDER_PREFIX = 'LLM_PROVIDER_'
 LLM_DECISION_TIMEOUT_S = 20.0
+QWEN_DECISION_TIMEOUT_S = 8.0
+
+
+def is_qwen_thinking_model(base_url: str, model: str) -> bool:
+    """百炼 Qwen 3.5–3.8 默认开启混合思考，麻将决策应使用非思考模式。"""
+    host_matches = re.search(
+        r'(?:dashscope\.aliyuncs\.com|\.maas\.aliyuncs\.com)(?:/|$)',
+        (base_url or '').strip(), re.I) is not None
+    model_matches = re.match(r'^qwen3\.(?:5|6|7|8)(?:[.-]|$)',
+                             (model or '').strip(), re.I) is not None
+    return host_matches and model_matches
 
 
 class LlmServerConfig:
@@ -36,6 +48,7 @@ class LlmServerConfig:
                  pool_timeout_s: float = 1.0,
                  concurrency: int = 4,
                  max_requests_per_room: int = 0,
+                 provider_id: str = '',
                  ):
         self.enabled = enabled
         self.base_url = base_url
@@ -46,6 +59,7 @@ class LlmServerConfig:
         self.pool_timeout_s = pool_timeout_s
         self.concurrency = concurrency
         self.max_requests_per_room = max_requests_per_room
+        self.provider_id = provider_id
 
 
 LLM_STYLES = ('激进', '稳健', '话痨', '高冷')
@@ -76,7 +90,8 @@ class LlmProvider:
     def to_config(self, style_override: Optional[str] = None) -> LlmServerConfig:
         """转单次调用配置；座位可覆盖策略，模型/Key 仍来自服务端注册表。"""
         global_cfg = load_llm_config()
-        timeout_s = global_cfg.timeout_s
+        timeout_s = min(global_cfg.timeout_s, QWEN_DECISION_TIMEOUT_S) \
+            if is_qwen_thinking_model(self.base_url, self.model) else global_cfg.timeout_s
         if self.timeout_ms:
             try:
                 timeout_s = float(self.timeout_ms) / 1000.0
@@ -92,6 +107,7 @@ class LlmProvider:
             pool_timeout_s=global_cfg.pool_timeout_s,
             concurrency=global_cfg.concurrency,
             max_requests_per_room=global_cfg.max_requests_per_room,
+            provider_id=self.provider_id,
         )
 
 

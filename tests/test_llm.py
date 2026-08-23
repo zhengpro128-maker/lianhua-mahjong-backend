@@ -5,9 +5,11 @@
 """
 
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.game.llm_player import LLMPlayer
@@ -494,6 +496,47 @@ class TestProviderRegistry:
         assert cfg.api_key == 'sk-server-ds'
         assert cfg.timeout_s == 20.0
         assert deepseek_provider(style='稳健').to_config(style_override='高冷').style == '高冷'
+
+    def test_qwen_thinking_model_uses_fast_default_timeout(self):
+        from app.llm.config import LlmProvider, is_qwen_thinking_model
+        provider = LlmProvider(
+            'qwen', base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+            api_key='sk-qwen', model='qwen3.7-plus')
+        assert is_qwen_thinking_model(provider.base_url, provider.model)
+        assert provider.to_config().timeout_s == 8.0
+        provider.timeout_ms = 12_000
+        assert provider.to_config().timeout_s == 12.0
+
+    def test_qwen_request_disables_thinking_and_requests_json(self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                    'finish_reason': 'stop',
+                }],
+                'usage': {
+                    'completion_tokens': 6,
+                    'completion_tokens_details': {'reasoning_tokens': 0},
+                },
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True,
+            base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
+            api_key='sk-qwen', model='qwen3.7-plus', timeout_s=8,
+            provider_id='qwen')
+        assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
+        assert captured['enable_thinking'] is False
+        assert captured['response_format'] == {'type': 'json_object'}
+        run(http.aclose())
 
 
 class TestPerSeatAssembly:
