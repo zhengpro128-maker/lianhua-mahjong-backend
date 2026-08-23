@@ -46,23 +46,25 @@ providers:
     voices:
       # 官方 V3 示例中的 TTS 2.0 音色。可在控制台试听后分别替换 speaker。
       default:
-        speaker: zh_female_vv_uranus_bigtts
+        speaker: ICL_uranus_zh_female_chunzhenshaonv_tob
       deepseek:
-        speaker: zh_female_vv_uranus_bigtts
+        speaker: ICL_uranus_zh_female_tianmeijiaoqiao_tob
       qwen:
-        speaker: zh_female_vv_uranus_bigtts
+        speaker: ICL_uranus_zh_female_wenrouwenya_tob
       kimi:
-        speaker: zh_female_vv_uranus_bigtts
+        speaker: ICL_uranus_zh_female_aojiaonvyou_tob
       gpt:
-        speaker: zh_female_vv_uranus_bigtts
+        speaker: ICL_uranus_zh_female_tiexinnvyou_tob
       relay_gpt:
-        speaker: zh_female_vv_uranus_bigtts
+        speaker: ICL_uranus_zh_female_tiexinnvyou_tob
       minimax:
-        speaker: zh_female_vv_uranus_bigtts
+        speaker: ICL_uranus_zh_female_qinglenggaoya_tob
       claude:
-        speaker: zh_female_vv_uranus_bigtts
+        speaker: ICL_uranus_zh_female_chengshujiejie_tob
       glm:
         speaker: zh_female_vv_uranus_bigtts
+      doubao:
+        speaker: zh_female_tianmeitaozi_uranus_bigtts
     styles:
       激进:
         speech_rate: 15
