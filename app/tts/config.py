@@ -107,7 +107,17 @@ class VolcengineStyleConfig(_StrictModel):
 def _default_volcengine_voices() -> dict[str, VolcengineVoiceConfig]:
     # 火山官方 V3 示例使用的 TTS 2.0 音色；部署可在 YAML 中按 voiceKey 替换。
     voice = VolcengineVoiceConfig(speaker='zh_female_vv_uranus_bigtts')
-    return {'default': voice, 'deepseek': voice, 'relay_gpt': voice}
+    return {
+        'default': voice,
+        'deepseek': voice,
+        'qwen': voice,
+        'kimi': voice,
+        'gpt': voice,
+        'relay_gpt': voice,
+        'minimax': voice,
+        'claude': voice,
+        'glm': voice,
+    }
 
 
 def _default_volcengine_styles() -> dict[str, VolcengineStyleConfig]:

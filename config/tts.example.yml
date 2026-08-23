@@ -49,7 +49,19 @@ providers:
         speaker: zh_female_vv_uranus_bigtts
       deepseek:
         speaker: zh_female_vv_uranus_bigtts
+      qwen:
+        speaker: zh_female_vv_uranus_bigtts
+      kimi:
+        speaker: zh_female_vv_uranus_bigtts
+      gpt:
+        speaker: zh_female_vv_uranus_bigtts
       relay_gpt:
+        speaker: zh_female_vv_uranus_bigtts
+      minimax:
+        speaker: zh_female_vv_uranus_bigtts
+      claude:
+        speaker: zh_female_vv_uranus_bigtts
+      glm:
         speaker: zh_female_vv_uranus_bigtts
     styles:
       激进:
