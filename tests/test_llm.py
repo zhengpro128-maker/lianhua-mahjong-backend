@@ -621,7 +621,7 @@ class TestPerSeatAssembly:
         ('action_type', 'expected_text'),
         [
             ('self-draw', '自摸，水到渠成。'),
-            ('discard-win', '吃胡，这张正合适。'),
+            ('discard-win', '放枪，这张正合适。'),
         ],
     )
     def test_llm_winner_uses_message_tts_path_and_is_marked_in_snapshot(
