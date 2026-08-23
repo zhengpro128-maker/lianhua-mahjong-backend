@@ -620,8 +620,8 @@ class TestPerSeatAssembly:
     @pytest.mark.parametrize(
         ('action_type', 'expected_text'),
         [
-            ('self-draw', '自摸，稳稳收下。'),
-            ('discard-win', '吃胡，多谢送牌。'),
+            ('self-draw', '自摸，水到渠成。'),
+            ('discard-win', '吃胡，这张正合适。'),
         ],
     )
     def test_llm_winner_uses_message_tts_path_and_is_marked_in_snapshot(
@@ -657,6 +657,14 @@ class TestPerSeatAssembly:
         }
         snapshot = build_snapshot(room, 0)
         assert [player['isLlm'] for player in snapshot['players']] == [False, True, False, False]
+
+    def test_llm_win_lines_have_three_short_variants_per_style(self):
+        from app.game.room import _LLM_WIN_LINES
+        for styles in _LLM_WIN_LINES.values():
+            for variants in styles.values():
+                assert len(variants) == 3
+                assert len(set(variants)) == 3
+                assert all(len(line) <= 16 for line in variants)
 
     def test_seat_provider_ids_resolve_per_seat(self, monkeypatch):
         from app.game.player import AIPlayer
