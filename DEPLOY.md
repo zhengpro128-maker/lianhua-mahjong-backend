@@ -34,8 +34,10 @@ docker compose version        # 需要 docker compose v2 插件
 # 部署目录（workflow 会在此目录放 compose 文件）
 sudo mkdir -p /opt/python-project/lianhua-mahjong-backend
 cd /opt/python-project/lianhua-mahjong-backend
-# （可选）走 PostgreSQL 时放一份 .env，compose 的 ${PG_PASSWORD:-} 会读取
+# 运行时配置：docker-compose.prod.yml 会从同目录的 .env 加载全部变量。
+# 按需填写完整配置；例如走 PostgreSQL 时至少设置：
 echo 'PG_PASSWORD=你的密码' > .env
+# LLM/TTS 等其他服务的配置也放在这个 .env 中，不要提交到 Git
 ```
 
 ### 1.3 GHCR 包可见性

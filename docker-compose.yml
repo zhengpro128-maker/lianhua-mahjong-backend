@@ -6,12 +6,13 @@ services:
   backend:
     build: .
     restart: unless-stopped
-    environment:
-      PG_PASSWORD: ${PG_PASSWORD:-}
+    env_file:
+      - .env
     ports:
       - "8000:8000"
     volumes:
-      - mahjong_data:/app/data
+      - ./data:/app/data
 
 volumes:
   mahjong_data:
+    name: mahjong_data

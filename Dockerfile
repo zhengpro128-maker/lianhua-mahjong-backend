@@ -4,9 +4,11 @@
 #   - 设置了 PG_PASSWORD → 走 PostgreSQL（可再覆盖 PG_HOST/PG_PORT/PG_USER/PG_DATABASE）
 #   - 未设置 → 回退 SQLite，数据落在 /app/data（docker-compose 挂 mahjong_data 卷持久化）
 #
-# 构建：docker build -t lianhua-backend .
-# 启动：docker run --rm -p 8000:8000 -v mahjong_data:/app/data lianhua-backend
-FROM python:3.11-slim
+# 构建并启动：docker compose up --build
+# 若直接使用 Docker CLI：
+#   docker build -t lianhua-backend .
+#   docker run --rm --env-file .env -p 8000:8000 -v mahjong_data:/app/data lianhua-backend
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
