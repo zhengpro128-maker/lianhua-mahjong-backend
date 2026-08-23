@@ -283,7 +283,7 @@ def make_llm_player(monkeypatch, responses, *, seat=-1, provider_id='', on_messa
                     **cfg_overrides):
     cfg = dict(
         enabled=True, base_url='https://api.deepseek.com/v1', api_key='sk-x',
-        model='deepseek-v4-flash', style='稳健', timeout_s=8.0,
+        model='deepseek-v4-flash', style='稳健', timeout_s=20.0,
         pool_timeout_s=1.0, concurrency=2, max_requests_per_room=0,
     )
     cfg.update(cfg_overrides)
@@ -492,7 +492,7 @@ class TestProviderRegistry:
         cfg = deepseek_provider(style='狂暴', nickname='').to_config()
         assert cfg.style == '稳健'
         assert cfg.api_key == 'sk-server-ds'
-        assert 0.5 <= cfg.timeout_s <= 120.0
+        assert cfg.timeout_s == 20.0
         assert deepseek_provider(style='稳健').to_config(style_override='高冷').style == '高冷'
 
 
