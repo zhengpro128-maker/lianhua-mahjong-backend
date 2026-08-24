@@ -526,6 +526,7 @@ class TestProviderRegistry:
         monkeypatch.setenv('LLM_PROVIDER_KIMI_BASE_URL', 'https://api.moonshot.cn/v1')
         monkeypatch.setenv('LLM_PROVIDER_KIMI_API_KEY', 'sk-k')
         monkeypatch.setenv('LLM_PROVIDER_KIMI_MODEL', 'kimi-k2')
+        monkeypatch.setenv('LLM_PROVIDER_KIMI_TYPE', 'kimi')
         monkeypatch.setenv('LLM_PROVIDER_KIMI_STYLE', '话痨')
         monkeypatch.setenv('LLM_PROVIDER_KIMI_AVATAR_FOLDER', 'kimi')
         from app.llm.config import load_llm_providers
@@ -534,6 +535,7 @@ class TestProviderRegistry:
         assert providers['kimi'].style == '话痨'
         assert providers['kimi'].name == 'kimi'
         assert providers['kimi'].avatar_folder == 'kimi'
+        assert providers['kimi'].provider_type == 'kimi'
 
     def test_incomplete_provider_skipped(self, monkeypatch):
         monkeypatch.delenv('LLM_PROVIDER_X_API_KEY', raising=False)
@@ -607,6 +609,54 @@ class TestProviderRegistry:
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
         assert captured['enable_thinking'] is False
         assert captured['response_format'] == {'type': 'json_object'}
+        run(http.aclose())
+
+    def test_kimi_custom_proxy_disables_thinking_and_overrides_sampling(self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                             'finish_reason': 'stop'}],
+                'usage': {'completion_tokens_details': {'reasoning_tokens': 0}},
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://proxy.example.com/v1', api_key='sk-kimi',
+            model='kimi-k2.6', provider_id='kimi', provider_type='kimi')
+        assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
+        assert captured['thinking'] == {'type': 'disabled'}
+        assert captured['temperature'] == 0.6
+        assert captured['top_p'] == 0.95
+        run(http.aclose())
+
+    def test_reasoning_leak_is_rejected(self, monkeypatch):
+        from app.llm.client import LlmClientError, request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        async def handler(_request: httpx.Request):
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1"}', 'reasoning_content': '仍在思考'},
+                    'finish_reason': 'stop',
+                }],
+                'usage': {'completion_tokens_details': {'reasoning_tokens': 8}},
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://proxy.example.com/v1', api_key='sk-qwen',
+            model='qwen3.7-plus', provider_id='qwen', provider_type='qwen')
+        with pytest.raises(LlmClientError) as exc:
+            run(request_llm_decision(cfg, 'system', 'user', ['A1']))
+        assert exc.value.kind == LlmClientError.KIND_REASONING
         run(http.aclose())
 
 

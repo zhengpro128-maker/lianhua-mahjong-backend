@@ -13,7 +13,8 @@ from typing import Optional
 import httpx
 from loguru import logger
 
-from app.llm.config import LlmServerConfig, is_qwen_thinking_model, llm_semaphore
+from app.llm.config import LlmServerConfig, llm_semaphore
+from app.llm.reasoning import resolve_reasoning_policy
 
 
 class LlmClientError(Exception):
@@ -21,6 +22,8 @@ class LlmClientError(Exception):
     KIND_TIMEOUT = 'timeout'
     KIND_NETWORK = 'network'
     KIND_PARSE = 'parse'
+    KIND_CONFIG = 'config'
+    KIND_REASONING = 'reasoning'
 
     def __init__(self, kind: str, message: str):
         super().__init__(message)
@@ -43,10 +46,6 @@ async def close_llm_client() -> None:
     if _shared is not None:
         await _shared.aclose()
         _shared = None
-
-
-def _is_deepseek(base_url: str) -> bool:
-    return re.match(r'^https://api\.deepseek\.com', base_url.strip(), re.I) is not None
 
 
 def _is_anthropic(base_url: str) -> bool:
@@ -164,10 +163,13 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         'stream': False,
         'n': 1,
     }
-    if _is_deepseek(cfg.base_url):
-        payload['thinking'] = {'type': 'disabled'}   # §V4：关闭默认思考模式
-    if is_qwen_thinking_model(cfg.base_url, cfg.model):
-        payload['enable_thinking'] = False
+    reasoning_policy = resolve_reasoning_policy(
+        getattr(cfg, 'provider_type', ''), cfg.base_url, cfg.model,
+        getattr(cfg, 'provider_id', ''))
+    if not reasoning_policy.usable:
+        raise LlmClientError(LlmClientError.KIND_CONFIG, reasoning_policy.message)
+    payload.update(reasoning_policy.request_body)
+    if reasoning_policy.provider_type == 'qwen':
         payload['response_format'] = {'type': 'json_object'}
     client = get_llm_client()
     request_started = time.monotonic()
@@ -218,7 +220,8 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     if not choices:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
     first = choices[0]
-    message = (first.get('message') or {}).get('content')
+    message_obj = first.get('message') or {}
+    message = message_obj.get('content')
     if not isinstance(message, str) or not message:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
     if first.get('finish_reason') == 'length' and strict_length:
@@ -226,6 +229,15 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     usage = body.get('usage') if isinstance(body.get('usage'), dict) else {}
     details = usage.get('completion_tokens_details') \
         if isinstance(usage.get('completion_tokens_details'), dict) else {}
+    reasoning_content = message_obj.get('reasoning_content')
+    reasoning_tokens = details.get('reasoning_tokens')
+    leaked_reasoning = isinstance(reasoning_content, str) and bool(reasoning_content.strip())
+    leaked_reasoning = leaked_reasoning or isinstance(reasoning_tokens, (int, float)) and reasoning_tokens > 0
+    leaked_reasoning = leaked_reasoning or isinstance(body.get('reasoning'), (str, list)) and bool(body.get('reasoning'))
+    if leaked_reasoning:
+        raise LlmClientError(
+            LlmClientError.KIND_REASONING,
+            '供应商仍返回思考内容，非思考模式验证失败')
     elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
     logger.bind(
         llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,

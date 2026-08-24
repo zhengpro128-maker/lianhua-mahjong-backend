@@ -2,7 +2,7 @@
 
 - 旧全局配置：LLM_ENABLED + LLM_API_BASE/KEY/MODEL/STYLE...（id=default 的单提供商，
   仅当未使用 LLM_PROVIDER_* 时作为兜底注册）
-- 多提供商：LLM_PROVIDER_<ID>_{BASE_URL,API_KEY,MODEL,STYLE,NICKNAME,TIMEOUT_MS,NAME,AVATAR_FOLDER}
+- 多提供商：LLM_PROVIDER_<ID>_{BASE_URL,API_KEY,MODEL,TYPE,STYLE,NICKNAME,TIMEOUT_MS,NAME,AVATAR_FOLDER}
   （ID 字母/数字/下划线，如 LLM_PROVIDER_DEEPSEEK_BASE_URL）——Key 全部在服务端，
   客户端只拿 id；建房/开局引用 providerId。
 """
@@ -11,6 +11,8 @@ import asyncio
 import os
 import re
 from typing import Optional
+
+from app.llm.reasoning import PROVIDER_TYPES, infer_provider_type, resolve_reasoning_policy
 
 ENABLED_KEY = 'LLM_ENABLED'
 BASE_URL_KEY = 'LLM_API_BASE'
@@ -29,12 +31,8 @@ QWEN_DECISION_TIMEOUT_S = 8.0
 
 def is_qwen_thinking_model(base_url: str, model: str) -> bool:
     """百炼 Qwen 3.5–3.8 默认开启混合思考，麻将决策应使用非思考模式。"""
-    host_matches = re.search(
-        r'(?:dashscope\.aliyuncs\.com|\.maas\.aliyuncs\.com)(?:/|$)',
-        (base_url or '').strip(), re.I) is not None
-    model_matches = re.match(r'^qwen3\.(?:5|6|7|8)(?:[.-]|$)',
-                             (model or '').strip(), re.I) is not None
-    return host_matches and model_matches
+    result = resolve_reasoning_policy('', base_url, model)
+    return result.provider_type == 'qwen' and result.mode == 'explicit-off'
 
 
 class LlmServerConfig:
@@ -49,6 +47,7 @@ class LlmServerConfig:
                  concurrency: int = 4,
                  max_requests_per_room: int = 0,
                  provider_id: str = '',
+                 provider_type: str = '',
                  ):
         self.enabled = enabled
         self.base_url = base_url
@@ -60,13 +59,15 @@ class LlmServerConfig:
         self.concurrency = concurrency
         self.max_requests_per_room = max_requests_per_room
         self.provider_id = provider_id
+        self.provider_type = provider_type if provider_type in PROVIDER_TYPES else \
+            infer_provider_type(base_url, model, provider_id)
 
 
 LLM_STYLES = ('激进', '稳健', '话痨', '高冷')
 _PROVIDER_SUFFIXES = (
     ('BASE_URL', 'base_url'), ('API_KEY', 'api_key'), ('MODEL', 'model'),
     ('STYLE', 'style'), ('NICKNAME', 'nickname'), ('TIMEOUT_MS', 'timeout_ms'),
-    ('AVATAR_FOLDER', 'avatar_folder'), ('NAME', 'name'),
+    ('AVATAR_FOLDER', 'avatar_folder'), ('NAME', 'name'), ('TYPE', 'provider_type'),
 )
 
 
@@ -76,7 +77,7 @@ class LlmProvider:
     def __init__(self, provider_id: str, name: str = '', base_url: str = '',
                  api_key: str = '', model: str = '', style: str = '稳健',
                  nickname: str = '', timeout_ms: Optional[float] = None,
-                 avatar_folder: str = ''):
+                 avatar_folder: str = '', provider_type: str = ''):
         self.provider_id = provider_id
         self.name = name.strip() or provider_id
         self.base_url = base_url.strip()
@@ -86,6 +87,8 @@ class LlmProvider:
         self.nickname = nickname.strip()
         self.timeout_ms = timeout_ms
         self.avatar_folder = avatar_folder.strip()
+        self.provider_type = provider_type if provider_type in PROVIDER_TYPES else \
+            infer_provider_type(self.base_url, self.model, self.provider_id)
 
     def to_config(self, style_override: Optional[str] = None) -> LlmServerConfig:
         """转单次调用配置；座位可覆盖策略，模型/Key 仍来自服务端注册表。"""
@@ -108,6 +111,7 @@ class LlmProvider:
             concurrency=global_cfg.concurrency,
             max_requests_per_room=global_cfg.max_requests_per_room,
             provider_id=self.provider_id,
+            provider_type=self.provider_type,
         )
 
 
@@ -178,6 +182,7 @@ def load_llm_providers() -> dict[str, LlmProvider]:
             nickname=(entry.get('nickname') or '').strip(),
             timeout_ms=timeout_ms,
             avatar_folder=(entry.get('avatar_folder') or '').strip(),
+            provider_type=(entry.get('provider_type') or '').strip().lower(),
         )
     return providers
 

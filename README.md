@@ -223,18 +223,21 @@ TTS 不再读取环境变量；provider、音色、缓存、超时和故障降�
 LLM_PROVIDER_DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 LLM_PROVIDER_DEEPSEEK_API_KEY=sk-xxx
 LLM_PROVIDER_DEEPSEEK_MODEL=deepseek-chat
+LLM_PROVIDER_DEEPSEEK_TYPE=deepseek
 LLM_PROVIDER_DEEPSEEK_STYLE=稳健
 LLM_PROVIDER_DEEPSEEK_NICKNAME=大肥鱼
 LLM_PROVIDER_DEEPSEEK_AVATAR_FOLDER=deepseek
 LLM_PROVIDER_KIMI_BASE_URL=https://api.moonshot.cn/v1
 LLM_PROVIDER_KIMI_API_KEY=sk-yyy
-LLM_PROVIDER_KIMI_MODEL=kimi-k2
+LLM_PROVIDER_KIMI_MODEL=kimi-k2.6
+LLM_PROVIDER_KIMI_TYPE=kimi
 ```
 
 - 提供商 id = 变量名中段（小写）：`deepseek`、`kimi`…；可加 `_STYLE`（四风格）、
   `_NICKNAME`（缺省按 base URL 推导：DeepSeek=大肥鱼等）、`_TIMEOUT_MS`（毫秒）、
-  `_NAME`（展示名，缺省=id）、`_AVATAR_FOLDER`（头像素材文件夹）。代理地址无法按域名
-  识别时会再按 provider id 推导，例如 `relay_gpt` 自动使用 `gpt`；仍可显式覆盖。
+  `_NAME`（展示名，缺省=id）、`_AVATAR_FOLDER`（头像素材文件夹）、`_TYPE`
+  （`deepseek/qwen/kimi/doubao/minimax/openai/glm/claude/custom`）。使用自定义代理时必须设置
+  `_TYPE`，确保服务端仍能发送正确的非思考参数；未知或推理专用模型会在请求前回退启发式 AI。
 - 客户端建房时在**房间面板为每个空位选择“提供商/模型 + 策略”**；每个已配置
   模型都会展开激进、稳健、话痨、高冷四种策略。`start` 请求只带
   `llmSeats: [{seat, providerId, style}]`，**key 不经过客户端**；未指定时使用
