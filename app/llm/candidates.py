@@ -12,6 +12,7 @@ from app.core.ai import decide_claim as core_decide_claim
 from app.core.ai import decide_turn as core_decide_turn
 from app.core.lotus_ai import decide_claim as lotus_decide_claim
 from app.core.lotus_ai import decide_turn as lotus_decide_turn
+from app.core.lotus_rules import evaluate_pattern
 from app.llm.schema import canonical_action, rule_code_for, tile_name
 from app.rules.base import GameRuleSet
 from app.settlement import settlement_service
@@ -93,6 +94,21 @@ def _quality(ctx, after: list[str], rules: GameRuleSet) -> tuple[bool, list[str]
     return True, waits, effective
 
 
+def _special_pattern(ctx, hand: list[str], waits: list[str], rules: GameRuleSet) -> str:
+    """只标记规则引擎已确认的一听特殊牌型，避免用近似距离误导模型。"""
+    if rules.code != 'lotus-legacy' or ctx.exposedMelds > 0 or not waits:
+        return 'none'
+    jokers = _joker_tiles(ctx, rules)
+    labels: list[str] = []
+    for wait in waits:
+        result = evaluate_pattern([*hand, wait], ctx.exposedMelds, jokers)
+        if result and result['pattern'] != 'pinghu':
+            label = f'{result["label"]}听牌'
+            if label not in labels:
+                labels.append(label)
+    return '、'.join(labels) if labels else 'none'
+
+
 def _is_tenpai(ctx, hand: list[str], rules: GameRuleSet) -> bool:
     return any(_waits(ctx, hand[:idx] + hand[idx + 1:], rules)
                for idx in range(len(hand)))
@@ -134,7 +150,7 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
         feat['waits'] = [{'tile': tile_name(t), 'remaining': _remaining(ctx, t)}
                          for t in waits] if ready else 'n/a'
         feat['effectiveRemaining'] = effective if ready else 'n/a'
-        feat['specialPattern'] = 'none'
+        feat['specialPattern'] = _special_pattern(ctx, after, waits, rules)
         feat['safety'] = _safety_band(ctx, discarded) if rules.code == 'lotus-legacy' else 'n/a'
         if discarded in _protected_discard_tiles(ctx, rules):
             feat['risks'].append('癞子/精牌，通常必须保留；当前无普通牌可打')

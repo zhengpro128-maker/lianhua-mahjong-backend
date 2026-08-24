@@ -188,6 +188,17 @@ class TestCandidates:
         assert all(any('癞子/精牌' in risk for risk in c['features']['risks'])
                    for c in discards)
 
+    def test_lotus_special_ready_pattern_is_labeled_by_rule_engine(self):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = []
+        hand = ['m1', 'm1', 'm2', 'm2', 'm3', 'm3', 'p1', 'p1',
+                'p2', 'p2', 's1', 's1', 'east', 'south']
+        ctx = turn_ctx(hand=hand, jokers=[])
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        discard_south = next(c for c in built['request']['candidates']
+                             if c['label'] == '出南')
+        assert '七对子听牌' in discard_south['features']['specialPattern']
+
 
 # ── 合法性校验（§8.2）──────────────────────────────────────
 
@@ -238,6 +249,9 @@ class TestPromptRules:
         assert '不支持七对、十三幺、十三烂、七星十三烂' in user
         assert '【癞子规则】白板是本玩法的万能牌' in user
         assert '出白板' not in user
+        assert '只可自摸或抢杠胡' in user
+        assert '决策优先级' in system
+        assert '默认优先' in user
 
     def test_lotus_prompt_uses_double_joker_and_limited_white_rule(self):
         rules = get_rule_set('lotus-legacy')
