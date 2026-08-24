@@ -151,6 +151,18 @@ class TestCandidates:
         kinds = [c['action']['kind'] for c in built['request']['candidates']]
         assert 'wind-kong' in kinds
 
+    def test_lotus_four_wind_wait_omits_destructive_wind_kong(self):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = []
+        hand = ['s3', 's4', 's5', 'east', 'south', 'west', 'north', 'p9']
+        ctx = turn_ctx(hand=hand, exposed_melds=2, jokers=[])
+        ctx.visibleTiles = hand
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        candidates = built['request']['candidates']
+        assert not any(c['action']['kind'] == 'wind-kong' for c in candidates)
+        discard_p9 = next(c for c in candidates if c['label'] == '出9筒')
+        assert discard_p9['features']['ready'] is True
+
     def test_claim_chi_options(self):
         rules = get_rule_set('lotus-legacy')
         rules.round_state.joker_tiles = []
@@ -238,6 +250,14 @@ class TestValidation:
         rules.round_state.joker_tiles = ['m5', 'm6']
         ctx = turn_ctx(hand=['m5', 'white'], jokers=['m5', 'm6'])
         assert validate_action(ctx, {'kind': 'discard', 'handIndex': 0}, rules)
+
+    def test_rejects_wind_kong_that_breaks_four_wind_wait(self):
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = []
+        hand = ['s3', 's4', 's5', 'east', 'south', 'west', 'north', 'p9']
+        ctx = turn_ctx(hand=hand, exposed_melds=2, jokers=[])
+        ctx.visibleTiles = hand
+        assert not validate_action(ctx, {'kind': 'wind-kong'}, rules)
 
 
 class TestPromptRules:

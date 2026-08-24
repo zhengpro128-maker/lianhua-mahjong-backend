@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.models.game import Meld, TileType
 from app.core.actions import remove_matches
+from app.core.kong_projection import project_kong_bloom
 from app.core.ai import choose_discard_index, decide_claim, decide_rob_kong, decide_turn
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import get_default_rule_set
@@ -163,6 +164,13 @@ class AIPlayer:
         ms = self.delays['claim']
         if ms:
             await asyncio.sleep(ms / 1000)
+        if self.rules.code == 'lotus-legacy' and ctx.canGang:
+            jokers = list(ctx.jokers or getattr(self.rules.round_state, 'jokers', []))
+            if project_kong_bloom(
+                    kind='discard-gang', hand=ctx.hand,
+                    exposed_melds=ctx.exposedMelds, jokers=jokers, tile=ctx.tile,
+                    visible_tiles=ctx.visibleTiles).guaranteed_kong_bloom:
+                return {'kind': 'gang'}
         if ctx.canHu:
             return {'kind': 'win'}
         if self.rules.code == 'lotus-legacy':

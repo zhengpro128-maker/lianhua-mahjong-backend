@@ -8,6 +8,7 @@ import re
 from typing import Optional
 
 from app.core.actions import remove_matches
+from app.core.kong_projection import has_ready_discard, project_kong_bloom
 from app.core.ai import decide_claim as core_decide_claim
 from app.core.ai import decide_turn as core_decide_turn
 from app.core.lotus_ai import decide_claim as lotus_decide_claim
@@ -110,6 +111,8 @@ def _special_pattern(ctx, hand: list[str], waits: list[str], rules: GameRuleSet)
 
 
 def _is_tenpai(ctx, hand: list[str], rules: GameRuleSet) -> bool:
+    if rules.code == 'lotus-legacy':
+        return has_ready_discard(hand, ctx.exposedMelds, _joker_tiles(ctx, rules))
     return any(_waits(ctx, hand[:idx] + hand[idx + 1:], rules)
                for idx in range(len(hand)))
 
@@ -252,6 +255,8 @@ def _banded_efficiency(scores: list[dict]) -> dict[int, str]:
 def _turn_candidates(ctx, rules: GameRuleSet) -> list[dict]:
     candidates: list[dict] = []
     skip_draw = bool(_g(ctx, 'skipDraw'))
+    current_ready = rules.code == 'lotus-legacy' and _is_tenpai(ctx, ctx.hand, rules)
+    jokers = _joker_tiles(ctx, rules)
     if not skip_draw:
         for meld_index, meld in enumerate(ctx.melds):
             if getattr(meld, 'type', None) == 'peng' and rules.can_added_kong(ctx.hand, ctx.melds, meld.tile):
@@ -262,20 +267,30 @@ def _turn_candidates(ctx, rules: GameRuleSet) -> list[dict]:
                     'legalityKey': f'added-kong:{meld_index}',
                 })
         for tile in rules.concealed_kongs(ctx.hand):
-            candidates.append({
-                'id': f'G{tile}', 'label': f"暗杠{tile_name(tile)}",
-                'action': canonical_action('concealed-kong', tile=tile),
-                'features': _features_of(ctx, canonical_action('concealed-kong', tile=tile), '中', rules),
-                'legalityKey': f'concealed-kong:{tile}',
-            })
+            guaranteed = rules.code == 'lotus-legacy' and project_kong_bloom(
+                kind='concealed-kong', hand=ctx.hand,
+                exposed_melds=ctx.exposedMelds, jokers=jokers, tile=tile,
+                visible_tiles=_g(ctx, 'visibleTiles')).guaranteed_kong_bloom
+            if not current_ready or guaranteed:
+                candidates.append({
+                    'id': f'G{tile}', 'label': f"暗杠{tile_name(tile)}",
+                    'action': canonical_action('concealed-kong', tile=tile),
+                    'features': _features_of(ctx, canonical_action('concealed-kong', tile=tile), '中', rules),
+                    'legalityKey': f'concealed-kong:{tile}',
+                })
         wind_kong = getattr(rules, 'wind_kong', None)
         if rules.code == 'lotus-legacy' and wind_kong and wind_kong(ctx.hand):
-            candidates.append({
-                'id': 'GW', 'label': '乱风杠',
-                'action': canonical_action('wind-kong'),
-                'features': _features_of(ctx, canonical_action('wind-kong'), '中', rules),
-                'legalityKey': 'wind-kong',
-            })
+            guaranteed = project_kong_bloom(
+                kind='wind-kong', hand=ctx.hand,
+                exposed_melds=ctx.exposedMelds, jokers=jokers,
+                visible_tiles=_g(ctx, 'visibleTiles')).guaranteed_kong_bloom
+            if not current_ready or guaranteed:
+                candidates.append({
+                    'id': 'GW', 'label': '乱风杠',
+                    'action': canonical_action('wind-kong'),
+                    'features': _features_of(ctx, canonical_action('wind-kong'), '中', rules),
+                    'legalityKey': 'wind-kong',
+                })
     protected = _protected_discard_tiles(ctx, rules)
     has_natural_discard = any(tile not in protected for tile in ctx.hand)
     seen: set[str] = set()

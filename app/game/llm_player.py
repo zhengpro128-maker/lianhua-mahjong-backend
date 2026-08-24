@@ -1,7 +1,7 @@
 """LLM 玩家控制器 —— §2/§3/§8（联机空座补位）。
 
 LLMPlayer(AIPlayer)：覆盖 request_turn / request_claim；
-- 胡由引擎短路（v1 不放给 LLM）：turn 判 is_winning_hand，claim 判 ctx.canHu；
+- 胡由引擎短路（v1 不放给 LLM）；唯一例外是杠后全听时先杠，确定性博杠上开花；
 - skipDraw 只允许出牌（候选枚举不含杠/胡）；
 - LLM 决定 → validate_action（§8.2，逐类型）→ 失败/超时/网络/HTTP → super().request_*（启发式兜底）；
 - request_rob_kong 继承 AIPlayer（能抢必抢）。
@@ -11,6 +11,7 @@ import asyncio
 from typing import Callable, Optional
 
 from app.game.player import AIPlayer, ClaimContext, TurnContext
+from app.core.kong_projection import project_kong_bloom
 from app.llm.candidates import build_request
 from app.llm.client import request_llm_decision
 from app.llm.config import LlmServerConfig, load_llm_config
@@ -49,7 +50,21 @@ class LLMPlayer(AIPlayer):
         if ms:
             await asyncio.sleep(ms / 1000)
         rules = self.rules
-        # v1 胡短路：引擎判定，不放给 LLM（§3）
+        if rules.code == 'lotus-legacy' and not ctx.skipDraw:
+            jokers = list(ctx.jokers or getattr(rules.round_state, 'jokers', []))
+            for tile in rules.concealed_kongs(ctx.hand):
+                if project_kong_bloom(
+                        kind='concealed-kong', hand=ctx.hand,
+                        exposed_melds=ctx.exposedMelds, jokers=jokers, tile=tile,
+                        visible_tiles=ctx.visibleTiles).guaranteed_kong_bloom:
+                    return {'kind': 'concealed-kong', 'tile': tile}
+            wind_kong = getattr(rules, 'wind_kong', None)
+            if wind_kong and wind_kong(ctx.hand) and project_kong_bloom(
+                    kind='wind-kong', hand=ctx.hand,
+                    exposed_melds=ctx.exposedMelds, jokers=jokers,
+                    visible_tiles=ctx.visibleTiles).guaranteed_kong_bloom:
+                return {'kind': 'wind-kong'}
+        # 普通胡短路：只有杠后全听这一确定性加番特例可先杠。
         if not ctx.skipDraw and rules.is_winning_hand(ctx.hand, ctx.exposedMelds):
             return {'kind': 'win'}
         built = build_request(ctx, rules, getattr(ctx, 'requestId', '') or '',
@@ -63,7 +78,14 @@ class LLMPlayer(AIPlayer):
         ms = self.delays['claim']
         if ms:
             await asyncio.sleep(ms / 1000)
-        # 点炮胡引擎短路（§3）：canHu → win（manager 依据 canHu 执行胡）
+        if self.rules.code == 'lotus-legacy' and ctx.canGang:
+            jokers = list(ctx.jokers or getattr(self.rules.round_state, 'jokers', []))
+            if project_kong_bloom(
+                    kind='discard-gang', hand=ctx.hand,
+                    exposed_melds=ctx.exposedMelds, jokers=jokers, tile=ctx.tile,
+                    visible_tiles=ctx.visibleTiles).guaranteed_kong_bloom:
+                return {'kind': 'gang'}
+        # 点炮胡引擎短路：除杠后全听特例外，canHu → win。
         if ctx.canHu:
             return {'kind': 'win'}
         chi_options = list(getattr(ctx, 'chiOptions', None) or getattr(ctx, 'chi_options', None) or [])

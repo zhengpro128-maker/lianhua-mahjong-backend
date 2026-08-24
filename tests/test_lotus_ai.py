@@ -38,6 +38,16 @@ class TestLotusDecideTurn:
         hand = ['m1', 'm1', 'm1', 'm1', 'm5', 'm6', 'p3', 'p4', 's7', 's8', 'east', 'south', 'west', 'north']
         assert should_take_concealed_kong({'hand': hand, 'exposedMelds': 0, 'jokers': []}) is True
 
+    def test_four_wind_wait_does_not_get_broken_by_wind_kong(self):
+        # 两副露后的摸牌态：打出 p9 后，3条4条5条 + 东南西北听任一风牌。
+        hand = ['s3', 's4', 's5', 'east', 'south', 'west', 'north', 'p9']
+        decision = decide_turn({
+            'hand': hand, 'exposedMelds': 2, 'melds': [], 'jokers': [],
+            'visibleTiles': hand,
+        })
+        assert decision['kind'] == 'discard'
+        assert hand[decision['handIndex']] == 'p9'
+
 
 class TestLotusDecideClaim:
     """对应 lotusAi.ts decideClaim（策略副露决策）。"""

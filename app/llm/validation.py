@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from app.core.kong_projection import has_ready_discard, project_kong_bloom
 from app.rules.base import GameRuleSet
 
 
@@ -36,10 +37,28 @@ def validate_action(ctx, action: dict, rules: GameRuleSet) -> bool:
         return True
     if kind == 'concealed-kong':
         tile = action.get('tile')
-        return tile is not None and tile in rules.concealed_kongs(hand)
+        if tile is None or tile not in rules.concealed_kongs(hand):
+            return False
+        if rules.code != 'lotus-legacy':
+            return True
+        jokers = list(getattr(ctx, 'jokers', None)
+                      or getattr(rules.round_state, 'jokers', []))
+        guaranteed = project_kong_bloom(
+            kind='concealed-kong', hand=hand, exposed_melds=ctx.exposedMelds,
+            jokers=jokers, tile=tile,
+            visible_tiles=getattr(ctx, 'visibleTiles', None)).guaranteed_kong_bloom
+        return guaranteed or not has_ready_discard(hand, ctx.exposedMelds, jokers)
     if kind == 'wind-kong':
         wind_kong = getattr(rules, 'wind_kong', None)
-        return rules.code == 'lotus-legacy' and wind_kong is not None and wind_kong(hand)
+        if rules.code != 'lotus-legacy' or wind_kong is None or not wind_kong(hand):
+            return False
+        jokers = list(getattr(ctx, 'jokers', None)
+                      or getattr(rules.round_state, 'jokers', []))
+        guaranteed = project_kong_bloom(
+            kind='wind-kong', hand=hand, exposed_melds=ctx.exposedMelds,
+            jokers=jokers,
+            visible_tiles=getattr(ctx, 'visibleTiles', None)).guaranteed_kong_bloom
+        return guaranteed or not has_ready_discard(hand, ctx.exposedMelds, jokers)
     if kind == 'gang':
         capabilities = rules.claim_capabilities(hand, ctx.tile) if getattr(ctx, 'tile', None) else None
         return capabilities is not None and capabilities.can_gang

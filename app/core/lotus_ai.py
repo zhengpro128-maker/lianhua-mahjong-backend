@@ -17,6 +17,7 @@ from functools import cmp_to_key
 from typing import Callable, Optional
 
 from app.core.actions import remove_matches
+from app.core.kong_projection import has_ready_discard, project_kong_bloom
 from app.core.lotus_rules import matching_count, waiting_tiles
 from app.core.tiles import HONORS
 from app.models.game import TileType
@@ -249,15 +250,7 @@ def _best_discard_after_claim(hand: list[TileType], exposed_melds: int,
 def is_tenpai(hand: list[TileType], exposed_melds: int,
               jokers: list[TileType]) -> bool:
     """当前手牌是否已听牌（存在打出某张后听口非空）。"""
-    joker_set = _wildcard_set(jokers)
-    has_natural = any(tile not in joker_set for tile in hand)
-    for index, tile in enumerate(hand):
-        if has_natural and tile in joker_set:
-            continue
-        after_discard = hand[:index] + hand[index + 1:]
-        if waiting_tiles(after_discard, exposed_melds, jokers):
-            return True
-    return False
+    return has_ready_discard(hand, exposed_melds, jokers)
 
 
 def _meld_attr(meld, name: str):
@@ -290,9 +283,26 @@ def should_take_wind_kong(view: dict) -> bool:
 
 def decide_turn(view: dict, jokers: list[TileType] | None = None,
                 rules=None) -> dict:
-    """回合决策：自摸胡 → 补杠 → 暗杠 → 乱风杠 → 弃牌（杠前评估是否破坏听牌/被抢杠）。"""
+    """回合决策：杠后全听特例 → 自摸胡 → 补杠 → 暗杠 → 乱风杠 → 弃牌。"""
     from app.core.lotus_rules import is_winning_hand as lotus_is_winning_hand
     effective_jokers = list(jokers if jokers is not None else view.get('jokers', []))
+    kongs = [tile for tile in set(view['hand'])
+             if matching_count(view['hand'], tile) == 4]
+    for tile in kongs:
+        if project_kong_bloom(
+                kind='concealed-kong', hand=view['hand'],
+                exposed_melds=view.get('exposedMelds', 0), jokers=effective_jokers,
+                tile=tile, visible_tiles=view.get('visibleTiles')).guaranteed_kong_bloom:
+            return {'kind': 'concealed-kong', 'tile': tile}
+
+    has_wind_kong = all(wind in view['hand']
+                        for wind in ('east', 'south', 'west', 'north'))
+    if has_wind_kong and project_kong_bloom(
+            kind='wind-kong', hand=view['hand'],
+            exposed_melds=view.get('exposedMelds', 0), jokers=effective_jokers,
+            visible_tiles=view.get('visibleTiles')).guaranteed_kong_bloom:
+        return {'kind': 'wind-kong'}
+
     if lotus_is_winning_hand(view['hand'], view.get('exposedMelds', 0), effective_jokers):
         return {'kind': 'win'}
 
@@ -305,13 +315,10 @@ def decide_turn(view: dict, jokers: list[TileType] | None = None,
     if meld_index >= 0 and should_take_added_kong(view):
         return {'kind': 'added-kong', 'meldIndex': meld_index}
 
-    kongs = [tile for tile in set(view['hand'])
-             if matching_count(view['hand'], tile) == 4]
     if kongs and should_take_concealed_kong(view):
         return {'kind': 'concealed-kong', 'tile': kongs[0]}
 
-    if all(wind in view['hand'] for wind in ('east', 'south', 'west', 'north')) \
-            and should_take_wind_kong(view):
+    if has_wind_kong and should_take_wind_kong(view):
         return {'kind': 'wind-kong'}
 
     return {'kind': 'discard', 'handIndex': choose_discard_index(

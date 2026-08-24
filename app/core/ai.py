@@ -32,13 +32,13 @@ def decide_turn(view: dict, rule_set: Optional[GameRuleSet] = None, random=None)
     random 注入以便引擎建议（LLM 兜底）确定性化；默认 None 维持既有行为。
     """
     rules = rule_set or get_default_rule_set()
-    if rules.is_winning_hand(view['hand'], view['exposedMelds']):
-        return {'kind': 'win'}
-
     if rules.code == 'lotus-legacy':
         # 莲花麻将：杠决策评估（破坏听牌/被抢杠风险）+ 听口质量弃牌（对齐前端 lotusAi）。
         from app.core.lotus_ai import decide_turn as lotus_decide_turn
         return lotus_decide_turn(view, view.get('jokers', []), rules)
+
+    if rules.is_winning_hand(view['hand'], view['exposedMelds']):
+        return {'kind': 'win'}
 
     meld_index = -1
     for i, meld in enumerate(view['melds']):
