@@ -16,6 +16,7 @@ from app.llm.candidates import build_request
 from app.llm.client import request_llm_decision
 from app.llm.config import LlmServerConfig, load_llm_config
 from app.llm.prompt import build_prompt
+from app.llm.speech_policy import compact_speech_text
 from app.llm.validation import validate_action
 from app.rules.base import GameRuleSet
 
@@ -23,6 +24,19 @@ from app.rules.base import GameRuleSet
 IMPORTANT_SPEECH_ACTIONS = {
     'gang', 'peng', 'chi', 'added-kong', 'concealed-kong', 'wind-kong',
 }
+
+
+def _fallback_decision_speech(action: dict) -> str:
+    kind = action.get('kind')
+    if kind in ('added-kong', 'concealed-kong', 'wind-kong', 'gang'):
+        return '这杠我开了。'
+    if kind == 'peng':
+        return '碰一个。'
+    if kind == 'chi':
+        return '顺手吃了。'
+    if kind == 'pass':
+        return '先看看。'
+    return '这张先走。'
 
 class LLMPlayer(AIPlayer):
     """LLM 驱动的 AI 玩家（联机空座补位用；超时/断线代打仍用 AIPlayer）。"""
@@ -126,17 +140,17 @@ class LLMPlayer(AIPlayer):
             self.stats['fallbacks'] += 1
             return None
         self.stats['successes'] += 1
-        if message:
-            self.stats['messages'] += 1
-            self.message_history.append(message)
-            if self.on_message is not None:
-                try:
-                    action_kind = candidate['action']['kind']
-                    priority = 'important' if action_kind in IMPORTANT_SPEECH_ACTIONS else 'normal'
-                    self.on_message(self.seat, message, priority)
-                except Exception:
-                    # 吐槽属于表现副作用；广播失败不能影响动作执行和对局推进。
-                    pass
+        speech = compact_speech_text(message) or _fallback_decision_speech(candidate['action'])
+        self.stats['messages'] += 1
+        self.message_history.append(speech)
+        if self.on_message is not None:
+            try:
+                action_kind = candidate['action']['kind']
+                priority = 'important' if action_kind in IMPORTANT_SPEECH_ACTIONS else 'normal'
+                self.on_message(self.seat, speech, priority)
+            except Exception:
+                # 吐槽属于表现副作用；广播失败不能影响动作执行和对局推进。
+                pass
         return self._map_action(candidate['action'])
 
     def _map_action(self, action: dict) -> dict:

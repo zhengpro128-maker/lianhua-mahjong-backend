@@ -734,10 +734,10 @@ class RoomSession:
             controller = self.manager.controllers[seat]
         style = controller.config.style if isinstance(controller, LLMPlayer) else '稳健'
         priority = 'important' if priority == 'important' else 'normal'
-        if not self._llm_speech_policy.admit(seat, style, priority):
-            return
         text = compact_speech_text(text)
         if not text:
+            return
+        if not self._llm_speech_policy.admit(seat, style, priority):
             return
         self._llm_message_seq += 1
         entry = {'id': self._llm_message_seq, 'seat': seat, 'text': text,

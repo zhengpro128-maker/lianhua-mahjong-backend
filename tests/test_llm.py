@@ -17,6 +17,7 @@ from app.game.player import ClaimContext, TurnContext
 from app.llm.candidates import build_request
 from app.llm.client import extract_json_object, parse_llm_output
 from app.llm.prompt import build_prompt
+from app.llm.schema import TILE_NAMES, tile_name
 from app.llm.validation import validate_action
 from app.rules.registry import get_rule_set
 from app.settlement import settlement_service
@@ -125,6 +126,25 @@ class TestEndpoint:
 # ── 候选枚举 ─────────────────────────────────────────────────
 
 class TestCandidates:
+    def test_full_unique_honor_names_keep_green_and_white_actions_distinct(self):
+        honors = ('east', 'south', 'west', 'north', 'red', 'green', 'white')
+        names = [tile_name(tile) for tile in honors]
+        assert names == ['东风', '南风', '西风', '北风', '红中', '发财', '白板']
+        assert len(set(names)) == len(names)
+        assert TILE_NAMES['green'] != TILE_NAMES['white']
+
+        rules = get_rule_set('lotus-legacy')
+        rules.round_state.joker_tiles = ['green', 'white']
+        ctx = turn_ctx(hand=['green', 'white'], jokers=['green', 'white'])
+        ctx.visibleTiles = list(ctx.hand)
+        built = build_request(ctx, rules, 'r1', 'v1', 'turn')
+        discards = [c for c in built['request']['candidates']
+                    if c['action']['kind'] == 'discard']
+        assert [(c['label'], c['action']) for c in discards] == [
+            ('出发财', {'kind': 'discard', 'handIndex': 0}),
+            ('出白板', {'kind': 'discard', 'handIndex': 1}),
+        ]
+
     def test_turn_discard_dedupe(self):
         ctx = turn_ctx(hand=['m3', 'm3', 'm5'])
         built = build_request(ctx, get_rule_set(), 'r1', 'v1', 'turn')
@@ -208,7 +228,7 @@ class TestCandidates:
         ctx = turn_ctx(hand=hand, jokers=[])
         built = build_request(ctx, rules, 'r1', 'v1', 'turn')
         discard_south = next(c for c in built['request']['candidates']
-                             if c['label'] == '出南')
+                             if c['label'] == '出南风')
         assert '七对子听牌' in discard_south['features']['specialPattern']
 
 
@@ -271,6 +291,11 @@ class TestPromptRules:
         assert '出白板' not in user
         assert '只可自摸或抢杠胡' in user
         assert '决策优先级' in system
+        assert '【默认参考】' in user
+        assert '游戏引擎' not in system
+        assert '每次都必须提供一句非空' in system
+        assert '严禁提及或复述决策机制' in system
+        assert 'message 必须非空' in user
         assert '默认优先' in user
 
     def test_lotus_prompt_uses_double_joker_and_limited_white_rule(self):
@@ -369,6 +394,18 @@ class TestLLMPlayer:
         assert player.stats['messages'] == 1
         assert player.message_history == ['稳一手。']
         assert messages == [(2, '稳一手。', 'normal')]
+
+    def test_backstage_message_uses_natural_fallback(self, monkeypatch):
+        messages = []
+        player, _ = make_llm_player(
+            monkeypatch, ['{"choice":"A1","message":"跟引擎走，稳。"}'],
+            seat=1,
+            on_message=lambda seat, text, priority: messages.append((seat, text, priority)))
+        ctx = turn_ctx(hand=['m3', 'm5', 'm6'])
+        action = run(player.request_turn(ctx))
+        assert action['kind'] == 'discard'
+        assert player.message_history == ['这张先走。']
+        assert messages == [(1, '这张先走。', 'normal')]
 
     def test_turn_illegal_choice_falls_back(self, monkeypatch):
         # 返回白名单外的 choice → 解析失败 → 回退启发式（kind=discard 或杠）

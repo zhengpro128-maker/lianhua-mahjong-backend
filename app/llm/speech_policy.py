@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Callable
 
-GLOBAL_NORMAL_COOLDOWN_S = 4.0
+GLOBAL_NORMAL_COOLDOWN_S = 2.0
 STYLE_NORMAL_COOLDOWN_S = {
-    '话痨': 6.0,
-    '激进': 8.0,
-    '稳健': 12.0,
-    '高冷': 16.0,
+    '话痨': 3.0,
+    '激进': 5.0,
+    '稳健': 7.0,
+    '高冷': 10.0,
 }
 MAX_SPEECH_CHARS = 16
+BACKSTAGE_TERMS = (
+    '引擎', '候选', '编号', '模型', '系统', '提示词', '基线', '默认建议', '默认参考',
+    '人工智能', '程序', '算法', '规则摘要', 'choice', 'message', 'json',
+)
+INTERNAL_MARKER_PATTERN = re.compile(r'(?:^|[^A-Za-z])AI(?:$|[^A-Za-z])|[A-Z]\d+', re.I)
 
 
 class LlmSpeechPolicy:
@@ -43,6 +49,10 @@ class LlmSpeechPolicy:
 def compact_speech_text(text: str) -> str:
     normalized = ' '.join((text or '').strip().split())
     if not normalized:
+        return ''
+    lowered = normalized.lower()
+    if any(term.lower() in lowered for term in BACKSTAGE_TERMS) \
+            or INTERNAL_MARKER_PATTERN.search(normalized):
         return ''
     endings = [normalized.find(mark) for mark in ('。', '！', '？', '!', '?')]
     endings = [index for index in endings if index >= 0]
