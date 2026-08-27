@@ -16,7 +16,7 @@ from app.llm.candidates import build_request
 from app.llm.client import request_llm_decision
 from app.llm.config import LlmServerConfig, load_llm_config
 from app.llm.prompt import build_prompt
-from app.llm.speech_policy import compact_speech_text
+from app.llm.decision_speech import decision_speech
 from app.llm.validation import validate_action
 from app.rules.base import GameRuleSet
 
@@ -25,18 +25,6 @@ IMPORTANT_SPEECH_ACTIONS = {
     'gang', 'peng', 'chi', 'added-kong', 'concealed-kong', 'wind-kong',
 }
 
-
-def _fallback_decision_speech(action: dict) -> str:
-    kind = action.get('kind')
-    if kind in ('added-kong', 'concealed-kong', 'wind-kong', 'gang'):
-        return '这杠我开了。'
-    if kind == 'peng':
-        return '碰一个。'
-    if kind == 'chi':
-        return '顺手吃了。'
-    if kind == 'pass':
-        return '先看看。'
-    return '这张先走。'
 
 class LLMPlayer(AIPlayer):
     """LLM 驱动的 AI 玩家（联机空座补位用；超时/断线代打仍用 AIPlayer）。"""
@@ -126,7 +114,7 @@ class LLMPlayer(AIPlayer):
         system, user = build_prompt(self.config.style, request)
         self.stats['requests'] += 1
         try:
-            choice, message = await request_llm_decision(self.config, system, user, ids)
+            choice, _message = await request_llm_decision(self.config, system, user, ids)
         except Exception:
             self.stats['fallbacks'] += 1
             return None
@@ -140,7 +128,8 @@ class LLMPlayer(AIPlayer):
             self.stats['fallbacks'] += 1
             return None
         self.stats['successes'] += 1
-        speech = compact_speech_text(message) or _fallback_decision_speech(candidate['action'])
+        # 模型只决定 choice；台词按最终合法动作生成，杜绝“说留着却打出”等矛盾。
+        speech = decision_speech(candidate['action'], self.config.style, self.stats['messages'])
         self.stats['messages'] += 1
         self.message_history.append(speech)
         if self.on_message is not None:

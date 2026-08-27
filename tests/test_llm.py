@@ -306,9 +306,10 @@ class TestPromptRules:
         assert '决策优先级' in system
         assert '【默认参考】' in user
         assert '游戏引擎' not in system
-        assert '每次都必须提供一句非空' in system
-        assert '严禁提及或复述决策机制' in system
-        assert 'message 必须非空' in user
+        assert '台词由程序在动作确认后生成' in system
+        assert '不要输出 message' in system
+        assert '{"choice": "A1"}' in user
+        assert '不要输出 message' in user
         assert '默认优先' in user
 
     def test_lotus_prompt_uses_double_joker_and_limited_white_rule(self):
@@ -405,13 +406,13 @@ class TestLLMPlayer:
         assert action['handIndex'] >= 0
         assert player.stats['successes'] == 1
         assert player.stats['messages'] == 1
-        assert player.message_history == ['稳一手。']
-        assert messages == [(2, '稳一手。', 'normal')]
+        assert player.message_history == ['这张先走。']
+        assert messages == [(2, '这张先走。', 'normal')]
 
-    def test_backstage_message_uses_natural_fallback(self, monkeypatch):
+    def test_contradictory_model_message_is_ignored(self, monkeypatch):
         messages = []
         player, _ = make_llm_player(
-            monkeypatch, ['{"choice":"A1","message":"跟引擎走，稳。"}'],
+            monkeypatch, ['{"choice":"A1","message":"这张留着，跟引擎走。"}'],
             seat=1,
             on_message=lambda seat, text, priority: messages.append((seat, text, priority)))
         ctx = turn_ctx(hand=['m3', 'm5', 'm6'])
