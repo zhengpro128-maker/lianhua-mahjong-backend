@@ -6,12 +6,18 @@ import re
 import time
 from typing import Callable
 
-GLOBAL_NORMAL_COOLDOWN_S = 2.0
+GLOBAL_NORMAL_COOLDOWN_S = 6.0
 STYLE_NORMAL_COOLDOWN_S = {
-    '话痨': 3.0,
-    '激进': 5.0,
-    '稳健': 7.0,
-    '高冷': 10.0,
+    '话痨': 8.0,
+    '激进': 12.0,
+    '稳健': 16.0,
+    '高冷': 24.0,
+}
+STYLE_NORMAL_EVERY = {
+    '话痨': 2,
+    '激进': 3,
+    '稳健': 4,
+    '高冷': 6,
 }
 MAX_SPEECH_CHARS = 16
 BACKSTAGE_TERMS = (
@@ -29,6 +35,7 @@ class LlmSpeechPolicy:
     def reset(self) -> None:
         self._last_global = float('-inf')
         self._last_seat: dict[int, float] = {}
+        self._normal_attempts: dict[int, int] = {}
 
     def admit(self, seat: int, style: str, priority: str = 'normal') -> bool:
         current = self._now()
@@ -40,6 +47,11 @@ class LlmSpeechPolicy:
         if current - self._last_global < GLOBAL_NORMAL_COOLDOWN_S:
             return False
         if current - self._last_seat.get(seat, float('-inf')) < seat_cooldown:
+            return False
+        attempt = self._normal_attempts.get(seat, 0) + 1
+        self._normal_attempts[seat] = attempt
+        every = STYLE_NORMAL_EVERY.get(style, STYLE_NORMAL_EVERY['稳健'])
+        if (attempt - 1) % every != 0:
             return False
         self._last_global = current
         self._last_seat[seat] = current

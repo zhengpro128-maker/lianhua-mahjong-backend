@@ -5,13 +5,24 @@ def test_global_and_style_cooldowns_are_deterministic():
     current = [10.0]
     policy = LlmSpeechPolicy(lambda: current[0])
     assert policy.admit(1, '话痨') is True
-    current[0] += 1.9
+    current[0] += 5.9
     assert policy.admit(2, '话痨') is False
     current[0] += 0.1
     assert policy.admit(2, '话痨') is True
-    current[0] += 7.9
+    current[0] += 23.9
     assert policy.admit(1, '高冷') is False
     assert policy.admit(1, '高冷', 'important') is True
+
+
+def test_normal_speech_is_deterministically_thinned_by_style():
+    current = [10.0]
+    policy = LlmSpeechPolicy(lambda: current[0])
+    assert policy.admit(1, '稳健') is True
+    current[0] += 16.0
+    assert policy.admit(1, '稳健') is False
+    assert policy.admit(1, '稳健') is False
+    assert policy.admit(1, '稳健') is False
+    assert policy.admit(1, '稳健') is True
 
 
 def test_compact_speech_keeps_first_short_sentence():
