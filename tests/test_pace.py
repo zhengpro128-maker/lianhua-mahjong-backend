@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import random
 import time
 
 import httpx
@@ -76,8 +77,10 @@ def test_room_session_default_pace_is_none():
 async def test_injected_pace_slows_first_round():
     """注入节奏后整局时长显著变慢；默认 0 保持即用即答。"""
     async def first_round_seconds(pace=None) -> float:
+        # 快慢两组必须使用相同牌墙/骰子，否则随机局长差异会淹没注入的 20ms 节奏。
+        seeded = random.Random(20260828)
         manager = GameManager(mode='east', controllers=[AIPlayer() for _ in range(4)],
-                              pace=pace)
+                              pace=pace, random=seeded.random)
         t0 = time.perf_counter()
         await manager.start_game('east')
         await run_until(manager, 'settled')

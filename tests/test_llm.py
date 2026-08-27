@@ -162,6 +162,19 @@ class TestCandidates:
         built = build_request(ctx, get_rule_set(), 'r1', 'v1', 'claim')
         assert [c['id'] for c in built['request']['candidates']] == ['Z', 'G', 'P']
 
+    def test_claim_omits_peng_when_it_would_discard_the_claimed_tile(self):
+        hand = [
+            'east', 'east', 'east',
+            'm1', 'm2', 'm3', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'north',
+        ]
+        ctx = claim_ctx(hand=hand, tile='east', can_peng=True, can_gang=True)
+        ctx.visibleTiles = [*hand, 'east']
+        ctx.publicTiles = ['east']
+        built = build_request(ctx, get_rule_set(), 'r1', 'v1', 'claim')
+
+        assert [candidate['id'] for candidate in built['request']['candidates']] == ['Z', 'G']
+        assert built['engineSuggestion'] == 'G'
+
     def test_lotus_wind_kong(self):
         rules = get_rule_set('lotus-legacy')
         rules.round_state.joker_tiles = []

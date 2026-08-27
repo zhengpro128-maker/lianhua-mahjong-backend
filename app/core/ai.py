@@ -153,11 +153,12 @@ def _discard_quality(hand: list[TileType], index: int, exposed_melds: int,
 def _best_discard_quality(hand: list[TileType], exposed_melds: int,
                           rules: GameRuleSet, visible_tiles=None) -> tuple:
     """当前手牌的最佳弃牌听口质量。"""
-    best: tuple = (False, 0, -1, None)
+    best: tuple = (False, 0, -1, None, None)
     for index in range(len(hand)):
         quality = _discard_quality(hand, index, exposed_melds, rules, visible_tiles)
-        if _better_quality(quality, best):
-            best = quality
+        candidate = (*quality, hand[index])
+        if _better_quality(candidate, best):
+            best = candidate
     return best
 
 
@@ -165,11 +166,11 @@ def _current_tenpai(hand: list[TileType], exposed_melds: int,
                     rules: GameRuleSet, visible_tiles=None) -> tuple:
     """当前手牌（未打出）的听口：直接 waiting_tiles，手牌为 3n+1 听牌态时才计算。"""
     if not _can_be_tenpai(len(hand), exposed_melds):
-        return (False, 0, -1, None)
+        return (False, 0, -1, None, None)
     progress = _progress(hand, exposed_melds, rules, visible_tiles or hand)
     score = (6 - progress['shanten']) * 1000 + progress['ukeire'] * 10 \
         + progress['effectiveRemaining']
-    return (progress['shanten'] == 0, len(progress['waits']), score, progress)
+    return (progress['shanten'] == 0, len(progress['waits']), score, progress, None)
 
 
 def _better_quality(a: tuple, b: tuple) -> bool:
@@ -211,7 +212,13 @@ def decide_claim(view: dict, rule_set: Optional[GameRuleSet] = None) -> str:
         return 'pass'
     after_quality = _best_discard_quality(after_peng, view.get('exposedMelds', 0) + 1,
                                           rules, view.get('visibleTiles'))
-    return 'peng' if _better_quality(after_quality, baseline) else 'pass'
+    if not _better_quality(after_quality, baseline):
+        return 'pass'
+    # 碰后若最佳动作是把手中第 3 张同牌原样打回，大明杠以同等结构额外获得
+    # 杠分和尾牌补摸，严格支配该碰法。
+    if view.get('canGang') and after_quality[4] == view.get('tile'):
+        return 'gang'
+    return 'peng'
 
 
 def decide_rob_kong(_view: dict) -> str:

@@ -33,6 +33,7 @@ sys.setrecursionlimit(10000)
 from app.models.game import GamePlayer, Meld, TileType
 from app.core.tiles import shuffle, sort_tiles, sort_tiles_with_jokers
 from app.core.actions import perform_chi, perform_discard_gang, perform_peng, remove_matches
+from app.core.hand_progress import clear_hand_progress_caches
 from app.game.player import AI_DELAYS, AIPlayer, ClaimContext, RobKongContext, TurnContext
 from app.rules.base import GameRuleSet
 from app.rules.fans import FanContext
@@ -520,6 +521,7 @@ class GameManager:
     async def start_game(self, mode: Optional[str] = None) -> None:
         """洗牌 → 发牌（红中花牌补摸）→ 四红中判定 → begin_turn。"""
         if mode and mode in MATCH_HANDS:
+            clear_hand_progress_caches()
             self.match_type = mode
             self.round = 1
             self.dealer = 0

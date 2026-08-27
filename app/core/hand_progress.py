@@ -225,3 +225,9 @@ def compare_hand_progress(a: dict, b: dict) -> int:
     if a['effectiveRemaining'] != b['effectiveRemaining']:
         return a['effectiveRemaining'] - b['effectiveRemaining']
     return len(a['waits']) - len(b['waits'])
+
+
+def clear_hand_progress_caches() -> None:
+    """新比赛重置跨局缓存，避免上一场热缓存改变下一场的节奏基线。"""
+    _standard_shanten_cached.cache_clear()
+    _completion_shanten.cache_clear()

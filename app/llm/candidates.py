@@ -257,10 +257,22 @@ def _best_quality(ctx, hand: list[str], exposed_melds: int, rules: GameRuleSet):
     best = None
     for index in range(len(hand)):
         after = hand[:index] + hand[index + 1:]
-        quality = _quality(ctx, after, rules, exposed_melds)
+        quality = {
+            **_quality(ctx, after, rules, exposed_melds),
+            'discardedTile': hand[index],
+            'discardIndex': index,
+        }
         if best is None or compare_hand_progress(quality['progress'], best['progress']) > 0:
             best = quality
     return best
+
+
+def _peng_would_discard_claimed_tile(ctx, rules: GameRuleSet) -> bool:
+    if not _g(ctx, 'tile'):
+        return False
+    after_peng = _remove_claimed(ctx, canonical_action('peng'))
+    best = _best_quality(ctx, after_peng, ctx.exposedMelds + 1, rules)
+    return bool(best and best['discardedTile'] == ctx.tile)
 
 
 def _banded_efficiency(scores: list[dict]) -> dict[int, str]:
@@ -365,7 +377,8 @@ def _claim_candidates(ctx, rules: GameRuleSet) -> list[dict]:
             'features': _features_of(ctx, canonical_action('gang'), '中', rules),
             'legalityKey': 'gang',
         })
-    if _g(ctx, 'canPeng'):
+    if _g(ctx, 'canPeng') and not (
+            _g(ctx, 'canGang') and _peng_would_discard_claimed_tile(ctx, rules)):
         candidates.append({
             'id': 'P', 'label': f"碰{tile_name(ctx.tile)}",
             'action': canonical_action('peng'),

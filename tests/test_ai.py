@@ -103,6 +103,16 @@ class TestDecideClaim:
     def test_gang_when_can_gang(self):
         assert decide_claim({'hand': ['east', 'east', 'east', 'm1'], 'canGang': True}) == 'gang'
 
+    def test_gang_instead_of_peng_then_discarding_same_tile(self):
+        hand = [
+            'east', 'east', 'east',
+            'm1', 'm2', 'm3', 'p1', 'p2', 'p3', 's1', 's2', 's3', 'north',
+        ]
+        assert decide_claim({
+            'hand': hand, 'canGang': True, 'tile': 'east', 'exposedMelds': 0,
+            'visibleTiles': [*hand, 'east'],
+        }) == 'gang'
+
     def test_peng_when_not_can_gang(self):
         assert decide_claim({'hand': ['east', 'east', 'm1'], 'canGang': False}) == 'peng'
 
