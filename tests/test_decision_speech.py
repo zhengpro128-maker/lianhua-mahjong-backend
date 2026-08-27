@@ -17,3 +17,8 @@ def test_discard_lines_never_say_keep_and_rotate_stably():
     action = {'kind': 'discard', 'handIndex': 0}
     assert decision_speech(action, '稳健', 0) == '这张先走。'
     assert decision_speech(action, '稳健', 3) == '这张先走。'
+
+
+def test_steady_style_never_uses_reduplicated_steady_wording():
+    for styles in DECISION_SPEECH_LINES.values():
+        assert all('稳稳' not in line for line in styles['稳健'])

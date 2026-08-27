@@ -800,6 +800,7 @@ class TestPerSeatAssembly:
                 assert len(variants) == 3
                 assert len(set(variants)) == 3
                 assert all(len(line) <= 16 for line in variants)
+            assert all('稳稳' not in line for line in styles['稳健'])
 
     def test_seat_provider_ids_resolve_per_seat(self, monkeypatch):
         from app.game.player import AIPlayer
