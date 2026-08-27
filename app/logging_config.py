@@ -26,10 +26,17 @@ _REJOIN_CODE_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+# OAuth 授权码是一次性凭据；即使短时有效也不得进入访问日志。
+_OAUTH_CODE_PATTERN = re.compile(
+    r'((?:^|[?&])code=)[^&\s"\']*',
+    flags=re.IGNORECASE,
+)
+
 
 def redact_sensitive_data(message: str) -> str:
     """脱敏可能出现在 HTTP/WS 请求行中的座位重进码。"""
-    return _REJOIN_CODE_PATTERN.sub(r'\1***', message)
+    message = _REJOIN_CODE_PATTERN.sub(r'\1***', message)
+    return _OAUTH_CODE_PATTERN.sub(r'\1***', message)
 
 
 def _fmt(record: dict) -> str:
