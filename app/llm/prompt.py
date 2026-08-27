@@ -88,6 +88,16 @@ def build_prompt(style: str, request: dict) -> tuple[str, str]:
 def _candidate_line(candidate: dict, rule_code: str) -> str:
     features = candidate['features']
     parts: list[str] = []
+    shanten = features.get('shanten')
+    if isinstance(shanten, (int, float)):
+        parts.append(f'向听：{shanten}')
+    ukeire = features.get('ukeire')
+    if isinstance(ukeire, (int, float)):
+        parts.append(f'有效进张：{ukeire}张')
+    effective_tiles = features.get('effectiveTiles')
+    if isinstance(effective_tiles, list) and effective_tiles:
+        parts.append('进张：' + '、'.join(
+            f'{item["tile"]}(剩{item["remaining"]})' for item in effective_tiles))
     waits = features.get('waits')
     if features.get('ready') is True and isinstance(waits, list):
         kind = candidate['action']['kind']

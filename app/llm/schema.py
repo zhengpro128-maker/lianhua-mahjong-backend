@@ -70,6 +70,9 @@ BANDS = ('高', '中', '低')
 
 def empty_features() -> dict:
     return {
+        'shanten': 'n/a',
+        'ukeire': 'n/a',
+        'effectiveTiles': 'n/a',
         'ready': 'unknown',
         'waits': 'n/a',
         'effectiveRemaining': 'n/a',

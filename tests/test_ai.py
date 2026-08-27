@@ -85,6 +85,17 @@ class TestChooseDiscardIndex:
         index = choose_discard_index(hand, lambda: 0, exposed_melds=0)
         assert hand[index] == 'north'
 
+    def test_same_shanten_prefers_more_live_ukeire(self):
+        hand = [
+            'm1', 'm2', 'm3', 'p1', 'p2', 'p3', 's1', 's2', 's3',
+            'east', 'east', 'south', 'west', 'north',
+        ]
+        visible = [*hand, 'south', 'south', 'south']
+        index = choose_discard_index(
+            hand, lambda: 0, exposed_melds=0,
+            context={'visibleTiles': visible})
+        assert hand[index] == 'south'
+
 
 class TestDecideClaim:
     """对应 ai.test.ts 'decideClaim 吃碰杠响应'"""

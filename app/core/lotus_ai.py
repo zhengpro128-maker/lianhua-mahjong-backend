@@ -13,13 +13,14 @@
 import random as _random
 import re
 from collections import Counter
-from functools import cmp_to_key
+from functools import cmp_to_key, lru_cache
 from typing import Callable, Optional
 
 from app.core.actions import remove_matches
 from app.core.kong_projection import has_ready_discard, project_kong_bloom
 from app.core.lotus_rules import matching_count, waiting_tiles
 from app.core.tiles import HONORS
+from app.core.hand_progress import compare_hand_progress, evaluate_hand_progress
 from app.models.game import TileType
 
 _SUITED_RE = re.compile(r'^([mps])([1-9])$')
@@ -35,11 +36,31 @@ def _wildcard_set(jokers: list[TileType]) -> set[TileType]:
     return set(jokers) | {'white'}
 
 
+@lru_cache(maxsize=20_000)
+def _cached_waiting_tiles(hand_key: tuple[str, ...], exposed_melds: int,
+                          joker_key: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(waiting_tiles(list(hand_key), exposed_melds, list(joker_key)))
+
+
+def _ai_waiting_tiles(hand: list[TileType], exposed_melds: int,
+                      jokers: list[TileType]) -> list[TileType]:
+    return list(_cached_waiting_tiles(
+        tuple(sorted(hand)), exposed_melds, tuple(sorted(jokers))))
+
+
 # ── 听牌质量打分 ─────────────────────────────────────────────
 
 def _remaining_count(tile: TileType, visible_tiles: list[TileType]) -> int:
     """剩余可见张 = 4 - 可见牌中该牌张数（他人暗手不计）。"""
     return max(0, 4 - matching_count(visible_tiles, tile))
+
+
+def _lotus_progress(hand: list[TileType], exposed_melds: int,
+                    jokers: list[TileType], visible_tiles=None) -> dict:
+    return evaluate_hand_progress(
+        hand, exposed_melds,
+        lambda tiles, exposed: _ai_waiting_tiles(tiles, exposed, jokers),
+        list(_wildcard_set(jokers)), visible_tiles or hand, special_hands=True)
 
 
 def _hand_quality_attack_score(waits: list[TileType], effective_remaining: int,
@@ -158,9 +179,15 @@ def _discard_quality(after_discard: list[TileType], discarded: TileType,
                      visible_tiles: list[TileType], early_round: bool,
                      public_tiles: list[TileType],
                      upper_last_discard: Optional[TileType],
-                     wall_count: Optional[int] = None) -> dict:
-    waits = waiting_tiles(after_discard, exposed_melds, jokers)
+                     wall_count: Optional[int] = None,
+                     include_progress: bool = True) -> dict:
+    waits = _ai_waiting_tiles(after_discard, exposed_melds, jokers)
     effective_remaining = sum(_remaining_count(tile, visible_tiles) for tile in waits)
+    progress = _lotus_progress(after_discard, exposed_melds, jokers, visible_tiles) \
+        if include_progress else {
+            'shanten': 0 if waits else 8, 'waits': waits, 'effectiveTiles': [],
+            'ukeire': effective_remaining, 'effectiveRemaining': effective_remaining,
+        }
     special_score = _special_pattern_score(after_discard, exposed_melds, jokers)
     safety_score = _public_safety_score(discarded, public_tiles, upper_last_discard)
     late_game = (wall_count if wall_count is not None else 99) <= 8
@@ -174,6 +201,7 @@ def _discard_quality(after_discard: list[TileType], discarded: TileType,
         'heuristic': _discard_heuristic(after_discard, discarded, jokers, early_round),
         'safetyScore': safety_score,
         'netScore': attack_score + safety_score * safety_weight,
+        'progress': progress,
     }
 
 
@@ -183,7 +211,8 @@ def _current_hand_quality(hand: list[TileType], exposed_melds: int,
                           wall_count: Optional[int] = None) -> dict:
     if visible_tiles is None:
         visible_tiles = hand
-    waits = waiting_tiles(hand, exposed_melds, jokers)
+    progress = _lotus_progress(hand, exposed_melds, jokers, visible_tiles)
+    waits = progress['waits']
     special_score = _special_pattern_score(hand, exposed_melds, jokers)
     effective_remaining = sum(_remaining_count(tile, visible_tiles) for tile in waits)
     late_game = (wall_count if wall_count is not None else 99) <= 8
@@ -196,6 +225,7 @@ def _current_hand_quality(hand: list[TileType], exposed_melds: int,
         'heuristic': 0,
         'safetyScore': 0,
         'netScore': attack_score,
+        'progress': progress,
     }
 
 
@@ -204,6 +234,11 @@ def _compare_quality(a: dict, b: dict) -> int:
         return 1 if a['ready'] else -1
     if a['netScore'] != b['netScore']:
         return a['netScore'] - b['netScore']
+    if not a['ready'] and a['specialScore'] != b['specialScore']:
+        return a['specialScore'] - b['specialScore']
+    progress = compare_hand_progress(a['progress'], b['progress'])
+    if progress:
+        return progress
     if a['effectiveRemaining'] != b['effectiveRemaining']:
         return a['effectiveRemaining'] - b['effectiveRemaining']
     if len(a['waits']) != len(b['waits']):
@@ -389,7 +424,9 @@ def decide_claim(view: dict) -> dict:
                 'quality': discard['quality'],
             })
 
-    improving = [c for c in candidates if _compare_quality(c['quality'], baseline) > 0]
+    improving = [c for c in candidates
+                 if (c['quality']['ready'] or baseline['ready'])
+                 and _compare_quality(c['quality'], baseline) > 0]
     if not improving:
         return {'kind': 'pass'}
     improving.sort(key=cmp_to_key(
@@ -433,7 +470,7 @@ def choose_discard_index(hand: list[TileType], jokers: list[TileType],
                 options.get('earlyRound', False),
                 options.get('publicTiles') or [],
                 options.get('upperLastDiscard'),
-                options.get('wallCount'))
+                options.get('wallCount'), include_progress=False)
         candidates.append({'index': index, 'score': score, 'quality': quality})
 
     def cmp(a: dict, b: dict) -> int:
@@ -442,4 +479,18 @@ def choose_discard_index(hand: list[TileType], jokers: list[TileType],
         return a['score'] - b['score']
 
     candidates.sort(key=cmp_to_key(cmp))
-    return candidates[0]['index'] if candidates else 0
+    if options.get('exposedMelds') is None:
+        return candidates[0]['index'] if candidates else 0
+    if options.get('wallCount') is not None and options['wallCount'] > 60:
+        return candidates[0]['index'] if candidates else 0
+    shortlist = candidates[:3]
+    for candidate in shortlist:
+        index = candidate['index']
+        tile = hand[index]
+        candidate['quality'] = _discard_quality(
+            hand[:index] + hand[index + 1:], tile, options['exposedMelds'], jokers,
+            options.get('visibleTiles') or hand, options.get('earlyRound', False),
+            options.get('publicTiles') or [], options.get('upperLastDiscard'),
+            options.get('wallCount'))
+    shortlist.sort(key=cmp_to_key(cmp))
+    return shortlist[0]['index'] if shortlist else 0

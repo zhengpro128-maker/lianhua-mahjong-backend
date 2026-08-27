@@ -17,6 +17,7 @@ from app.core.lotus_rules import evaluate_pattern
 from app.llm.schema import canonical_action, rule_code_for, tile_name
 from app.rules.base import GameRuleSet
 from app.settlement import settlement_service
+from app.core.hand_progress import compare_hand_progress, evaluate_hand_progress
 
 _SUITED_RE = re.compile(r'^([mps])([1-9])$')
 
@@ -83,16 +84,25 @@ def _heuristic_score(hand: list[str], tile: str, protected: set[str]) -> int:
     return same * 4 + neighbors * 2 + honor + wildcard_penalty
 
 
-def _waits(ctx, hand: list[str], rules: GameRuleSet) -> list[str]:
-    return list(rules.waiting_tiles(hand, ctx.exposedMelds))
+def _waits(ctx, hand: list[str], rules: GameRuleSet,
+           exposed_melds: Optional[int] = None) -> list[str]:
+    return list(rules.waiting_tiles(
+        hand, ctx.exposedMelds if exposed_melds is None else exposed_melds))
 
 
-def _quality(ctx, after: list[str], rules: GameRuleSet) -> tuple[bool, list[str], int]:
-    waits = _waits(ctx, after, rules)
-    if not waits:
-        return False, [], 0
-    effective = sum(_remaining(ctx, tile) for tile in waits)
-    return True, waits, effective
+def _quality(ctx, after: list[str], rules: GameRuleSet,
+             exposed_melds: Optional[int] = None) -> dict:
+    exposed = ctx.exposedMelds if exposed_melds is None else exposed_melds
+    wildcard_tiles = _joker_tiles(ctx, rules)
+    if rules.code == 'lotus-legacy':
+        wildcard_tiles = [*wildcard_tiles, 'white']
+    progress = evaluate_hand_progress(
+        after, exposed,
+        lambda hand, melds: _waits(ctx, hand, rules, melds),
+        wildcard_tiles, list(_g(ctx, 'visibleTiles') or ctx.hand),
+        special_hands=rules.code == 'lotus-legacy')
+    return {'ready': progress['shanten'] == 0, 'waits': progress['waits'],
+            'effectiveRemaining': progress['effectiveRemaining'], 'progress': progress}
 
 
 def _special_pattern(ctx, hand: list[str], waits: list[str], rules: GameRuleSet) -> str:
@@ -140,6 +150,7 @@ def _kong_delta_band(ctx, action: dict, rules: GameRuleSet) -> Optional[str]:
 
 def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict:
     feat = {
+        'shanten': 'n/a', 'ukeire': 'n/a', 'effectiveTiles': 'n/a',
         'ready': 'unknown', 'waits': 'n/a', 'effectiveRemaining': 'n/a',
         'specialPattern': 'n/a', 'safety': 'unknown', 'efficiency': efficiency,
         'risks': [],
@@ -148,7 +159,13 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
     if kind == 'discard':
         discarded = ctx.hand[action['handIndex']]
         after = ctx.hand[:action['handIndex']] + ctx.hand[action['handIndex'] + 1:]
-        ready, waits, effective = _quality(ctx, after, rules)
+        quality = _quality(ctx, after, rules)
+        ready, waits, effective = quality['ready'], quality['waits'], quality['effectiveRemaining']
+        feat['shanten'] = quality['progress']['shanten']
+        feat['ukeire'] = quality['progress']['ukeire']
+        feat['effectiveTiles'] = [
+            {'tile': tile_name(item['tile']), 'remaining': item['remaining']}
+            for item in quality['progress']['effectiveTiles']]
         feat['ready'] = ready
         feat['waits'] = [{'tile': tile_name(t), 'remaining': _remaining(ctx, t)}
                          for t in waits] if ready else 'n/a'
@@ -162,16 +179,21 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
         after = _remove_claimed(ctx, action)
         best = _best_quality(ctx, after, ctx.exposedMelds + 1, rules)
         if best is not None:
-            ready, waits, effective = best
+            ready, waits, effective = best['ready'], best['waits'], best['effectiveRemaining']
+            feat['shanten'] = best['progress']['shanten']
+            feat['ukeire'] = best['progress']['ukeire']
+            feat['effectiveTiles'] = [
+                {'tile': tile_name(item['tile']), 'remaining': item['remaining']}
+                for item in best['progress']['effectiveTiles']]
             feat['ready'] = ready
             feat['waits'] = [{'tile': tile_name(t), 'remaining': _remaining(ctx, t)}
                              for t in waits] if ready else 'n/a'
             feat['effectiveRemaining'] = effective if ready else 'n/a'
         baseline = _best_quality(ctx, ctx.hand, ctx.exposedMelds, rules)
         feat['safety'] = _safety_band(ctx, ctx.tile) if ctx.tile else 'unknown'
-        if best and baseline and len(best[1]) > len(baseline[1]):
+        if best and baseline and compare_hand_progress(best['progress'], baseline['progress']) > 0:
             feat['efficiency'] = '优'
-        elif best and baseline and len(best[1]) == len(baseline[1]):
+        elif best and baseline and compare_hand_progress(best['progress'], baseline['progress']) == 0:
             feat['efficiency'] = '中'
         else:
             feat['efficiency'] = '差'
@@ -235,8 +257,8 @@ def _best_quality(ctx, hand: list[str], exposed_melds: int, rules: GameRuleSet):
     best = None
     for index in range(len(hand)):
         after = hand[:index] + hand[index + 1:]
-        quality = _quality(ctx, after, rules)
-        if best is None or len(quality[1]) > len(best[1]):
+        quality = _quality(ctx, after, rules, exposed_melds)
+        if best is None or compare_hand_progress(quality['progress'], best['progress']) > 0:
             best = quality
     return best
 

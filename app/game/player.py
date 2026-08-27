@@ -26,6 +26,7 @@ from app.rules.lianhua import get_default_rule_set
 class TurnContext(BaseModel):
     """回合决策上下文"""
     hand: list[TileType]
+    playerIndex: int = -1
     melds: list[Meld]
     exposedMelds: int
     kongBloom: bool
@@ -55,6 +56,7 @@ class TurnContext(BaseModel):
 class ClaimContext(BaseModel):
     """吃碰杠响应上下文"""
     hand: list[TileType]
+    playerIndex: int = -1
     canGang: bool
     canHu: bool = False
     canPeng: bool = False
@@ -148,6 +150,12 @@ class AIPlayer:
             'exposedMelds': ctx.exposedMelds,
             'kongBloom': ctx.kongBloom,
             'jokers': list(ctx.jokers),
+            'visibleTiles': list(ctx.visibleTiles),
+            'publicTiles': list(ctx.publicTiles),
+            'peers': list(ctx.peers),
+            'playerIndex': ctx.playerIndex,
+            'wallCount': ctx.wallCount,
+            '_random': self._random,
         }
         if self.rules.code == 'lotus-legacy':
             view.update({
@@ -156,7 +164,6 @@ class AIPlayer:
                 'upperLastDiscard': ctx.upperLastDiscard,
                 'earlyRound': ctx.earlyRound,
                 'wallCount': ctx.wallCount,
-                '_random': self._random,
             })
         return _map_turn_decision(decide_turn(view, self.rules))
 
@@ -175,21 +182,17 @@ class AIPlayer:
             return {'kind': 'win'}
         if self.rules.code == 'lotus-legacy':
             return self._request_lotus_claim(ctx)
-        if ctx.canGang:
-            return {'kind': 'gang'}
-        if ctx.canPeng:
-            after_peng = remove_matches(list(ctx.hand), ctx.tile, 2)
-            if not after_peng:
-                return {'kind': 'pass'}
-            return {'kind': 'peng', 'discardIndex': choose_discard_index(
-                after_peng, self._random, self.rules, ctx.exposedMelds + 1)}
-        if ctx.chiOptions:
-            return {'kind': 'chi', 'optionIndex': 0}
         decision = decide_claim({
             'hand': list(ctx.hand),
             'canGang': ctx.canGang,
+            'canPeng': ctx.canPeng,
             'tile': ctx.tile,
             'exposedMelds': ctx.exposedMelds,
+            'visibleTiles': list(ctx.visibleTiles),
+            'publicTiles': list(ctx.publicTiles),
+            'peers': list(ctx.peers),
+            'playerIndex': ctx.playerIndex,
+            'wallCount': ctx.wallCount,
         }, self.rules)
         if decision == 'gang':
             return {'kind': 'gang'}
@@ -200,7 +203,13 @@ class AIPlayer:
                 # 碰后无牌可打（手牌恰好只剩这 2 张）：真实规则下不能碰，
                 # 否则出牌阶段手牌为空导致对局停滞。
                 return {'kind': 'pass'}
-            discard_index = choose_discard_index(after_peng, self._random, self.rules, ctx.exposedMelds + 1)
+            discard_index = choose_discard_index(
+                after_peng, self._random, self.rules, ctx.exposedMelds + 1,
+                context={
+                    'visibleTiles': list(ctx.visibleTiles), 'publicTiles': list(ctx.publicTiles),
+                    'peers': list(ctx.peers), 'wallCount': ctx.wallCount,
+                    'playerIndex': ctx.playerIndex,
+                })
             return {'kind': 'peng', 'discardIndex': discard_index}
         return {'kind': 'pass'}
 

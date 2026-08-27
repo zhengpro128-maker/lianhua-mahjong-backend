@@ -344,6 +344,7 @@ class GameManager:
     def _llm_meta(self, player_index: int, kind: str, dihu: bool = False) -> dict:
         """LLM 局况/可见/版本（与前端 llmContext 同构）。"""
         return {
+            'playerIndex': player_index,
             'scores': [player.score for player in self.players],
             'peers': self._peers_snapshot(),
             'seatWind': self._seat_wind(player_index),
