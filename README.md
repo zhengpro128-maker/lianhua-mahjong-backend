@@ -231,13 +231,19 @@ LLM_PROVIDER_KIMI_BASE_URL=https://api.moonshot.cn/v1
 LLM_PROVIDER_KIMI_API_KEY=sk-yyy
 LLM_PROVIDER_KIMI_MODEL=kimi-k2.6
 LLM_PROVIDER_KIMI_TYPE=kimi
+
+# GLM-5.3 Flash via OrcaRouter（始终思考，服务端自动使用 low + 512 tokens）
+LLM_PROVIDER_GLM_ORCA_BASE_URL=https://api.orcarouter.ai/v1
+LLM_PROVIDER_GLM_ORCA_API_KEY=sk-zzz
+LLM_PROVIDER_GLM_ORCA_MODEL=z-ai/glm-5.3-flash
+LLM_PROVIDER_GLM_ORCA_TYPE=glm
 ```
 
 - 提供商 id = 变量名中段（小写）：`deepseek`、`kimi`…；可加 `_STYLE`（四风格）、
   `_NICKNAME`（缺省按 base URL 推导：DeepSeek=大肥鱼等）、`_TIMEOUT_MS`（毫秒）、
   `_NAME`（展示名，缺省=id）、`_AVATAR_FOLDER`（头像素材文件夹）、`_TYPE`
-  （`deepseek/qwen/kimi/doubao/minimax/openai/glm/claude/custom`）。使用自定义代理时必须设置
-  `_TYPE`，确保服务端仍能发送正确的非思考参数；未知或推理专用模型会在请求前回退启发式 AI。
+  （`deepseek/qwen/kimi/doubao/minimax/openai/glm/claude/custom`）。使用自定义代理时建议设置
+  `_TYPE`；未设置或设为 `custom` 时仍会按 Base URL/完整模型 ID 识别已知厂商参数。未知或推理专用模型不在请求前拦截，由上游返回真实错误。
 - 客户端建房时在**房间面板为每个空位选择“提供商/模型 + 策略”**；每个已配置
   模型都会展开激进、稳健、话痨、高冷四种策略。`start` 请求只带
   `llmSeats: [{seat, providerId, style}]`，**key 不经过客户端**；未指定时使用
@@ -264,6 +270,7 @@ LLM_PROVIDER_KIMI_TYPE=kimi
   `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
   Base / Key / Model。
 - 所有供应商的游戏决策统一最多等待 40 秒；快速路径自动关闭思考，困难局面可条件开启（每个AI座位每小局 2 次、全桌整场 24 次）；开局不因候选接近或审计抽样深思，超时回退启发式；深思状态短句可走 TTS，状态气泡在结果返回前保持；
+  GLM-5.3/5.3-Flash 例外：该系列无法完全关闭思考，固定发送 `thinking.enabled + reasoning_effort=low`，将 `max_tokens` 提高到 512，并允许响应携带 `reasoning_content`；
   百炼 `qwen3.5`～`qwen3.8` 自动设置 `enable_thinking=false` 并请求 JSON Object，
   未显式配置 `TIMEOUT_MS` 时使用 8 秒决策预算；
   Anthropic 自动追加浏览器访问头；`http://127.0.0.1:端口` 本地代理（如

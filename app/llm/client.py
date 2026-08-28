@@ -22,7 +22,6 @@ class LlmClientError(Exception):
     KIND_TIMEOUT = 'timeout'
     KIND_NETWORK = 'network'
     KIND_PARSE = 'parse'
-    KIND_CONFIG = 'config'
     KIND_REASONING = 'reasoning'
 
     def __init__(self, kind: str, message: str):
@@ -166,8 +165,9 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     reasoning_policy = resolve_reasoning_policy(
         getattr(cfg, 'provider_type', ''), cfg.base_url, cfg.model,
         getattr(cfg, 'provider_id', ''), reasoning=reasoning)
-    if not reasoning_policy.usable:
-        raise LlmClientError(LlmClientError.KIND_CONFIG, reasoning_policy.message)
+    always_thinking = reasoning_policy.mode == 'always-on'
+    if always_thinking:
+        max_tokens = max(max_tokens, 512)
     payload.update(reasoning_policy.request_body)
     if reasoning and reasoning_policy.provider_type == 'openai':
         payload['max_completion_tokens'] = max_tokens
@@ -238,7 +238,7 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     leaked_reasoning = isinstance(reasoning_content, str) and bool(reasoning_content.strip())
     leaked_reasoning = leaked_reasoning or isinstance(reasoning_tokens, (int, float)) and reasoning_tokens > 0
     leaked_reasoning = leaked_reasoning or isinstance(body.get('reasoning'), (str, list)) and bool(body.get('reasoning'))
-    if leaked_reasoning and not reasoning:
+    if leaked_reasoning and not reasoning and not always_thinking:
         raise LlmClientError(
             LlmClientError.KIND_REASONING,
             '供应商仍返回思考内容，非思考模式验证失败')

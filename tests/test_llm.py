@@ -724,6 +724,38 @@ class TestProviderRegistry:
         assert captured['top_p'] == 0.95
         run(http.aclose())
 
+    def test_glm_5_3_custom_proxy_uses_low_reasoning_and_accepts_reasoning_content(
+            self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {
+                        'content': '{"choice":"A1","message":"稳住"}',
+                        'reasoning_content': '先分析候选牌',
+                    },
+                    'finish_reason': 'stop',
+                }],
+                'usage': {'completion_tokens_details': {'reasoning_tokens': 80}},
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://api.orcarouter.ai/v1', api_key='sk-glm',
+            model='z-ai/glm-5.3-flash', provider_id='glm-orca', provider_type='custom')
+        assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
+        assert captured['model'] == 'z-ai/glm-5.3-flash'
+        assert captured['max_tokens'] == 512
+        assert captured['thinking'] == {'type': 'enabled'}
+        assert captured['reasoning_effort'] == 'low'
+        run(http.aclose())
+
     def test_reasoning_leak_is_rejected(self, monkeypatch):
         from app.llm.client import LlmClientError, request_llm_decision
         from app.llm.config import LlmServerConfig

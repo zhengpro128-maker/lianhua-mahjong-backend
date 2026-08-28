@@ -15,7 +15,6 @@ def test_switchable_models_force_non_reasoning(provider_type, model, expected):
     result = resolve_reasoning_policy(provider_type, 'https://proxy.example.com/v1', model)
     assert result.mode == 'explicit-off'
     assert result.request_body == expected
-    assert result.usable
 
 
 @pytest.mark.parametrize(('provider_type', 'model'), [
@@ -23,10 +22,18 @@ def test_switchable_models_force_non_reasoning(provider_type, model, expected):
     ('kimi', 'kimi-k2-thinking'), ('minimax', 'MiniMax-M2.7'),
     ('openai', 'o3-mini'), ('glm', 'glm-4.1v-thinking-flash'),
 ])
-def test_reasoning_only_models_are_rejected(provider_type, model):
+def test_reasoning_only_models_are_identified_without_request_precheck(provider_type, model):
     result = resolve_reasoning_policy(provider_type, 'https://proxy.example.com/v1', model)
     assert result.mode == 'reasoning-only'
-    assert not result.usable
+
+
+def test_glm_5_3_flash_custom_proxy_uses_lowest_always_on_reasoning():
+    result = resolve_reasoning_policy(
+        'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash')
+    assert result.provider_type == 'glm'
+    assert result.mode == 'always-on'
+    assert result.request_body == {
+        'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low'}
 
 
 @pytest.mark.parametrize(('provider_type', 'model', 'expected'), [
@@ -41,7 +48,6 @@ def test_conditional_reasoning_explicitly_enables_supported_models(
         provider_type, 'https://proxy.example.com/v1', model, reasoning=True)
     assert result.mode == 'explicit-on'
     assert result.request_body == expected
-    assert result.usable
 
 
 def test_legacy_provider_type_inference():

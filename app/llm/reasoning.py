@@ -1,4 +1,4 @@
-"""供应商/模型思考能力矩阵：实时麻将只允许可验证的非思考请求。"""
+"""供应商/模型思考能力矩阵：为已知型号追加最佳努力的请求参数。"""
 
 import re
 from dataclasses import dataclass, field
@@ -14,11 +14,6 @@ class ReasoningPolicy:
     mode: str
     message: str
     request_body: dict = field(default_factory=dict)
-
-    @property
-    def usable(self) -> bool:
-        return self.mode in ('explicit-off', 'explicit-on', 'naturally-off')
-
 
 def infer_provider_type(base_url: str, model: str, provider_id: str = '') -> str:
     source = f'{base_url} {model} {provider_id}'.lower()
@@ -48,9 +43,11 @@ def _policy(provider_type: str, mode: str, message: str,
 
 def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
                              provider_id: str = '', reasoning: bool = False) -> ReasoningPolicy:
-    kind = provider_type if provider_type in PROVIDER_TYPES else \
-        infer_provider_type(base_url, model, provider_id)
-    name = (model or '').strip().lower()
+    inferred_kind = infer_provider_type(base_url, model, provider_id)
+    kind = inferred_kind if provider_type not in PROVIDER_TYPES or provider_type == 'custom' \
+        else provider_type
+    qualified_name = (model or '').strip().lower()
+    name = qualified_name.rsplit('/', 1)[-1]
 
     if kind == 'deepseek':
         if re.search(r'reasoner|(^|[-_.])r1(?:[-_.]|$)', name):
@@ -108,6 +105,10 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
     if kind == 'glm':
         if 'thinking' in name:
             return _policy(kind, 'reasoning-only', '显式 Thinking 型号不用于实时麻将决策')
+        if re.match(r'^glm-5\.3(?:[.-]|$)', name):
+            return _policy(kind, 'always-on', 'GLM-5.3 始终思考，已使用最低推理强度', {
+                'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low',
+            })
         if re.match(r'^glm-(?:4\.(?:5|6|7)|5)(?:[.-]|$)', name):
             return _policy(kind, 'explicit-off', '已强制关闭 GLM 思考模式',
                            {'thinking': {'type': 'disabled'}})
@@ -116,4 +117,4 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
         return _policy(kind, 'unknown', '无法确认该 GLM 型号是否支持非思考模式')
     if kind == 'claude':
         return _policy(kind, 'naturally-off', 'Claude 扩展思考未显式开启')
-    return _policy(kind, 'unknown', '自定义协议无法验证非思考模式')
+    return _policy(kind, 'unknown', '自定义 OpenAI 兼容协议按用户配置直接请求')
