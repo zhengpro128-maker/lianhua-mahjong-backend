@@ -348,7 +348,10 @@ class TestPromptRules:
         claim_ctx_value = claim_ctx(tile='m3', can_peng=True)
         claim_ctx_value.from_ = 3
         claim = build_request(claim_ctx_value, get_rule_set(), 'r1', 'v1', 'claim')
-        assert '【当前弃牌】「上家」打出「3万」' in build_prompt('稳健', claim['request'])[1]
+        claim_user = build_prompt('稳健', claim['request'])[1]
+        assert '【当前弃牌】「上家」打出「3万」' in claim_user
+        assert '{"choice": "Z", "message": "有点意思。"}' in claim_user
+        assert '{"choice": "A1"' not in claim_user
 
     def test_prompt_labels_peng_and_does_not_merge_fourth_discard_into_meld(self):
         ctx = claim_ctx(tile='m7', can_peng=True)

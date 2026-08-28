@@ -110,7 +110,8 @@ def build_prompt(style: str, request: dict) -> tuple[str, str]:
     for candidate in request['candidates']:
         lines.append(_candidate_line(candidate, state['ruleCode']))
     lines.append('【输出】严格 JSON，不要输出任何其他内容：')
-    lines.append('{"choice": "A1", "message": "有点意思。"}')
+    lines.append(
+        f'{{"choice": "{request["candidates"][0]["id"]}", "message": "有点意思。"}}')
     lines.append('choice 必须是上面列出的编号；message 必须非空、≤16 字，且只能说牌桌内的话。')
     return system, '\n'.join(lines)
 
