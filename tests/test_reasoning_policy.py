@@ -50,6 +50,7 @@ def test_kimi_k2_switchable_qualified_models_keep_non_reasoning_parameters(model
         'kimi', 'https://api.orcarouter.ai/v1', model)
     assert result.provider_type == 'kimi'
     assert result.mode == 'explicit-off'
+    assert result.accept_reasoning_response
     assert result.request_body == {
         'thinking': {'type': 'disabled'}, 'temperature': 0.6, 'top_p': 0.95}
 

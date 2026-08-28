@@ -699,7 +699,8 @@ class TestProviderRegistry:
         assert captured['response_format'] == {'type': 'json_object'}
         run(http.aclose())
 
-    def test_kimi_custom_proxy_disables_thinking_and_overrides_sampling(self, monkeypatch):
+    def test_kimi_custom_proxy_tolerates_reasoning_leak_and_overrides_sampling(
+            self, monkeypatch):
         from app.llm.client import request_llm_decision
         from app.llm.config import LlmServerConfig
 
@@ -708,9 +709,11 @@ class TestProviderRegistry:
         async def handler(request: httpx.Request):
             captured.update(json.loads(request.content))
             return httpx.Response(200, json={
-                'choices': [{'message': {'content': '{"choice":"A1","message":"稳住"}'},
-                             'finish_reason': 'stop'}],
-                'usage': {'completion_tokens_details': {'reasoning_tokens': 0}},
+                'choices': [{'message': {
+                    'content': '{"choice":"A1","message":"稳住"}',
+                    'reasoning_content': '中转仍返回思考',
+                }, 'finish_reason': 'stop'}],
+                'usage': {'completion_tokens_details': {'reasoning_tokens': 12}},
             })
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler))

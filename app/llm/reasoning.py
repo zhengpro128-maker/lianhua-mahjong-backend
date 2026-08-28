@@ -14,6 +14,7 @@ class ReasoningPolicy:
     mode: str
     message: str
     request_body: dict = field(default_factory=dict)
+    accept_reasoning_response: bool = False
 
 def infer_provider_type(base_url: str, model: str, provider_id: str = '') -> str:
     source = f'{base_url} {model} {provider_id}'.lower()
@@ -37,8 +38,10 @@ def infer_provider_type(base_url: str, model: str, provider_id: str = '') -> str
 
 
 def _policy(provider_type: str, mode: str, message: str,
-            request_body: dict | None = None) -> ReasoningPolicy:
-    return ReasoningPolicy(provider_type, mode, message, request_body or {})
+            request_body: dict | None = None,
+            accept_reasoning_response: bool = False) -> ReasoningPolicy:
+    return ReasoningPolicy(
+        provider_type, mode, message, request_body or {}, accept_reasoning_response)
 
 
 def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
@@ -77,7 +80,7 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
         if re.match(r'^kimi-k2[.-](?:5|6)(?:[.-]|$)', name):
             return _policy(kind, 'explicit-off', '已强制关闭 Kimi 思考模式', {
                 'thinking': {'type': 'disabled'}, 'temperature': 0.6, 'top_p': 0.95,
-            })
+            }, accept_reasoning_response=True)
         if re.match(r'^(?:kimi-k2|moonshot-v1)', name):
             return _policy(kind, 'naturally-off', '该 Kimi 型号本身不输出思考链')
         return _policy(kind, 'unknown', '无法确认该 Kimi 型号是否支持非思考模式')

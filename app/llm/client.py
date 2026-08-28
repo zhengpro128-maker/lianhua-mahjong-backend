@@ -238,7 +238,8 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     leaked_reasoning = isinstance(reasoning_content, str) and bool(reasoning_content.strip())
     leaked_reasoning = leaked_reasoning or isinstance(reasoning_tokens, (int, float)) and reasoning_tokens > 0
     leaked_reasoning = leaked_reasoning or isinstance(body.get('reasoning'), (str, list)) and bool(body.get('reasoning'))
-    if leaked_reasoning and not reasoning and not always_thinking:
+    if leaked_reasoning and not reasoning and not always_thinking \
+            and not reasoning_policy.accept_reasoning_response:
         raise LlmClientError(
             LlmClientError.KIND_REASONING,
             '供应商仍返回思考内容，非思考模式验证失败')
