@@ -15,8 +15,8 @@ class TriggerConfig:
 @dataclass(frozen=True)
 class ConditionalReasoningConfig:
     enabled: bool = True
-    max_per_round: int = 2
-    max_per_match: int = 8
+    max_per_seat_per_round: int = 2
+    max_per_match: int = 24
     deadline_ms: int = 40000
     min_remaining_budget_ms: int = 45000
     trigger: TriggerConfig = field(default_factory=TriggerConfig)
@@ -99,28 +99,32 @@ class ConditionalReasoningCoordinator:
         self.config = config
         self.random = random_fn or random_module.random
         self.match_uses = 0
-        self.round_uses = {}
+        self.round_seat_uses = {}
 
-    def admit(self, request: dict, remaining_budget_ms: float) -> bool:
+    def admit(self, request: dict, seat: int, remaining_budget_ms: float) -> bool:
         cfg = self.config
         state = request.get('state') or {}
         round_index = int(state.get('roundIndex') or 0)
+        round_seat_key = (round_index, seat)
+        opening = state.get('turnOrigin') == 'opening'
         triggered = (
-            _candidate_gap(request) <= cfg.trigger.candidate_score_gap
+            (not opening and _candidate_gap(request) <= cfg.trigger.candidate_score_gap)
             or state.get('wallCount', 99) <= cfg.trigger.late_wall_count
             or _opponent_threat(request) >= cfg.trigger.opponent_threat
             or _score_swing(request) >= cfg.trigger.score_swing
-            or self.random() < cfg.audit_sample_rate
+            or (not opening and self.random() < cfg.audit_sample_rate)
         )
         allowed = (cfg.enabled and triggered
                    and remaining_budget_ms >= cfg.min_remaining_budget_ms
                    and self.match_uses < cfg.max_per_match
-                   and self.round_uses.get(round_index, 0) < cfg.max_per_round)
+                   and self.round_seat_uses.get(round_seat_key, 0)
+                   < cfg.max_per_seat_per_round)
         if allowed:
             self.match_uses += 1
-            self.round_uses[round_index] = self.round_uses.get(round_index, 0) + 1
+            self.round_seat_uses[round_seat_key] = \
+                self.round_seat_uses.get(round_seat_key, 0) + 1
         return allowed
 
     def reset(self):
         self.match_uses = 0
-        self.round_uses.clear()
+        self.round_seat_uses.clear()

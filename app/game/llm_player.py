@@ -124,7 +124,7 @@ class LLMPlayer(AIPlayer):
             getattr(self.config, 'provider_type', ''), self.config.base_url, self.config.model,
             getattr(self.config, 'provider_id', ''), reasoning=True)
         use_reasoning = reasoning_policy.mode == 'explicit-on' and self.reasoning.admit(
-            request, self.reasoning.config.min_remaining_budget_ms)
+            request, self.seat, self.reasoning.config.min_remaining_budget_ms)
         self.stats['requests'] += 1
         if use_reasoning:
             self.stats['reasoningRequests'] = self.stats.get('reasoningRequests', 0) + 1
