@@ -56,6 +56,16 @@ def test_public_action_commitment_must_match_final_choice():
     assert resolve_decision_speech('这牌我吃定了！', {'kind': 'chi', 'optionIndex': 0}, '激进') == '这牌我吃定了！'
 
 
+def test_specific_kong_subtype_must_match_but_generic_kong_is_allowed():
+    direct_gang = {'kind': 'gang'}
+    assert resolve_decision_speech('这张暗杠！', direct_gang, '稳健') == '大明杠。'
+    assert resolve_decision_speech('大明杠，开！', direct_gang, '激进') == '大明杠，开！'
+    assert resolve_decision_speech('直接杠！', direct_gang, '激进') == '直接杠！'
+    concealed = {'kind': 'concealed-kong', 'tile': 'm1'}
+    assert resolve_decision_speech('补杠！', concealed, '稳健') == '暗杠。'
+    assert resolve_decision_speech('暗杠！', concealed, '稳健') == '暗杠！'
+
+
 def test_other_players_public_actions_and_current_discard_must_be_true():
     discard = {'kind': 'discard', 'handIndex': 0}
     facts = {

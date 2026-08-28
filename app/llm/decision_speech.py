@@ -120,15 +120,21 @@ def resolve_decision_speech(message: str, action: dict,
                 contradicts_current_discard = True
                 break
     self_speech = PUBLIC_ACTION_RE.sub('', compact)
+    claimed_kong_kind = 'concealed-kong' if re.search(r'暗杠', self_speech) else \
+        'added-kong' if re.search(r'补杠', self_speech) else \
+        'wind-kong' if re.search(r'乱风杠|风杠', self_speech) else \
+        'gang' if re.search(r'大明杠|明杠', self_speech) else None
+    claims_generic_kong = bool(re.search(r'我要杠|我杠了|开杠|直接杠', self_speech))
     claimed_action = 'chi' if re.search(r'吃定了|我要吃|我吃了|这牌我吃|直接吃', self_speech) else \
         'peng' if re.search(r'我要碰|我碰了|碰一个|直接碰|这牌我碰', self_speech) else \
-        'gang' if re.search(r'我要杠|我杠了|开杠|大明杠|暗杠|补杠|风杠|直接杠', self_speech) else \
+        'gang' if claimed_kong_kind or claims_generic_kong else \
         'pass' if re.search(r'我过了|这次我过|我要过', self_speech) else None
     actual_kind = action.get('kind')
     action_matches = claimed_action is None or claimed_action == actual_kind \
         or (claimed_action == 'gang' and actual_kind in (
             'gang', 'added-kong', 'concealed-kong', 'wind-kong'))
+    kong_subtype_matches = claimed_kong_kind is None or actual_kind == claimed_kong_kind
     if compact and not contradicts_dealer and not contradicts_public_action \
-            and not contradicts_current_discard and action_matches:
+            and not contradicts_current_discard and action_matches and kong_subtype_matches:
         return compact
     return decision_speech(action, style, sequence)

@@ -378,7 +378,7 @@ def _claim_candidates(ctx, rules: GameRuleSet) -> list[dict]:
     })
     if _g(ctx, 'canGang'):
         candidates.append({
-            'id': 'G', 'label': f"杠{tile_name(ctx.tile)}",
+            'id': 'G', 'label': f"大明杠{tile_name(ctx.tile)}",
             'action': canonical_action('gang'),
             'features': _features_of(ctx, canonical_action('gang'), '中', rules),
             'legalityKey': 'gang',

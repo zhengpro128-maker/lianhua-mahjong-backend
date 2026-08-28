@@ -163,6 +163,7 @@ class TestCandidates:
         ctx = claim_ctx(tile='m3', can_peng=True, can_gang=True)
         built = build_request(ctx, get_rule_set(), 'r1', 'v1', 'claim')
         assert [c['id'] for c in built['request']['candidates']] == ['Z', 'G', 'P']
+        assert next(c for c in built['request']['candidates'] if c['id'] == 'G')['label'] == '大明杠3万'
 
     def test_claim_omits_peng_when_it_would_discard_the_claimed_tile(self):
         hand = [
@@ -301,6 +302,7 @@ class TestPromptRules:
                               'r1', 'v1', 'turn')
         system, user = build_prompt('稳健', built['request'])
         assert '规则摘要未列出的特殊牌型一律视为不支持' in system
+        assert '响应别人弃牌只能是大明杠' in system
         assert '不支持七对、十三幺、十三烂、七星十三烂' in user
         assert '【癞子规则】白板是本玩法的万能牌' in user
         assert '出白板' not in user
