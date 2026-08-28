@@ -159,7 +159,7 @@ class LLMPlayer(AIPlayer):
         # 缺失或含幕后词时才回退当前程序台词。
         speech = resolve_decision_speech(
             message, candidate['action'], self.config.style, self.stats['messages'],
-            {'isDealer': bool(request['state'].get('isDealer'))})
+            self._speech_facts(request['state']))
         self.stats['messages'] += 1
         self.message_history.append(speech)
         if self.on_message is not None:
@@ -171,6 +171,27 @@ class LLMPlayer(AIPlayer):
                 # 吐槽属于表现副作用；广播失败不能影响动作执行和对局推进。
                 pass
         return self._map_action(candidate['action'])
+
+    @staticmethod
+    def _speech_facts(state: dict) -> dict:
+        snapshots = state.get('snapshots') or {}
+
+        def meld_types(name: str) -> list[str]:
+            return [meld.get('type', '') for meld in (snapshots.get(name) or {}).get('melds', [])]
+
+        claim_tile = state.get('claimTile')
+        claim_from = state.get('claimFrom')
+        return {
+            'isDealer': bool(state.get('isDealer')),
+            'publicMeldTypes': {
+                '上家': meld_types('upper'),
+                '对家': meld_types('opposite'),
+                '下家': meld_types('lower'),
+            },
+            'currentDiscard': {
+                'from': claim_from, 'tile': claim_tile,
+            } if claim_tile and claim_from else None,
+        }
 
     def _map_action(self, action: dict) -> dict:
         kind = action['kind']

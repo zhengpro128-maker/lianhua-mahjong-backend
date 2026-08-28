@@ -45,3 +45,19 @@ def test_public_action_commitment_must_match_final_choice():
     discard = {'kind': 'discard', 'handIndex': 0}
     assert resolve_decision_speech('这牌我吃定了！', discard, '激进') == '这张不要了。'
     assert resolve_decision_speech('这牌我吃定了！', {'kind': 'chi', 'optionIndex': 0}, '激进') == '这牌我吃定了！'
+
+
+def test_other_players_public_actions_and_current_discard_must_be_true():
+    discard = {'kind': 'discard', 'handIndex': 0}
+    facts = {
+        'publicMeldTypes': {'上家': [], '对家': [], '下家': ['peng']},
+        'currentDiscard': {'from': '上家', 'tile': '7万'},
+    }
+    assert resolve_decision_speech(
+        '下家杠了，我稳一手。', discard, '稳健', facts=facts) == '这张先走。'
+    assert resolve_decision_speech(
+        '下家碰了，我稳一手。', discard, '稳健', facts=facts) == '下家碰了，我稳一手。'
+    assert resolve_decision_speech(
+        '下家打出7万。', discard, '稳健', facts=facts) == '这张先走。'
+    assert resolve_decision_speech(
+        '上家打出7万，这张留着。', discard, '稳健', facts=facts) == '上家打出7万，这张留着。'

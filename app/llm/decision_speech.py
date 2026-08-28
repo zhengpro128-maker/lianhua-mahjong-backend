@@ -4,6 +4,12 @@ import re
 
 from app.llm.speech_policy import compact_speech_text
 
+PUBLIC_ACTION_RE = re.compile(
+    r'(上家|对家|下家)(?:刚才|刚刚|刚|已经|又|也)?(暗杠|明杠|补杠|杠|碰|吃)(?:了|过|成)?')
+PUBLIC_DISCARD_RE = re.compile(
+    r'(上家|对家|下家)(?:刚才|刚刚|刚)?(?:打出|打了|打的|出了)(?:一张)?'
+    r'([1-9][万筒条]|东风|南风|西风|北风|红中|发财|白板)?')
+
 DECISION_SPEECH_LINES = {
     'discard': {
         '激进': ('这张不要了。', '先打出去。', '这一张走。'),
@@ -79,14 +85,38 @@ def resolve_decision_speech(message: str, action: dict,
     is_dealer = facts.get('isDealer')
     contradicts_dealer = (is_dealer is False and claims_dealer and not denies_dealer) \
         or (is_dealer is True and denies_dealer)
-    claimed_action = 'chi' if re.search(r'吃定了|我要吃|我吃了|这牌我吃|直接吃', compact) else \
-        'peng' if re.search(r'我要碰|我碰了|碰一个|直接碰|这牌我碰', compact) else \
-        'gang' if re.search(r'我要杠|我杠了|开杠|大明杠|暗杠|补杠|风杠|直接杠', compact) else \
-        'pass' if re.search(r'我过了|这次我过|我要过', compact) else None
+    contradicts_public_action = False
+    public_meld_types = facts.get('publicMeldTypes') or {}
+    for seat, claim in PUBLIC_ACTION_RE.findall(compact):
+        types = public_meld_types.get(seat)
+        if types is None:
+            continue
+        supported = ('chi' in types) if claim == '吃' else \
+            ('peng' in types) if claim == '碰' else \
+            ('angang' in types) if claim == '暗杠' else \
+            ('gang' in types) if claim in ('明杠', '补杠') else \
+            any(type_ in ('gang', 'angang') for type_ in types)
+        if not supported:
+            contradicts_public_action = True
+            break
+    contradicts_current_discard = False
+    current_discard = facts.get('currentDiscard')
+    if current_discard:
+        for from_, tile in PUBLIC_DISCARD_RE.findall(compact):
+            if from_ != current_discard.get('from') \
+                    or bool(tile and tile != current_discard.get('tile')):
+                contradicts_current_discard = True
+                break
+    self_speech = PUBLIC_ACTION_RE.sub('', compact)
+    claimed_action = 'chi' if re.search(r'吃定了|我要吃|我吃了|这牌我吃|直接吃', self_speech) else \
+        'peng' if re.search(r'我要碰|我碰了|碰一个|直接碰|这牌我碰', self_speech) else \
+        'gang' if re.search(r'我要杠|我杠了|开杠|大明杠|暗杠|补杠|风杠|直接杠', self_speech) else \
+        'pass' if re.search(r'我过了|这次我过|我要过', self_speech) else None
     actual_kind = action.get('kind')
     action_matches = claimed_action is None or claimed_action == actual_kind \
         or (claimed_action == 'gang' and actual_kind in (
             'gang', 'added-kong', 'concealed-kong', 'wind-kong'))
-    if compact and not contradicts_dealer and action_matches:
+    if compact and not contradicts_dealer and not contradicts_public_action \
+            and not contradicts_current_discard and action_matches:
         return compact
     return decision_speech(action, style, sequence)

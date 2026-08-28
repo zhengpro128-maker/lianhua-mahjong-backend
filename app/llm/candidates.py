@@ -23,8 +23,12 @@ _SUITED_RE = re.compile(r'^([mps])([1-9])$')
 
 
 def _g(ctx, name, default=None):
-    """pydantic 模型用 getattr 读可选字段。"""
-    return getattr(ctx, name, default) if ctx is not None else default
+    """上下文主体是 pydantic 模型，peers/snapshots 等嵌套公开视图允许为 dict。"""
+    if ctx is None:
+        return default
+    if isinstance(ctx, dict):
+        return ctx.get(name, default)
+    return getattr(ctx, name, default)
 
 
 def _counts(tiles: list[str]) -> dict[str, int]:

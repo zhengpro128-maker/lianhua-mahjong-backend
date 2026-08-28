@@ -315,6 +315,7 @@ class TestPromptRules:
         assert '不要使用“稳稳”一词' not in system
         assert '"message": "有点意思。"' in user
         assert 'message 必须非空' in user
+        assert '【你的暗手（不含副露/杠组）】' in user
         assert '默认优先' in user
 
     def test_non_dealer_is_told_identity_without_guessing_absolute_seat(self):
@@ -348,6 +349,21 @@ class TestPromptRules:
         claim_ctx_value.from_ = 3
         claim = build_request(claim_ctx_value, get_rule_set(), 'r1', 'v1', 'claim')
         assert '【当前弃牌】「上家」打出「3万」' in build_prompt('稳健', claim['request'])[1]
+
+    def test_prompt_labels_peng_and_does_not_merge_fourth_discard_into_meld(self):
+        ctx = claim_ctx(tile='m7', can_peng=True)
+        ctx.from_ = 3
+        ctx.peers[1] = {
+            'discards': ['p9'],
+            'melds': [{'type': 'peng', 'tile': 'm7', 'tiles': ['m7', 'm7', 'm7']}],
+        }
+        built = build_request(ctx, get_rule_set(), 'r1', 'v1', 'claim')
+        _, user = build_prompt('稳健', built['request'])
+        assert '下家：「碰：7万×3」' in user
+        assert '下家：「9筒」' in user
+        assert '【当前弃牌】「上家」打出「7万」' in user
+        assert '不会自动并入任何玩家已有的碰组' in user
+        assert '下家：「明杠：7万×4」' not in user
 
     def test_lotus_prompt_uses_double_joker_and_limited_white_rule(self):
         rules = get_rule_set('lotus-legacy')
@@ -457,6 +473,22 @@ class TestLLMPlayer:
         assert action['kind'] == 'discard'
         assert player.message_history == ['这张留着。']
         assert messages == [(1, '这张留着。', 'normal')]
+
+    def test_false_public_gang_message_falls_back_using_peer_meld_facts(self, monkeypatch):
+        messages = []
+        player, _ = make_llm_player(
+            monkeypatch, ['{"choice":"A1","message":"下家杠了，我稳一手。"}'],
+            seat=1,
+            on_message=lambda seat, text, priority: messages.append((seat, text, priority)))
+        ctx = turn_ctx(hand=['m3', 'm5', 'm6'])
+        ctx.peers[1] = {
+            'discards': [],
+            'melds': [{'type': 'peng', 'tile': 'm7', 'tiles': ['m7', 'm7', 'm7']}],
+        }
+        action = run(player.request_turn(ctx))
+        assert action['kind'] == 'discard'
+        assert player.message_history == ['这张先走。']
+        assert messages == [(1, '这张先走。', 'normal')]
 
     def test_turn_illegal_choice_falls_back(self, monkeypatch):
         # 返回白名单外的 choice → 解析失败 → 回退启发式（kind=discard 或杠）

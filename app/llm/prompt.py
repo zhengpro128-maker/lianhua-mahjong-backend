@@ -21,6 +21,10 @@ _STYLE_SPEECH_GUIDE = {
     '高冷': '台词风格简短克制、惜字如金，但仍需给出一句。',
 }
 
+_MELD_LABELS = {
+    'peng': '碰', 'chi': '吃', 'gang': '明杠', 'angang': '暗杠', 'flower': '花牌',
+}
+
 def build_prompt(style: str, request: dict) -> tuple[str, str]:
     state = request['state']
     system = (
@@ -29,10 +33,13 @@ def build_prompt(style: str, request: dict) -> tuple[str, str]:
         '每次都提供一句非空且 ≤16 字的牌桌台词。\n'
         f'{_STYLE_SPEECH_GUIDE.get(style, _STYLE_SPEECH_GUIDE["稳健"])}\n'
         'message 可以是情绪、闲聊、吹嘘或烟雾弹，不要求解释 choice，也不要求公开真实意图。\n'
-        '烟雾弹只能针对牌路和意图；是否庄家、门风、场风等公开事实必须如实。\n'
+        '烟雾弹只能针对牌路和意图；是否庄家、门风、场风、暗手与副露的归属、'
+        '谁吃碰杠、谁打出当前弃牌等公开事实必须如实。\n'
         '吃、碰、杠、过等公开动作承诺必须与 choice 一致；不能说要吃却选择不吃。\n'
         'message 严禁提及或复述决策机制、内部标识及幕后说明。\n'
         '候选动作均已按当前玩法校验合法；当前玩法的规则摘要和候选特征是唯一权威事实。\n'
+        '暗手不包含已成组的吃碰杠；副露/杠组会明确标注“碰、吃、明杠、暗杠”，'
+        '不得仅因桌面共出现四张同牌就把碰误称为杠。\n'
         '决策优先级：硬规则与风险警告 > 保持听牌 > 特殊牌型听牌与有效剩余 > 默认参考 > 安全度与简化牌效。\n'
         '若其他候选没有被更高优先级特征明确证明更好，优先采用默认参考。\n'
         '只按当前玩法决策，严禁套用国标麻将、日麻或其他麻将规则；规则摘要未列出的特殊牌型一律视为不支持。\n'
@@ -41,7 +48,15 @@ def build_prompt(style: str, request: dict) -> tuple[str, str]:
     )
 
     def meld_text(melds: list[dict]) -> str:
-        return ' '.join(f'{m["tile"]}({"、".join(m["tiles"])})' for m in melds) or '（无）'
+        def format_meld(meld: dict) -> str:
+            type_ = meld.get('type', '')
+            label = _MELD_LABELS.get(type_, type_)
+            if type_ == 'peng':
+                return f'{label}：{meld["tile"]}×3'
+            if type_ in ('gang', 'angang'):
+                return f'{label}：{meld["tile"]}×4'
+            return f'{label}：{"、".join(meld["tiles"])}'
+        return '；'.join(format_meld(meld) for meld in melds) or '（无）'
 
     def discard_text(name: str) -> str:
         return state['snapshots'][name]['discards'] and ' '.join(state['snapshots'][name]['discards']) or '（无）'
@@ -62,17 +77,20 @@ def build_prompt(style: str, request: dict) -> tuple[str, str]:
         f'【局况】「{rule_summary}」｜第「{state["roundIndex"]}」局｜你是「{state["seatWind"]}」家'
         f'｜{dealer_status}｜{decision_name}｜剩牌「{state["wallCount"]}」张'
         f'｜分数「{"/".join(str(s) for s in state["scores"])}」')
-    lines.append(f'【你的牌】「{" ".join(state["hand"])}」')
+    lines.append(f'【你的暗手（不含副露/杠组）】「{" ".join(state["hand"])}」')
     if state.get('drawnTile'):
         lines.append(f'【刚摸到】「{state["drawnTile"]}」')
     if state.get('claimTile'):
         lines.append(f'【当前弃牌】「{state.get("claimFrom") or "他家"}」打出「{state["claimTile"]}」')
-    lines.append(f'【你的副露】「{meld_text(state["melds"])}」')
+        lines.append(
+            '【当前弃牌归属】这张仍是待响应的弃牌，不会自动并入任何玩家已有的碰组；'
+            '只有成组牌明确标为杠才算杠')
+    lines.append(f'【你的副露/杠组（已从暗手移除）】「{meld_text(state["melds"])}」')
     lines.append(
         f'【牌河】你：「{discard_text("self")}」｜上家：「{discard_text("upper")}」'
         f'｜对家：「{discard_text("opposite")}」｜下家：「{discard_text("lower")}」')
     lines.append(
-        f'【各家副露】上家：「{melds_text("upper")}」｜对家：「{melds_text("opposite")}」'
+        f'【各家公开副露/杠组】上家：「{melds_text("upper")}」｜对家：「{melds_text("opposite")}」'
         f'｜下家：「{melds_text("lower")}」')
     if state['ruleCode'] == 'lotus-legacy':
         lines.append(
