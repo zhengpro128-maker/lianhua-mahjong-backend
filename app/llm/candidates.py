@@ -127,9 +127,8 @@ def _is_tenpai(ctx, hand: list[str], rules: GameRuleSet) -> bool:
                for idx in range(len(hand)))
 
 
-def _kong_delta_band(ctx, action: dict, rules: GameRuleSet) -> Optional[str]:
-    """杠分（即时收益）档位：SettlementService 结算器在克隆分数上计算。"""
-    import copy
+def _kong_delta(ctx, action: dict, rules: GameRuleSet) -> Optional[int]:
+    """杠分（即时收益）：SettlementService 结算器在克隆分数上计算。"""
     players = _g(ctx, 'players')
     scores = _g(ctx, 'scores') or ([p.score for p in players] if players else [])
     if not scores:
@@ -145,7 +144,14 @@ def _kong_delta_band(ctx, action: dict, rules: GameRuleSet) -> Optional[str]:
     delta = sum(d['amount'] for d in result.as_list() if d['playerIndex'] == player_index)
     if delta <= 0:
         return None
-    return '高' if delta >= 400 else '中'
+    return delta
+
+
+def _apply_kong_delta(feat: dict, ctx, action: dict, rules: GameRuleSet) -> None:
+    delta = _kong_delta(ctx, action, rules)
+    if delta is not None:
+        feat['scoreDelta'] = delta
+        feat['scoreDeltaBand'] = '高' if delta >= 400 else '中'
 
 
 def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict:
@@ -210,17 +216,13 @@ def _features_of(ctx, action: dict, efficiency: str, rules: GameRuleSet) -> dict
             if sum(1 for t in public if t == meld.tile) == 0:
                 risks.append('被抢杠概率较高')
         feat['risks'] = risks
-        band = _kong_delta_band(ctx, action, rules)
-        if band:
-            feat['scoreDeltaBand'] = band
+        _apply_kong_delta(feat, ctx, action, rules)
         return feat
     if kind == 'gang':
         feat['ready'] = 'unknown'
         feat['safety'] = _safety_band(ctx, ctx.tile) if ctx.tile else 'unknown'
         feat['risks'] = ['碰/杠可能破坏听牌'] if _is_tenpai(ctx, ctx.hand, rules) else []
-        band = _kong_delta_band(ctx, action, rules)
-        if band:
-            feat['scoreDeltaBand'] = band
+        _apply_kong_delta(feat, ctx, action, rules)
         return feat
     # pass
     feat['safety'] = 'n/a'

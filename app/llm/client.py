@@ -141,7 +141,8 @@ def parse_llm_output(raw: str, candidate_ids: list[str]) -> tuple[str, str]:
 
 async def _call_once(cfg: LlmServerConfig, system: str, user: str,
                      budget_s: float, max_tokens: int = 64,
-                     strict_length: bool = True, attempt_no: int = 1) -> str:
+                     strict_length: bool = True, attempt_no: int = 1,
+                     reasoning: bool = False) -> str:
     endpoint = _normalize_endpoint(cfg.base_url)
     if endpoint is None:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'baseUrl 非法（userinfo 或协议不支持）')
@@ -158,17 +159,20 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
             {'role': 'user', 'content': user},
         ],
         'temperature': 0.4,
-        'max_tokens': max_tokens,
         'top_p': 1,
         'stream': False,
         'n': 1,
     }
     reasoning_policy = resolve_reasoning_policy(
         getattr(cfg, 'provider_type', ''), cfg.base_url, cfg.model,
-        getattr(cfg, 'provider_id', ''))
+        getattr(cfg, 'provider_id', ''), reasoning=reasoning)
     if not reasoning_policy.usable:
         raise LlmClientError(LlmClientError.KIND_CONFIG, reasoning_policy.message)
     payload.update(reasoning_policy.request_body)
+    if reasoning and reasoning_policy.provider_type == 'openai':
+        payload['max_completion_tokens'] = max_tokens
+    else:
+        payload['max_tokens'] = max_tokens
     if reasoning_policy.provider_type == 'qwen':
         payload['response_format'] = {'type': 'json_object'}
     client = get_llm_client()
@@ -234,7 +238,7 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     leaked_reasoning = isinstance(reasoning_content, str) and bool(reasoning_content.strip())
     leaked_reasoning = leaked_reasoning or isinstance(reasoning_tokens, (int, float)) and reasoning_tokens > 0
     leaked_reasoning = leaked_reasoning or isinstance(body.get('reasoning'), (str, list)) and bool(body.get('reasoning'))
-    if leaked_reasoning:
+    if leaked_reasoning and not reasoning:
         raise LlmClientError(
             LlmClientError.KIND_REASONING,
             '供应商仍返回思考内容，非思考模式验证失败')
@@ -261,18 +265,29 @@ def _feedback_retry(user: str, error: str, legal_ids: list[str]) -> str:
 
 
 async def request_llm_decision(cfg: LlmServerConfig, system: str, user: str,
-                               candidate_ids: list[str]) -> tuple[str, str]:
+                               candidate_ids: list[str], reasoning: bool = False,
+                               deadline_ms: Optional[int] = None) -> tuple[str, str]:
     """一次决策请求：总预算 cfg.timeout_s（含并发排队+一次语义重试）。"""
     started = time.monotonic()
+    total_budget_s = min(cfg.timeout_s, deadline_ms / 1000.0) \
+        if reasoning and deadline_ms is not None else cfg.timeout_s
     error_for_retry: Optional[str] = None
 
     async def attempt(messages_http_user: str) -> tuple[str, str]:
-        left = cfg.timeout_s - (time.monotonic() - started)
+        left = total_budget_s - (time.monotonic() - started)
         if left <= 0:
             raise LlmClientError(LlmClientError.KIND_TIMEOUT, '总预算耗尽')
-        raw = await _call_once(
-            cfg, system, messages_http_user, budget_s=left,
-            attempt_no=2 if error_for_retry is not None else 1)
+        try:
+            raw = await asyncio.wait_for(
+                _call_once(
+                    cfg, system, messages_http_user, budget_s=left,
+                    max_tokens=512 if reasoning else 64,
+                    attempt_no=2 if error_for_retry is not None else 1,
+                    reasoning=reasoning),
+                timeout=left)
+        except asyncio.TimeoutError as exc:
+            raise LlmClientError(
+                LlmClientError.KIND_TIMEOUT, '总预算耗尽') from exc
         try:
             return parse_llm_output(raw, candidate_ids)
         except LlmClientError as exc:

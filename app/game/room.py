@@ -30,6 +30,7 @@ from app.llm.config import (default_provider_id, llm_server_available,
                             load_llm_providers)
 from app.llm.persona import avatar_url, default_nickname, display_name
 from app.llm.speech_policy import LlmSpeechPolicy, compact_speech_text
+from app.llm.conditional_reasoning import ConditionalReasoningCoordinator
 from app.tts.service import get_tts_service
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import get_default_rule_set
@@ -679,6 +680,7 @@ class RoomSession:
         """
         ai_delays = self._ai_delays()
         providers = load_llm_providers() if self.effective_llm_enabled else {}
+        conditional_reasoning = ConditionalReasoningCoordinator()
         controllers = []
         for seat_index, seat in enumerate(self.seats):
             if seat is not None:
@@ -692,7 +694,9 @@ class RoomSession:
                                                  config=provider.to_config(style_override=style),
                                                  seat=seat_index,
                                                  provider_id=provider.provider_id,
-                                                 on_message=self._on_llm_message))
+                                                 on_message=self._on_llm_message,
+                                                 on_status=self._on_llm_status,
+                                                 reasoning=conditional_reasoning))
                 else:
                     controllers.append(AIPlayer(delays=ai_delays, rule_set=self.rules))
         return controllers
@@ -761,6 +765,11 @@ class RoomSession:
             controller.provider_id, priority))
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
+
+    def _on_llm_status(self, seat: int, active: bool) -> None:
+        """只广播深思状态；不进入台词历史、限流、日志或 TTS。"""
+        if 0 <= seat < self.player_count:
+            self.conn.broadcast({'kind': 'llm_status', 'seat': seat, 'active': bool(active)})
 
     def _announce_llm_win(self, seat: int, action_type: str) -> None:
         """让 LLM 赢家通过吐槽/TTS 链路播报自摸、放枪或抢杠胡。"""

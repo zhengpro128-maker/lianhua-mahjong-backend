@@ -29,6 +29,21 @@ def test_reasoning_only_models_are_rejected(provider_type, model):
     assert not result.usable
 
 
+@pytest.mark.parametrize(('provider_type', 'model', 'expected'), [
+    ('deepseek', 'deepseek-v4-flash', {
+        'thinking': {'type': 'enabled'}, 'reasoning_effort': 'medium'}),
+    ('qwen', 'qwen3.8-flash', {'enable_thinking': True}),
+    ('openai', 'gpt-5.6-sol', {'reasoning_effort': 'medium'}),
+])
+def test_conditional_reasoning_explicitly_enables_supported_models(
+        provider_type, model, expected):
+    result = resolve_reasoning_policy(
+        provider_type, 'https://proxy.example.com/v1', model, reasoning=True)
+    assert result.mode == 'explicit-on'
+    assert result.request_body == expected
+    assert result.usable
+
+
 def test_legacy_provider_type_inference():
     assert infer_provider_type('https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.7-plus') == 'qwen'
     assert infer_provider_type('https://proxy.local/v1', 'kimi-k2.6') == 'kimi'

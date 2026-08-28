@@ -17,7 +17,7 @@ class ReasoningPolicy:
 
     @property
     def usable(self) -> bool:
-        return self.mode in ('explicit-off', 'naturally-off')
+        return self.mode in ('explicit-off', 'explicit-on', 'naturally-off')
 
 
 def infer_provider_type(base_url: str, model: str, provider_id: str = '') -> str:
@@ -47,7 +47,7 @@ def _policy(provider_type: str, mode: str, message: str,
 
 
 def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
-                             provider_id: str = '') -> ReasoningPolicy:
+                             provider_id: str = '', reasoning: bool = False) -> ReasoningPolicy:
     kind = provider_type if provider_type in PROVIDER_TYPES else \
         infer_provider_type(base_url, model, provider_id)
     name = (model or '').strip().lower()
@@ -55,14 +55,20 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
     if kind == 'deepseek':
         if re.search(r'reasoner|(^|[-_.])r1(?:[-_.]|$)', name):
             return _policy(kind, 'reasoning-only', 'DeepSeek Reasoner/R1 无法保证关闭思考')
-        return _policy(kind, 'explicit-off', '已强制关闭 DeepSeek 思考模式',
-                       {'thinking': {'type': 'disabled'}})
+        return _policy(kind, 'explicit-on', '已开启 DeepSeek 条件思考', {
+            'thinking': {'type': 'enabled'}, 'reasoning_effort': 'medium',
+        }) if reasoning else _policy(
+            kind, 'explicit-off', '已强制关闭 DeepSeek 思考模式',
+            {'thinking': {'type': 'disabled'}})
     if kind == 'qwen':
         if re.match(r'^(?:qwq|.*thinking)', name):
             return _policy(kind, 'reasoning-only', '该千问型号属于推理专用模型')
-        if re.match(r'^qwen3\.(?:5|6|7|8)(?:[.-]|$)', name):
-            return _policy(kind, 'explicit-off', '已强制关闭千问思考模式',
-                           {'enable_thinking': False})
+        if re.match(r'^qwen-?3\.(?:5|6|7|8)(?:[.-]|$)', name):
+            return _policy(kind, 'explicit-on', '已开启千问条件思考', {
+                'enable_thinking': True,
+            }) if reasoning else _policy(
+                kind, 'explicit-off', '已强制关闭千问思考模式',
+                {'enable_thinking': False})
         return _policy(kind, 'unknown', '无法确认该千问型号是否支持非思考模式')
     if kind == 'kimi':
         if 'thinking' in name:
@@ -91,8 +97,11 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
         if re.match(r'^o(?:1|3|4)(?:[.-]|$)', name):
             return _policy(kind, 'reasoning-only', 'OpenAI o 系列属于推理模型')
         if re.match(r'^gpt-5(?:[.-]|$)', name):
-            return _policy(kind, 'explicit-off', '已将 GPT 推理强度设为 none',
-                           {'reasoning_effort': 'none'})
+            return _policy(kind, 'explicit-on', '已开启 GPT 条件思考', {
+                'reasoning_effort': 'medium',
+            }) if reasoning else _policy(
+                kind, 'explicit-off', '已将 GPT 推理强度设为 none',
+                {'reasoning_effort': 'none'})
         if re.match(r'^(?:gpt-4|gpt-3\.5)', name):
             return _policy(kind, 'naturally-off', '该 GPT 型号本身不是推理模型')
         return _policy(kind, 'unknown', '无法确认该 OpenAI 型号是否能关闭推理')

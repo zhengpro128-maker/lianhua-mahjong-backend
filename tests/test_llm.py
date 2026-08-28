@@ -402,7 +402,7 @@ def make_llm_player(monkeypatch, responses, *, seat=-1, provider_id='', on_messa
     config = SimpleNamespace(**cfg)
     fake = FakeClient(responses)
     # LLMPlayer 直接使用 request_llm_decision —— mock 掉它（透传到假客户端）
-    async def fake_decision(cfg_, system, user, candidate_ids):
+    async def fake_decision(cfg_, system, user, candidate_ids, **_options):
         item = fake._responses.pop(0) if fake._responses else fake._responses[-1]
         if callable(item):
             item = item()
