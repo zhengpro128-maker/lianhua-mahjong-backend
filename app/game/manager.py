@@ -670,7 +670,8 @@ class GameManager:
 
     # ── 回合流转 ──
 
-    async def begin_turn(self, player_index: int, skip_draw: bool = False, from_tail: bool = False) -> None:
+    async def begin_turn(self, player_index: int, skip_draw: bool = False,
+                         from_tail: bool = False, after_claim: Optional[str] = None) -> None:
         """摸牌（draw_for）→ request_turn → 执行动作（胡/补杠/暗杠/弃牌）。"""
         if self.phase == 'settled':
             return
@@ -699,6 +700,9 @@ class GameManager:
             kongBloom=self.kong_draw_player_index == player_index,
             skipDraw=skip_draw,
             afterKong=from_tail,
+            turnOrigin='kong-draw' if from_tail else (after_claim or ('opening' if skip_draw else 'draw')),
+            drawnTile=(player.hand[player.drawnTileIndex]
+                       if not skip_draw and player.drawnTileIndex >= 0 else None),
             jokers=list(getattr(self.rules, 'round_state', None).jokers)
             if self.rules.code == 'lotus-legacy' else ['white'],
             visibleTiles=self._visible_tiles_for(player_index),
@@ -882,7 +886,7 @@ class GameManager:
             self._broadcast_snapshot()
             # 吃牌后停顿对齐单机 PACE_MS.afterClaimPeng（650ms），而非 skipDrawPengDelay（350ms）。
             await self._sleep(self.pace['afterClaimPeng'])
-            return await self.begin_turn(claimant['playerIndex'], skip_draw=True)
+            return await self.begin_turn(claimant['playerIndex'], skip_draw=True, after_claim='chi')
         if kind == 'gang':
             self._interrupt_follow_dealer()
             perform_discard_gang(self._table_context, claimant['playerIndex'], tile, from_)
@@ -904,7 +908,7 @@ class GameManager:
             return await self.discard_tile(claimant['playerIndex'], action['discardIndex'])
         # 人类：碰后需要互动选弃牌 → 跳过摸牌直接出牌
         await self._sleep(self.pace['skipDrawPengDelay'])
-        return await self.begin_turn(claimant['playerIndex'], skip_draw=True)
+        return await self.begin_turn(claimant['playerIndex'], skip_draw=True, after_claim='peng')
 
     # ── 杠 ──
 

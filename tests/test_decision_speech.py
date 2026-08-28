@@ -39,3 +39,9 @@ def test_strategy_bluff_is_allowed_but_public_dealer_identity_must_be_true():
     assert resolve_decision_speech('我就是庄家！', action, '激进', facts={'isDealer': False}) == '这张不要了。'
     assert resolve_decision_speech('庄家就是我！', action, '激进', facts={'isDealer': True}) == '庄家就是我！'
     assert resolve_decision_speech('我不是庄家。', action, '稳健', facts={'isDealer': True}) == '这张先走。'
+
+
+def test_public_action_commitment_must_match_final_choice():
+    discard = {'kind': 'discard', 'handIndex': 0}
+    assert resolve_decision_speech('这牌我吃定了！', discard, '激进') == '这张不要了。'
+    assert resolve_decision_speech('这牌我吃定了！', {'kind': 'chi', 'optionIndex': 0}, '激进') == '这牌我吃定了！'

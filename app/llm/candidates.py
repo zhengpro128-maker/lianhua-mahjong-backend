@@ -462,6 +462,12 @@ def _snapshot(ctx, request_id: str, state_version: str, rules: GameRuleSet,
     peers = list(_g(ctx, 'peers') or [])
     player_index = _g(ctx, 'playerIndex', 0) or 0
 
+    def relative_source(from_index) -> str | None:
+        if from_index is None:
+            return None
+        distance = (int(from_index) - player_index) % 4
+        return '上家' if distance == 3 else '对家' if distance == 2 else '下家' if distance == 1 else None
+
     def rel(offset: int) -> dict:
         index = (player_index + offset) % 4
         peer = peers[index] if index < len(peers) else None
@@ -482,6 +488,10 @@ def _snapshot(ctx, request_id: str, state_version: str, rules: GameRuleSet,
         'schemaVersion': 1, 'requestId': request_id, 'stateVersion': state_version,
         'ruleCode': rule_code_for(rules.code), 'decision': decision,
         'hand': [tile_name(t) for t in ctx.hand],
+        'turnOrigin': 'claim-response' if decision == 'claim' else (_g(ctx, 'turnOrigin') or 'draw'),
+        'drawnTile': tile_name(_g(ctx, 'drawnTile')) if _g(ctx, 'drawnTile') else None,
+        'claimTile': tile_name(_g(ctx, 'tile')) if decision == 'claim' and _g(ctx, 'tile') else None,
+        'claimFrom': relative_source(_g(ctx, 'from_')) if decision == 'claim' else None,
         'melds': [{'type': _muld_type(m), 'tile': tile_name(_muld_tile(m)),
                    'tiles': [tile_name(t) for t in _muld_tiles(m)]} for m in own_melds],
         'snapshots': {'self': rel(0), 'upper': rel(-1), 'opposite': rel(2), 'lower': rel(1)},

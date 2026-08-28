@@ -329,6 +329,26 @@ class TestPromptRules:
         assert '你是「西」家｜你不是庄家' in user
         assert '庄家座位「0」' not in user
 
+    def test_prompt_distinguishes_draw_claim_and_post_claim_turns(self):
+        drawn_ctx = turn_ctx()
+        drawn_ctx.turnOrigin = 'draw'
+        drawn_ctx.drawnTile = 'p5'
+        drawn = build_request(drawn_ctx, get_rule_set(), 'r1', 'v1', 'turn')
+        assert '【刚摸到】「5筒」' in build_prompt('稳健', drawn['request'])[1]
+
+        peng_ctx = turn_ctx()
+        peng_ctx.turnOrigin = 'peng'
+        peng_ctx.drawnTile = None
+        peng = build_request(peng_ctx, get_rule_set(), 'r1', 'v1', 'turn')
+        peng_user = build_prompt('稳健', peng['request'])[1]
+        assert '碰后直接出牌（本回合没有摸牌）' in peng_user
+        assert '【刚摸到】' not in peng_user
+
+        claim_ctx_value = claim_ctx(tile='m3', can_peng=True)
+        claim_ctx_value.from_ = 3
+        claim = build_request(claim_ctx_value, get_rule_set(), 'r1', 'v1', 'claim')
+        assert '【当前弃牌】「上家」打出「3万」' in build_prompt('稳健', claim['request'])[1]
+
     def test_lotus_prompt_uses_double_joker_and_limited_white_rule(self):
         rules = get_rule_set('lotus-legacy')
         rules.round_state.joker_tiles = ['m5', 'm6']

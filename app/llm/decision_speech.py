@@ -79,6 +79,14 @@ def resolve_decision_speech(message: str, action: dict,
     is_dealer = facts.get('isDealer')
     contradicts_dealer = (is_dealer is False and claims_dealer and not denies_dealer) \
         or (is_dealer is True and denies_dealer)
-    if compact and not contradicts_dealer:
+    claimed_action = 'chi' if re.search(r'吃定了|我要吃|我吃了|这牌我吃|直接吃', compact) else \
+        'peng' if re.search(r'我要碰|我碰了|碰一个|直接碰|这牌我碰', compact) else \
+        'gang' if re.search(r'我要杠|我杠了|开杠|大明杠|暗杠|补杠|风杠|直接杠', compact) else \
+        'pass' if re.search(r'我过了|这次我过|我要过', compact) else None
+    actual_kind = action.get('kind')
+    action_matches = claimed_action is None or claimed_action == actual_kind \
+        or (claimed_action == 'gang' and actual_kind in (
+            'gang', 'added-kong', 'concealed-kong', 'wind-kong'))
+    if compact and not contradicts_dealer and action_matches:
         return compact
     return decision_speech(action, style, sequence)

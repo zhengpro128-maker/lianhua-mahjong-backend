@@ -32,6 +32,8 @@ class TurnContext(BaseModel):
     kongBloom: bool
     skipDraw: bool
     afterKong: bool
+    turnOrigin: str = 'draw'
+    drawnTile: Optional[TileType] = None
     jokers: list[TileType] = Field(default_factory=list)
     canHu: bool = False
     canWindKong: bool = False
