@@ -17,8 +17,8 @@ class ConditionalReasoningConfig:
     enabled: bool = True
     max_per_round: int = 2
     max_per_match: int = 8
-    deadline_ms: int = 4000
-    min_remaining_budget_ms: int = 5000
+    deadline_ms: int = 40000
+    min_remaining_budget_ms: int = 45000
     trigger: TriggerConfig = field(default_factory=TriggerConfig)
     audit_sample_rate: float = 0.02
 

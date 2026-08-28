@@ -1,7 +1,8 @@
 """动作一致台词与前端 decisionSpeech.test.ts 对照。"""
 
 from app.llm.decision_speech import (
-    DECISION_SPEECH_LINES, decision_speech, resolve_decision_speech,
+    DECISION_SPEECH_LINES, REASONING_STATUS_LINES, decision_speech,
+    reasoning_status_speech, resolve_decision_speech,
 )
 
 
@@ -24,6 +25,14 @@ def test_discard_lines_never_say_keep_and_rotate_stably():
 def test_steady_style_never_uses_reduplicated_steady_wording():
     for styles in DECISION_SPEECH_LINES.values():
         assert all('稳稳' not in line for line in styles['稳健'])
+
+
+def test_reasoning_status_has_multiple_short_lines_per_style():
+    for lines in REASONING_STATUS_LINES.values():
+        assert len(lines) >= 3
+        assert all(len(line) <= 16 and '稳稳' not in line for line in lines)
+    assert reasoning_status_speech('稳健', 0) == '让我想想怎么打。'
+    assert reasoning_status_speech('稳健', 3) == '让我想想怎么打。'
 
 
 def test_bluff_and_steady_reduplication_are_kept_but_backstage_terms_fallback():

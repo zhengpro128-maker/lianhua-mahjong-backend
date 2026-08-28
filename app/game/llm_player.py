@@ -16,7 +16,7 @@ from app.llm.candidates import build_request
 from app.llm.client import request_llm_decision
 from app.llm.config import LlmServerConfig, load_llm_config
 from app.llm.prompt import build_prompt
-from app.llm.decision_speech import resolve_decision_speech
+from app.llm.decision_speech import reasoning_status_speech, resolve_decision_speech
 from app.llm.validation import validate_action
 from app.llm.conditional_reasoning import ConditionalReasoningCoordinator
 from app.llm.reasoning import resolve_reasoning_policy
@@ -38,7 +38,7 @@ class LLMPlayer(AIPlayer):
                  seat: int = -1,
                  provider_id: str = '',
                  on_message: Optional[Callable[[int, str, str], None]] = None,
-                 on_status: Optional[Callable[[int, bool], None]] = None,
+                 on_status: Optional[Callable[[int, bool, str], None]] = None,
                  reasoning: Optional[ConditionalReasoningCoordinator] = None):
         super().__init__(delays=delays, random=random, rule_set=rule_set)
         self.config = config or load_llm_config()
@@ -52,6 +52,7 @@ class LLMPlayer(AIPlayer):
         self.on_message = on_message
         self.on_status = on_status
         self.reasoning = reasoning or ConditionalReasoningCoordinator()
+        self.reasoning_status_sequence = 0
         self.message_history: list[str] = []
 
     async def request_turn(self, ctx: TurnContext) -> dict:
@@ -123,13 +124,16 @@ class LLMPlayer(AIPlayer):
             getattr(self.config, 'provider_type', ''), self.config.base_url, self.config.model,
             getattr(self.config, 'provider_id', ''), reasoning=True)
         use_reasoning = reasoning_policy.mode == 'explicit-on' and self.reasoning.admit(
-            request, self.config.timeout_s * 1000)
+            request, self.reasoning.config.min_remaining_budget_ms)
         self.stats['requests'] += 1
         if use_reasoning:
             self.stats['reasoningRequests'] = self.stats.get('reasoningRequests', 0) + 1
             if self.on_status is not None:
                 try:
-                    self.on_status(self.seat, True)
+                    status_text = reasoning_status_speech(
+                        self.config.style, self.reasoning_status_sequence)
+                    self.reasoning_status_sequence += 1
+                    self.on_status(self.seat, True, status_text)
                 except Exception:
                     pass
         try:
@@ -142,7 +146,7 @@ class LLMPlayer(AIPlayer):
         finally:
             if use_reasoning and self.on_status is not None:
                 try:
-                    self.on_status(self.seat, False)
+                    self.on_status(self.seat, False, '')
                 except Exception:
                     pass
         candidate = next((item for item in request['candidates'] if item['id'] == choice), None)

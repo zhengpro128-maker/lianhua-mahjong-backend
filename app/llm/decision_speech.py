@@ -64,6 +64,18 @@ DECISION_SPEECH_LINES = {
     },
 }
 
+REASONING_STATUS_LINES = {
+    '激进': ('让我算算怎么打。', '这手得想清楚。', '先别急，我算一下。'),
+    '稳健': ('让我想想怎么打。', '这手要仔细看看。', '容我想一想。'),
+    '话痨': ('等等，让我好好想想。', '这手有点难，我算算。', '我得认真琢磨一下。'),
+    '高冷': ('稍等。', '容我想想。', '这手要算。'),
+}
+
+
+def reasoning_status_speech(style: str, sequence: int = 0) -> str:
+    variants = REASONING_STATUS_LINES.get(style, REASONING_STATUS_LINES['稳健'])
+    return variants[abs(sequence) % len(variants)]
+
 
 def decision_speech(action: dict, style: str, sequence: int = 0) -> str:
     kind = action.get('kind', 'discard')

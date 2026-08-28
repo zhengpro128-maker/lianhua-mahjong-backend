@@ -766,10 +766,38 @@ class RoomSession:
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
-    def _on_llm_status(self, seat: int, active: bool) -> None:
-        """只广播深思状态；不进入台词历史、限流、日志或 TTS。"""
-        if 0 <= seat < self.player_count:
-            self.conn.broadcast({'kind': 'llm_status', 'seat': seat, 'active': bool(active)})
+    def _on_llm_status(self, seat: int, active: bool, text: str = '') -> None:
+        """深思状态不进入普通台词历史/限流；状态台词可独立合成 TTS。"""
+        if not 0 <= seat < self.player_count:
+            return
+        if not active:
+            self.conn.broadcast({'kind': 'llm_status', 'seat': seat, 'active': False})
+            return
+        text = compact_speech_text(text)
+        if not text:
+            text = '让我想想怎么打。'
+        self.conn.broadcast({
+            'kind': 'llm_status', 'seat': seat, 'active': True, 'text': text,
+        })
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        controller = None
+        if self.manager is not None and 0 <= seat < len(self.manager.controllers):
+            controller = self.manager.controllers[seat]
+        service = get_tts_service()
+        if not service.available or not isinstance(controller, LLMPlayer):
+            return
+        self._llm_message_seq += 1
+        message_id = self._llm_message_seq
+        self._tts_match_stats['requests'] += 1
+        generation = self._tts_match_generation
+        task = loop.create_task(self._synthesize_llm_audio(
+            generation, message_id, seat, text, controller.config.style,
+            controller.provider_id, 'normal'))
+        self._tts_tasks.add(task)
+        task.add_done_callback(self._tts_tasks.discard)
 
     def _announce_llm_win(self, seat: int, action_type: str) -> None:
         """让 LLM 赢家通过吐槽/TTS 链路播报自摸、放枪或抢杠胡。"""

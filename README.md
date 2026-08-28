@@ -263,7 +263,7 @@ LLM_PROVIDER_KIMI_TYPE=kimi
 - 任何 **OpenAI 兼容** API 均可（Kimi `/v1`、通义 `compatible-mode/v1`、豆包
   `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
   Base / Key / Model。
-- 快速路径自动关闭思考；困难局面可条件开启（每小局 2 次、整场 8 次、4 秒硬截止），超时回退启发式；
+- 快速路径自动关闭思考；困难局面可条件开启（每小局 2 次、整场 8 次、40 秒硬截止），超时回退启发式；深思状态短句可走 TTS，状态气泡在结果返回前保持；
   百炼 `qwen3.5`～`qwen3.8` 自动设置 `enable_thinking=false` 并请求 JSON Object，
   未显式配置 `TIMEOUT_MS` 时使用 8 秒决策预算；
   Anthropic 自动追加浏览器访问头；`http://127.0.0.1:端口` 本地代理（如
