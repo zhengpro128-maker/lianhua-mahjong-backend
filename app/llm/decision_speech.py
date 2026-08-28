@@ -119,6 +119,17 @@ def resolve_decision_speech(message: str, action: dict,
                     or bool(tile and tile != current_discard.get('tile')):
                 contradicts_current_discard = True
                 break
+    keep_terms = r'(?:留着|保留|留下|不打|当宝)'
+    generic_keep = bool(re.search(
+        rf'(?:这张|这牌|此牌).{{0,4}}{keep_terms}|{keep_terms}.{{0,4}}(?:这张|这牌|此牌)',
+        compact))
+    discarded_tile = facts.get('discardedTile')
+    named_keep = bool(discarded_tile and re.search(
+        rf'{re.escape(discarded_tile)}.{{0,4}}{keep_terms}|'
+        rf'{keep_terms}.{{0,4}}{re.escape(discarded_tile)}',
+        compact))
+    contradicts_discard_commitment = action.get('kind') == 'discard' \
+        and (generic_keep or named_keep)
     self_speech = PUBLIC_ACTION_RE.sub('', compact)
     claimed_kong_kind = 'concealed-kong' if re.search(r'暗杠', self_speech) else \
         'added-kong' if re.search(r'补杠', self_speech) else \
@@ -135,6 +146,7 @@ def resolve_decision_speech(message: str, action: dict,
             'gang', 'added-kong', 'concealed-kong', 'wind-kong'))
     kong_subtype_matches = claimed_kong_kind is None or actual_kind == claimed_kong_kind
     if compact and not contradicts_dealer and not contradicts_public_action \
-            and not contradicts_current_discard and action_matches and kong_subtype_matches:
+            and not contradicts_current_discard and not contradicts_discard_commitment \
+            and action_matches and kong_subtype_matches:
         return compact
     return decision_speech(action, style, sequence)

@@ -163,7 +163,7 @@ class LLMPlayer(AIPlayer):
         # 缺失或含幕后词时才回退当前程序台词。
         speech = resolve_decision_speech(
             message, candidate['action'], self.config.style, self.stats['messages'],
-            self._speech_facts(request['state']))
+            self._speech_facts(request['state'], candidate['action']))
         self.stats['messages'] += 1
         self.message_history.append(speech)
         if self.on_message is not None:
@@ -177,7 +177,7 @@ class LLMPlayer(AIPlayer):
         return self._map_action(candidate['action'])
 
     @staticmethod
-    def _speech_facts(state: dict) -> dict:
+    def _speech_facts(state: dict, action: dict) -> dict:
         snapshots = state.get('snapshots') or {}
 
         def meld_types(name: str) -> list[str]:
@@ -195,6 +195,8 @@ class LLMPlayer(AIPlayer):
             'currentDiscard': {
                 'from': claim_from, 'tile': claim_tile,
             } if claim_tile and claim_from else None,
+            'discardedTile': state['hand'][action['handIndex']]
+            if action.get('kind') == 'discard' else None,
         }
 
     def _map_action(self, action: dict) -> dict:

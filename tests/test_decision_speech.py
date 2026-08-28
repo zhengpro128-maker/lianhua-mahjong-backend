@@ -35,16 +35,17 @@ def test_reasoning_status_has_multiple_short_lines_per_style():
     assert reasoning_status_speech('稳健', 3) == '让我想想怎么打。'
 
 
-def test_bluff_and_steady_reduplication_are_kept_but_backstage_terms_fallback():
+def test_vague_bluff_is_kept_but_explicitly_keeping_discard_and_backstage_terms_fallback():
     action = {'kind': 'discard', 'handIndex': 0}
-    assert resolve_decision_speech('这张留着。', action, '稳健') == '这张留着。'
+    assert resolve_decision_speech('这张留着。', action, '稳健') == '这张先走。'
+    assert resolve_decision_speech('今天手气不错。', action, '稳健') == '今天手气不错。'
     assert resolve_decision_speech('稳稳出牌。', action, '稳健') == '稳稳出牌。'
     assert resolve_decision_speech('按候选A1来。', action, '话痨') == '先把这张放出去。'
 
 
 def test_strategy_bluff_is_allowed_but_public_dealer_identity_must_be_true():
     action = {'kind': 'discard', 'handIndex': 0}
-    assert resolve_decision_speech('这张留着。', action, '激进', facts={'isDealer': False}) == '这张留着。'
+    assert resolve_decision_speech('今天手气不错。', action, '激进', facts={'isDealer': False}) == '今天手气不错。'
     assert resolve_decision_speech('我就是庄家！', action, '激进', facts={'isDealer': False}) == '这张不要了。'
     assert resolve_decision_speech('庄家就是我！', action, '激进', facts={'isDealer': True}) == '庄家就是我！'
     assert resolve_decision_speech('我不是庄家。', action, '稳健', facts={'isDealer': True}) == '这张先走。'
@@ -66,6 +67,17 @@ def test_specific_kong_subtype_must_match_but_generic_kong_is_allowed():
     assert resolve_decision_speech('暗杠！', concealed, '稳健') == '暗杠！'
 
 
+def test_named_discard_cannot_be_called_kept_reserved_or_treasure():
+    discard = {'kind': 'discard', 'handIndex': 0}
+    facts = {'discardedTile': '发财'}
+    assert resolve_decision_speech(
+        '发财留着当宝，先走它！', discard, '稳健', facts=facts) == '这张先走。'
+    assert resolve_decision_speech(
+        '保留发财。', discard, '稳健', facts=facts) == '这张先走。'
+    assert resolve_decision_speech(
+        '发财有点意思。', discard, '稳健', facts=facts) == '发财有点意思。'
+
+
 def test_other_players_public_actions_and_current_discard_must_be_true():
     discard = {'kind': 'discard', 'handIndex': 0}
     facts = {
@@ -79,4 +91,4 @@ def test_other_players_public_actions_and_current_discard_must_be_true():
     assert resolve_decision_speech(
         '下家打出7万。', discard, '稳健', facts=facts) == '这张先走。'
     assert resolve_decision_speech(
-        '上家打出7万，这张留着。', discard, '稳健', facts=facts) == '上家打出7万，这张留着。'
+        '上家打出7万，这张留着。', discard, '稳健', facts=facts) == '这张先走。'

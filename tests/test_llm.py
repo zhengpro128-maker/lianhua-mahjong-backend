@@ -467,17 +467,28 @@ class TestLLMPlayer:
         assert player.message_history == ['稳一手。']
         assert messages == [(2, '稳一手。', 'normal')]
 
-    def test_contradictory_model_message_is_allowed_as_table_bluff(self, monkeypatch):
+    def test_vague_model_message_is_allowed_as_table_bluff(self, monkeypatch):
         messages = []
         player, _ = make_llm_player(
-            monkeypatch, ['{"choice":"A1","message":"这张留着。"}'],
+            monkeypatch, ['{"choice":"A1","message":"今天手气不错。"}'],
             seat=1,
             on_message=lambda seat, text, priority: messages.append((seat, text, priority)))
         ctx = turn_ctx(hand=['m3', 'm5', 'm6'])
         action = run(player.request_turn(ctx))
         assert action['kind'] == 'discard'
-        assert player.message_history == ['这张留着。']
-        assert messages == [(1, '这张留着。', 'normal')]
+        assert player.message_history == ['今天手气不错。']
+        assert messages == [(1, '今天手气不错。', 'normal')]
+
+    def test_named_discard_keep_message_falls_back(self, monkeypatch):
+        messages = []
+        player, _ = make_llm_player(
+            monkeypatch, ['{"choice":"A1","message":"3万留着当宝，先走它！"}'],
+            seat=1,
+            on_message=lambda seat, text, priority: messages.append((seat, text, priority)))
+        action = run(player.request_turn(turn_ctx(hand=['m3', 'm5', 'm6'])))
+        assert action['kind'] == 'discard'
+        assert player.message_history == ['这张先走。']
+        assert messages == [(1, '这张先走。', 'normal')]
 
     def test_false_public_gang_message_falls_back_using_peer_meld_facts(self, monkeypatch):
         messages = []
