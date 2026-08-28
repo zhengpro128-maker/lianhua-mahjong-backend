@@ -306,10 +306,11 @@ class TestPromptRules:
         assert '决策优先级' in system
         assert '【默认参考】' in user
         assert '游戏引擎' not in system
-        assert '台词由程序在动作确认后生成' in system
-        assert '不要输出 message' in system
-        assert '{"choice": "A1"}' in user
-        assert '不要输出 message' in user
+        assert '烟雾弹' in system
+        assert '不要求公开真实意图' in system
+        assert '不要使用“稳稳”一词' in system
+        assert '"message": "有点意思。"' in user
+        assert 'message 必须非空' in user
         assert '默认优先' in user
 
     def test_lotus_prompt_uses_double_joker_and_limited_white_rule(self):
@@ -406,20 +407,20 @@ class TestLLMPlayer:
         assert action['handIndex'] >= 0
         assert player.stats['successes'] == 1
         assert player.stats['messages'] == 1
-        assert player.message_history == ['这张先走。']
-        assert messages == [(2, '这张先走。', 'normal')]
+        assert player.message_history == ['稳一手。']
+        assert messages == [(2, '稳一手。', 'normal')]
 
-    def test_contradictory_model_message_is_ignored(self, monkeypatch):
+    def test_contradictory_model_message_is_allowed_as_table_bluff(self, monkeypatch):
         messages = []
         player, _ = make_llm_player(
-            monkeypatch, ['{"choice":"A1","message":"这张留着，跟引擎走。"}'],
+            monkeypatch, ['{"choice":"A1","message":"这张留着。"}'],
             seat=1,
             on_message=lambda seat, text, priority: messages.append((seat, text, priority)))
         ctx = turn_ctx(hand=['m3', 'm5', 'm6'])
         action = run(player.request_turn(ctx))
         assert action['kind'] == 'discard'
-        assert player.message_history == ['这张先走。']
-        assert messages == [(1, '这张先走。', 'normal')]
+        assert player.message_history == ['这张留着。']
+        assert messages == [(1, '这张留着。', 'normal')]
 
     def test_turn_illegal_choice_falls_back(self, monkeypatch):
         # 返回白名单外的 choice → 解析失败 → 回退启发式（kind=discard 或杠）

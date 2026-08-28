@@ -16,7 +16,7 @@ from app.llm.candidates import build_request
 from app.llm.client import request_llm_decision
 from app.llm.config import LlmServerConfig, load_llm_config
 from app.llm.prompt import build_prompt
-from app.llm.decision_speech import decision_speech
+from app.llm.decision_speech import resolve_decision_speech
 from app.llm.validation import validate_action
 from app.rules.base import GameRuleSet
 
@@ -114,7 +114,7 @@ class LLMPlayer(AIPlayer):
         system, user = build_prompt(self.config.style, request)
         self.stats['requests'] += 1
         try:
-            choice, _message = await request_llm_decision(self.config, system, user, ids)
+            choice, message = await request_llm_decision(self.config, system, user, ids)
         except Exception:
             self.stats['fallbacks'] += 1
             return None
@@ -128,8 +128,10 @@ class LLMPlayer(AIPlayer):
             self.stats['fallbacks'] += 1
             return None
         self.stats['successes'] += 1
-        # 模型只决定 choice；台词按最终合法动作生成，杜绝“说留着却打出”等矛盾。
-        speech = decision_speech(candidate['action'], self.config.style, self.stats['messages'])
+        # choice 决定真实动作；message 可作牌桌闲聊/烟雾弹，不要求与动作一致。
+        # 缺失、含幕后词或稳健风格使用“稳稳”时才回退当前程序台词。
+        speech = resolve_decision_speech(
+            message, candidate['action'], self.config.style, self.stats['messages'])
         self.stats['messages'] += 1
         self.message_history.append(speech)
         if self.on_message is not None:

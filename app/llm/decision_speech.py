@@ -1,4 +1,6 @@
-"""动作合法性确认后生成性格化台词；不消费模型自由文本。"""
+"""牌桌自由台词清洗与动作兜底台词。"""
+
+from app.llm.speech_policy import compact_speech_text
 
 DECISION_SPEECH_LINES = {
     'discard': {
@@ -60,3 +62,12 @@ def decision_speech(action: dict, style: str, sequence: int = 0) -> str:
     styles = DECISION_SPEECH_LINES.get(kind, DECISION_SPEECH_LINES['discard'])
     variants = styles.get(style, styles['稳健'])
     return variants[abs(sequence) % len(variants)]
+
+
+def resolve_decision_speech(message: str, action: dict,
+                            style: str, sequence: int = 0) -> str:
+    """保留合规烟雾弹；缺失/幕后内容及稳健“稳稳”措辞回退程序台词。"""
+    compact = compact_speech_text(message)
+    if compact and not (style == '稳健' and '稳稳' in compact):
+        return compact
+    return decision_speech(action, style, sequence)
