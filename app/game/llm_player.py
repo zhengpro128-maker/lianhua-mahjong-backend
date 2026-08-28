@@ -129,7 +129,7 @@ class LLMPlayer(AIPlayer):
             return None
         self.stats['successes'] += 1
         # choice 决定真实动作；message 可作牌桌闲聊/烟雾弹，不要求与动作一致。
-        # 缺失、含幕后词或稳健风格使用“稳稳”时才回退当前程序台词。
+        # 缺失或含幕后词时才回退当前程序台词。
         speech = resolve_decision_speech(
             message, candidate['action'], self.config.style, self.stats['messages'])
         self.stats['messages'] += 1

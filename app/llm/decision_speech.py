@@ -66,8 +66,8 @@ def decision_speech(action: dict, style: str, sequence: int = 0) -> str:
 
 def resolve_decision_speech(message: str, action: dict,
                             style: str, sequence: int = 0) -> str:
-    """保留合规烟雾弹；缺失/幕后内容及稳健“稳稳”措辞回退程序台词。"""
+    """保留合规烟雾弹；仅缺失或幕后内容回退程序台词。"""
     compact = compact_speech_text(message)
-    if compact and not (style == '稳健' and '稳稳' in compact):
+    if compact:
         return compact
     return decision_speech(action, style, sequence)

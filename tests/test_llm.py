@@ -308,7 +308,7 @@ class TestPromptRules:
         assert '游戏引擎' not in system
         assert '烟雾弹' in system
         assert '不要求公开真实意图' in system
-        assert '不要使用“稳稳”一词' in system
+        assert '不要使用“稳稳”一词' not in system
         assert '"message": "有点意思。"' in user
         assert 'message 必须非空' in user
         assert '默认优先' in user

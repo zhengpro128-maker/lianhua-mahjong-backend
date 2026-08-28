@@ -26,8 +26,8 @@ def test_steady_style_never_uses_reduplicated_steady_wording():
         assert all('稳稳' not in line for line in styles['稳健'])
 
 
-def test_bluff_is_kept_but_steady_reduplication_and_backstage_terms_fallback():
+def test_bluff_and_steady_reduplication_are_kept_but_backstage_terms_fallback():
     action = {'kind': 'discard', 'handIndex': 0}
     assert resolve_decision_speech('这张留着。', action, '稳健') == '这张留着。'
-    assert resolve_decision_speech('稳稳出牌。', action, '稳健') == '这张先走。'
+    assert resolve_decision_speech('稳稳出牌。', action, '稳健') == '稳稳出牌。'
     assert resolve_decision_speech('按候选A1来。', action, '话痨') == '先把这张放出去。'
