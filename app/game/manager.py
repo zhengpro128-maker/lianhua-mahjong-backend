@@ -1137,12 +1137,14 @@ class GameManager:
                 tianhu=bool(options.get('tianhu')),
                 dihu=bool(options.get('dihu')),
                 win_tile=options.get('winTile'),
+                discarder_is_dealer=options.get('sourceFrom') == self.dealer,
             )
             settlement = self.settlements.calculate_lotus_win(
                 len(self.players), winner_index, score['baseFan'],
                 winner_index == self.dealer,
                 bool(options.get('selfDraw') or options.get('robbedKong') or options.get('kongBloom') or options.get('tianhu') or options.get('dihu')),
                 dealer_index=self.dealer,
+                discarder_index=options.get('sourceFrom'),
             )
             self.settlements.apply_deltas(self.players, settlement.deltas)
             win_type = (

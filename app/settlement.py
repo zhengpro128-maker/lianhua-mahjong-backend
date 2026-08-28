@@ -28,8 +28,9 @@ class SettlementService:
         winner_is_dealer: bool, self_draw_style: bool,
         payer_index: Optional[int] = None,
         dealer_index: Optional[int] = None,
+        discarder_index: Optional[int] = None,
     ) -> SettlementResult:
-        """莲花麻将收付表：点炮也由未胡三家按身份共同支付。"""
+        """莲花麻将收付表：未胡三家按身份支付，普通点炮者的那一笔翻倍。"""
         h = 100 * base_fan
         if not winner_is_dealer and not self_draw_style:
             dealer_pay, non_dealer_pay = 2 * h, h
@@ -42,12 +43,15 @@ class SettlementService:
         payers = [payer_index] if _is_integer(payer_index) else [
             index for index in range(player_count) if index != winner_index
         ]
+        def payment_for(payer: int) -> int:
+            base_payment = dealer_pay if payer == dealer_index else non_dealer_pay
+            return base_payment * 2 if not self_draw_style and payer == discarder_index else base_payment
+
         deltas = [{'playerIndex': winner_index,
-                   'amount': sum(dealer_pay if payer == dealer_index else non_dealer_pay
-                                 for payer in payers)}]
+                   'amount': sum(payment_for(payer) for payer in payers)}]
         deltas.extend(
             {'playerIndex': payer,
-             'amount': -(dealer_pay if payer == dealer_index else non_dealer_pay)}
+             'amount': -payment_for(payer)}
             for payer in payers
         )
         clean = tuple(delta for delta in deltas if delta['amount'])

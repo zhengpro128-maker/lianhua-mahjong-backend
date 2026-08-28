@@ -155,7 +155,8 @@ class LotusLegacyRuleSet:
                           *, dealer: bool = False, self_draw: bool = False,
                           robbed_kong: bool = False, kong_bloom: bool = False,
                           tianhu: bool = False, dihu: bool = False,
-                          win_tile: TileType | None = None) -> dict:
+                          win_tile: TileType | None = None,
+                          discarder_is_dealer: bool = False) -> dict:
         if tianhu or dihu:
             base_fan = 8
             patterns = [{'label': '天胡' if tianhu else '地胡', 'multiplier': 8}]
@@ -183,9 +184,12 @@ class LotusLegacyRuleSet:
             fan *= item.get('multiplier', 1)
         h = BASE_SCORE * base_fan
         if not dealer and not self_draw_style:
-            settlement = {'H': h, 'dealerPays': 2 * h, 'nonDealerPays': h, 'total': 4 * h}
+            settlement = {
+                'H': h, 'dealerPays': 2 * h, 'nonDealerPays': h,
+                'total': (6 if discarder_is_dealer else 5) * h,
+            }
         elif dealer and not self_draw_style:
-            settlement = {'H': h, 'dealerPays': 0, 'nonDealerPays': 2 * h, 'total': 4 * h}
+            settlement = {'H': h, 'dealerPays': 0, 'nonDealerPays': 2 * h, 'total': 8 * h}
         elif not dealer:
             settlement = {'H': h, 'dealerPays': 4 * h, 'nonDealerPays': 2 * h, 'total': 8 * h}
         else:

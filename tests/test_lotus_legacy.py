@@ -1,3 +1,5 @@
+import pytest
+
 from app.core.lotus_rules import (
     chi_options,
     evaluate_pattern,
@@ -80,18 +82,33 @@ def test_lotus_thirteen_orphans_rejects_non_terminal_pair():
     assert evaluate_pattern(terminals + ['m2'], 0, []) is None
 
 
-def test_lotus_chi_and_settlement():
+def test_lotus_chi():
     assert chi_options(['m4', 'm6'], 'm5') == [
         {'tile': 'm5', 'tiles': ['m4', 'm5', 'm6'], 'kind': 'sequence'}
     ]
+
+
+@pytest.mark.parametrize(
+    ('winner_index', 'self_draw_style', 'discarder_index', 'expected'),
+    [
+        (0, True, None, {0: 1200, 1: -400, 2: -400, 3: -400}),
+        (1, False, 0, {0: -400, 1: 600, 2: -100, 3: -100}),
+        (1, True, None, {0: -400, 1: 800, 2: -200, 3: -200}),
+        (0, False, 1, {0: 800, 1: -400, 2: -200, 3: -200}),
+        (2, False, 1, {0: -200, 1: -200, 2: 500, 3: -100}),
+    ],
+)
+def test_lotus_pinghu_settlement_five_cases(
+    winner_index, self_draw_style, discarder_index, expected,
+):
     result = settlement_service.calculate_lotus_win(
-        player_count=4, winner_index=1, base_fan=1,
-        winner_is_dealer=False, self_draw_style=False, dealer_index=0,
+        player_count=4, winner_index=winner_index, base_fan=1,
+        winner_is_dealer=winner_index == 0,
+        self_draw_style=self_draw_style, dealer_index=0,
+        discarder_index=discarder_index,
     )
-    assert result.total_won == 400
-    assert {item['playerIndex']: item['amount'] for item in result.deltas} == {
-        1: 400, 0: -200, 2: -100, 3: -100,
-    }
+    assert result.total_won == expected[winner_index]
+    assert {item['playerIndex']: item['amount'] for item in result.deltas} == expected
 
 
 def test_lotus_ruleset_score_has_base_and_display_fan():
@@ -101,7 +118,7 @@ def test_lotus_ruleset_score_has_base_and_display_fan():
             'p1', 'p2', 'p3', 's1', 's1']
     result = rules.score_legacy_hand(hand, 0, dealer=False, self_draw=False)
     assert result['baseFan'] == 1
-    assert result['settlement']['total'] == 400
+    assert result['settlement']['total'] == 500
 
 
 def test_lotus_discard_win_uses_the_physical_discard_tile():
@@ -122,6 +139,8 @@ def test_lotus_discard_win_uses_the_physical_discard_tile():
     assert manager.phase == 'settled'
     assert manager.players[0].discards == []
     assert manager.result['winnerIndex'] == 1
+    assert manager.result['totalWon'] == 600
+    assert [player.score for player in manager.players] == [1600, 2600, 1900, 1900]
     # 点炮胡：赢家手牌保持 13 张，和牌由 winTile 单独携带（不再追加进手牌）。
     assert len(manager.players[1].hand) == 13
     assert 'm3' not in manager.players[1].hand
