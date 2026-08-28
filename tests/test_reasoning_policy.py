@@ -36,6 +36,31 @@ def test_glm_5_3_flash_custom_proxy_uses_lowest_always_on_reasoning():
         'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low'}
 
 
+def test_kimi_k3_qualified_model_uses_fixed_sampling_parameters():
+    result = resolve_reasoning_policy(
+        'kimi', 'https://api.orcarouter.ai/v1', 'kimi/kimi-k3')
+    assert result.provider_type == 'kimi'
+    assert result.mode == 'always-on'
+    assert result.request_body == {'temperature': 1.0, 'top_p': 0.95}
+
+
+@pytest.mark.parametrize('model', ['kimi/kimi-k2.5', 'kimi/kimi-k2.6'])
+def test_kimi_k2_switchable_qualified_models_keep_non_reasoning_parameters(model):
+    result = resolve_reasoning_policy(
+        'kimi', 'https://api.orcarouter.ai/v1', model)
+    assert result.provider_type == 'kimi'
+    assert result.mode == 'explicit-off'
+    assert result.request_body == {
+        'thinking': {'type': 'disabled'}, 'temperature': 0.6, 'top_p': 0.95}
+
+
+def test_kimi_k2_base_alias_remains_naturally_non_reasoning():
+    result = resolve_reasoning_policy(
+        'kimi', 'https://proxy.example.com/v1', 'kimi/kimi-k2')
+    assert result.mode == 'naturally-off'
+    assert result.request_body == {}
+
+
 @pytest.mark.parametrize(('provider_type', 'model', 'expected'), [
     ('deepseek', 'deepseek-v4-flash', {
         'thinking': {'type': 'enabled'}, 'reasoning_effort': 'medium'}),

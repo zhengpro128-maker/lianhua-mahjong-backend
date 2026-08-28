@@ -68,6 +68,10 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
                 {'enable_thinking': False})
         return _policy(kind, 'unknown', '无法确认该千问型号是否支持非思考模式')
     if kind == 'kimi':
+        if re.match(r'^kimi-k3(?:[.-]|$)', name):
+            return _policy(kind, 'always-on', 'Kimi K3 自动思考，已使用模型固定采样参数', {
+                'temperature': 1.0, 'top_p': 0.95,
+            })
         if 'thinking' in name:
             return _policy(kind, 'reasoning-only', 'Kimi Thinking 型号无法关闭思考')
         if re.match(r'^kimi-k2[.-](?:5|6)(?:[.-]|$)', name):
