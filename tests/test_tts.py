@@ -328,7 +328,7 @@ async def test_local_tts_gateway_has_independent_cache_and_voice_allowlist(tmp_p
         assert gateway.cache.root == (tmp_path / 'local-cache').resolve()
         assert {
             'default', 'deepseek', 'qwen', 'kimi', 'gpt', 'relay_gpt',
-            'minimax', 'claude', 'glm', 'custom_voice',
+            'doubao', 'minimax', 'claude', 'glm', 'custom_voice',
         } <= gateway.allowed_voice_keys
         assert gateway.normalize_voice_key('CUSTOM-VOICE') == 'custom_voice'
         assert gateway.normalize_voice_key('../bad') is None

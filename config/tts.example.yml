@@ -28,7 +28,14 @@ local_gateway:
   allowed_voice_keys:
     - default
     - deepseek
+    - qwen
+    - kimi
+    - doubao
+    - minimax
+    - gpt
     - relay_gpt
+    - glm
+    - claude
 
 providers:
   volcengine:

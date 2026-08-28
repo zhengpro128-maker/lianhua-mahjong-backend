@@ -112,6 +112,7 @@ def _default_volcengine_voices() -> dict[str, VolcengineVoiceConfig]:
         'deepseek': voice,
         'qwen': voice,
         'kimi': voice,
+        'doubao': voice,
         'gpt': voice,
         'relay_gpt': voice,
         'minimax': voice,
