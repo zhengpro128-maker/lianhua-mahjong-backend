@@ -650,16 +650,16 @@ class TestProviderRegistry:
         cfg = deepseek_provider(style='狂暴', nickname='').to_config()
         assert cfg.style == '稳健'
         assert cfg.api_key == 'sk-server-ds'
-        assert cfg.timeout_s == 20.0
+        assert cfg.timeout_s == 40.0
         assert deepseek_provider(style='稳健').to_config(style_override='高冷').style == '高冷'
 
-    def test_qwen_thinking_model_uses_fast_default_timeout(self):
+    def test_qwen_uses_same_default_timeout_as_other_providers(self):
         from app.llm.config import LlmProvider, is_qwen_thinking_model
         provider = LlmProvider(
             'qwen', base_url='https://dashscope.aliyuncs.com/compatible-mode/v1',
             api_key='sk-qwen', model='qwen3.7-plus')
         assert is_qwen_thinking_model(provider.base_url, provider.model)
-        assert provider.to_config().timeout_s == 8.0
+        assert provider.to_config().timeout_s == 40.0
         provider.timeout_ms = 12_000
         assert provider.to_config().timeout_s == 12.0
 

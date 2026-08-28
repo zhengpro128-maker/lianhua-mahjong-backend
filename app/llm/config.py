@@ -25,8 +25,7 @@ CONCURRENCY_KEY = 'LLM_CONCURRENCY'
 MAX_PER_ROOM_KEY = 'LLM_MAX_REQUESTS_PER_ROOM'
 
 PROVIDER_PREFIX = 'LLM_PROVIDER_'
-LLM_DECISION_TIMEOUT_S = 20.0
-QWEN_DECISION_TIMEOUT_S = 8.0
+LLM_DECISION_TIMEOUT_S = 40.0
 
 
 def is_qwen_thinking_model(base_url: str, model: str) -> bool:
@@ -93,8 +92,7 @@ class LlmProvider:
     def to_config(self, style_override: Optional[str] = None) -> LlmServerConfig:
         """转单次调用配置；座位可覆盖策略，模型/Key 仍来自服务端注册表。"""
         global_cfg = load_llm_config()
-        timeout_s = min(global_cfg.timeout_s, QWEN_DECISION_TIMEOUT_S) \
-            if is_qwen_thinking_model(self.base_url, self.model) else global_cfg.timeout_s
+        timeout_s = global_cfg.timeout_s
         if self.timeout_ms:
             try:
                 timeout_s = float(self.timeout_ms) / 1000.0
@@ -123,7 +121,7 @@ def load_llm_config() -> LlmServerConfig:
         api_key=os.environ.get(API_KEY_KEY, '').strip(),
         model=os.environ.get(MODEL_KEY, '').strip(),
         style=os.environ.get(STYLE_KEY, '稳健').strip(),
-        timeout_s=float(os.environ.get(TIMEOUT_S_KEY, '20')),
+        timeout_s=float(os.environ.get(TIMEOUT_S_KEY, '40')),
         pool_timeout_s=float(os.environ.get(POOL_TIMEOUT_S_KEY, '1')),
         concurrency=max(1, int(os.environ.get(CONCURRENCY_KEY, '4'))),
         max_requests_per_room=max(0, int(os.environ.get(MAX_PER_ROOM_KEY, '0'))),
