@@ -131,7 +131,8 @@ class LLMPlayer(AIPlayer):
         # choice 决定真实动作；message 可作牌桌闲聊/烟雾弹，不要求与动作一致。
         # 缺失或含幕后词时才回退当前程序台词。
         speech = resolve_decision_speech(
-            message, candidate['action'], self.config.style, self.stats['messages'])
+            message, candidate['action'], self.config.style, self.stats['messages'],
+            {'isDealer': bool(request['state'].get('isDealer'))})
         self.stats['messages'] += 1
         self.message_history.append(speech)
         if self.on_message is not None:

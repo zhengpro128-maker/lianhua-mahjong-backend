@@ -43,6 +43,7 @@ def turn_ctx(hand=None, melds=None, exposed_melds=0, skip_draw=False, **override
         kongBloom=False,
         skipDraw=skip_draw,
         afterKong=False,
+        playerIndex=0,
         visibleTiles=[],
         publicTiles=[],
         wallCount=60,
@@ -67,6 +68,7 @@ def claim_ctx(hand=None, tile='m3', can_peng=True, can_gang=False, chi_options=N
         tile=tile,
         from_=1,
         exposedMelds=0,
+        playerIndex=0,
         visibleTiles=[],
         publicTiles=[],
         wallCount=60,
@@ -308,10 +310,24 @@ class TestPromptRules:
         assert '游戏引擎' not in system
         assert '烟雾弹' in system
         assert '不要求公开真实意图' in system
+        assert '公开事实必须如实' in system
+        assert '你是庄家' in user
         assert '不要使用“稳稳”一词' not in system
         assert '"message": "有点意思。"' in user
         assert 'message 必须非空' in user
         assert '默认优先' in user
+
+    def test_non_dealer_is_told_identity_without_guessing_absolute_seat(self):
+        ctx = turn_ctx()
+        ctx.playerIndex = 2
+        ctx.dealerIndex = 0
+        ctx.seatWind = '西'
+        built = build_request(ctx, get_rule_set(), 'r1', 'v1', 'turn')
+        _, user = build_prompt('激进', built['request'])
+        assert built['request']['state']['dealerIndex'] == 0
+        assert built['request']['state']['isDealer'] is False
+        assert '你是「西」家｜你不是庄家' in user
+        assert '庄家座位「0」' not in user
 
     def test_lotus_prompt_uses_double_joker_and_limited_white_rule(self):
         rules = get_rule_set('lotus-legacy')

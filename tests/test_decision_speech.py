@@ -31,3 +31,11 @@ def test_bluff_and_steady_reduplication_are_kept_but_backstage_terms_fallback():
     assert resolve_decision_speech('这张留着。', action, '稳健') == '这张留着。'
     assert resolve_decision_speech('稳稳出牌。', action, '稳健') == '稳稳出牌。'
     assert resolve_decision_speech('按候选A1来。', action, '话痨') == '先把这张放出去。'
+
+
+def test_strategy_bluff_is_allowed_but_public_dealer_identity_must_be_true():
+    action = {'kind': 'discard', 'handIndex': 0}
+    assert resolve_decision_speech('这张留着。', action, '激进', facts={'isDealer': False}) == '这张留着。'
+    assert resolve_decision_speech('我就是庄家！', action, '激进', facts={'isDealer': False}) == '这张不要了。'
+    assert resolve_decision_speech('庄家就是我！', action, '激进', facts={'isDealer': True}) == '庄家就是我！'
+    assert resolve_decision_speech('我不是庄家。', action, '稳健', facts={'isDealer': True}) == '这张先走。'

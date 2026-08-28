@@ -1,5 +1,7 @@
 """牌桌自由台词清洗与动作兜底台词。"""
 
+import re
+
 from app.llm.speech_policy import compact_speech_text
 
 DECISION_SPEECH_LINES = {
@@ -65,9 +67,18 @@ def decision_speech(action: dict, style: str, sequence: int = 0) -> str:
 
 
 def resolve_decision_speech(message: str, action: dict,
-                            style: str, sequence: int = 0) -> str:
+                            style: str, sequence: int = 0,
+                            facts: dict | None = None) -> str:
     """保留合规烟雾弹；仅缺失或幕后内容回退程序台词。"""
     compact = compact_speech_text(message)
-    if compact:
+    facts = facts or {}
+    denies_dealer = bool(re.search(r'我(?:可|并)?不是庄家|我非庄家|我不坐庄', compact))
+    claims_dealer = bool(re.search(
+        r'本庄|庄家(?:是|就是)我|我(?:可是|就是|是|当|来当|在当|要当|坐|来坐|在坐)庄家?|这把我坐庄|我是东家',
+        compact))
+    is_dealer = facts.get('isDealer')
+    contradicts_dealer = (is_dealer is False and claims_dealer and not denies_dealer) \
+        or (is_dealer is True and denies_dealer)
+    if compact and not contradicts_dealer:
         return compact
     return decision_speech(action, style, sequence)

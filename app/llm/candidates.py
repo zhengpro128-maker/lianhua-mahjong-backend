@@ -475,6 +475,8 @@ def _snapshot(ctx, request_id: str, state_version: str, rules: GameRuleSet,
 
     jokers = _joker_tiles(ctx, rules)
     wall_count = int(_g(ctx, 'wallCount') or 0)
+    raw_dealer_index = _g(ctx, 'dealerIndex')
+    dealer_index = int(raw_dealer_index) if raw_dealer_index is not None else -1
     own_melds = list(_g(ctx, 'melds') or [])
     return {
         'schemaVersion': 1, 'requestId': request_id, 'stateVersion': state_version,
@@ -492,7 +494,8 @@ def _snapshot(ctx, request_id: str, state_version: str, rules: GameRuleSet,
         'scores': list(_g(ctx, 'scores') or []),
         'seatWind': _g(ctx, 'seatWind') or '',
         'roundWind': _g(ctx, 'roundWind') or '',
-        'dealerIndex': int(_g(ctx, 'dealerIndex') or -1),
+        'dealerIndex': dealer_index,
+        'isDealer': dealer_index >= 0 and player_index == dealer_index,
         'roundIndex': int(_g(ctx, 'roundIndex') or 0),
         'dihu': bool(_g(ctx, 'dihu')),
     }

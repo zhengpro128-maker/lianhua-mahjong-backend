@@ -29,6 +29,7 @@ def build_prompt(style: str, request: dict) -> tuple[str, str]:
         '每次都提供一句非空且 ≤16 字的牌桌台词。\n'
         f'{_STYLE_SPEECH_GUIDE.get(style, _STYLE_SPEECH_GUIDE["稳健"])}\n'
         'message 可以是情绪、闲聊、吹嘘或烟雾弹，不要求解释 choice，也不要求公开真实意图。\n'
+        '烟雾弹只能针对牌路和意图；是否庄家、门风、场风等公开事实必须如实。\n'
         'message 严禁提及或复述决策机制、内部标识及幕后说明。\n'
         '候选动作均已按当前玩法校验合法；当前玩法的规则摘要和候选特征是唯一权威事实。\n'
         '决策优先级：硬规则与风险警告 > 保持听牌 > 特殊牌型听牌与有效剩余 > 默认参考 > 安全度与简化牌效。\n'
@@ -49,10 +50,11 @@ def build_prompt(style: str, request: dict) -> tuple[str, str]:
 
     rule_summary = _RULE_SUMMARIES.get(state['ruleCode'], _RULE_SUMMARIES['lotus-classic'])
     decision_name = '摸牌后出牌' if state['decision'] == 'turn' else '他家弃牌响应'
+    dealer_status = '你是庄家' if state.get('isDealer') else '你不是庄家'
     lines = []
     lines.append(
         f'【局况】「{rule_summary}」｜第「{state["roundIndex"]}」局｜你是「{state["seatWind"]}」家'
-        f'（庄家座位「{state["dealerIndex"]}」）｜{decision_name}｜剩牌「{state["wallCount"]}」张'
+        f'｜{dealer_status}｜{decision_name}｜剩牌「{state["wallCount"]}」张'
         f'｜分数「{"/".join(str(s) for s in state["scores"])}」')
     lines.append(f'【你的牌】「{" ".join(state["hand"])}」')
     lines.append(f'【你的副露】「{meld_text(state["melds"])}」')
