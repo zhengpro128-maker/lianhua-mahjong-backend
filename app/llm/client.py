@@ -230,6 +230,8 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     model_name = (cfg.model or '').strip().lower().rsplit('/', 1)[-1]
     kimi_k3 = reasoning_policy.provider_type == 'kimi' \
         and re.match(r'^kimi-k3(?:[.-]|$)', model_name)
+    kimi_k2_switchable = reasoning_policy.provider_type == 'kimi' \
+        and re.match(r'^kimi-k2[.-](?:5|6)(?:[.-]|$)', model_name)
     glm_5_3_flash = reasoning_policy.provider_type == 'glm' \
         and re.match(r'^glm-5\.3-flash(?:[.-]|$)', model_name)
     dialect = infer_provider_dialect(cfg.base_url)
@@ -240,7 +242,10 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     if kimi_k3:
         payload.pop('temperature', None)
         payload.pop('top_p', None)
-    if glm_5_3_flash:
+    relay_kimi_thinking = reasoning and kimi_k2_switchable and dialect != 'official'
+    if relay_kimi_thinking:
+        max_tokens = max(max_tokens, 2048)
+    elif glm_5_3_flash:
         max_tokens = max(max_tokens, 1024 if reasoning else 128 if dialect == 'official' else 512)
     elif not reasoning and kimi_k3:
         max_tokens = max(max_tokens, 128)
@@ -251,7 +256,7 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         payload['max_completion_tokens'] = max_tokens
     else:
         payload['max_tokens'] = max_tokens
-    if reasoning_policy.provider_type == 'qwen' or glm_5_3_flash:
+    if reasoning_policy.provider_type == 'qwen' or glm_5_3_flash or relay_kimi_thinking:
         payload['response_format'] = {'type': 'json_object'}
     client = get_llm_client()
     request_started = time.monotonic()

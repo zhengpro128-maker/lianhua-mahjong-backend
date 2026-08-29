@@ -825,6 +825,64 @@ class TestProviderRegistry:
         assert captured['top_p'] == 0.95
         run(http.aclose())
 
+    @pytest.mark.parametrize('model', ['kimi-k2.5', 'kimi-k2.6'])
+    def test_kimi_custom_relay_thinking_uses_2048_and_json_object(
+            self, monkeypatch, model):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                    'finish_reason': 'stop',
+                }],
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://relay.example.com/v1', api_key='sk-kimi',
+            model=model, provider_type='custom')
+        assert run(request_llm_decision(
+            cfg, 'system', 'user', ['A1'], reasoning=True)) == ('A1', '稳住')
+        assert captured['max_tokens'] == 2048
+        assert captured['thinking'] == {'type': 'enabled'}
+        assert captured['temperature'] == 1.0
+        assert captured['top_p'] == 0.95
+        assert captured['response_format'] == {'type': 'json_object'}
+        run(http.aclose())
+
+    def test_kimi_official_thinking_keeps_512_without_relay_json_override(
+            self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                    'finish_reason': 'stop',
+                }],
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://api.moonshot.cn/v1', api_key='sk-kimi',
+            model='kimi-k2.6', provider_type='kimi')
+        assert run(request_llm_decision(
+            cfg, 'system', 'user', ['A1'], reasoning=True)) == ('A1', '稳住')
+        assert captured['max_tokens'] == 512
+        assert 'response_format' not in captured
+        run(http.aclose())
+
     def test_glm_5_3_flash_custom_proxy_uses_low_512_json_on_quick_path(
             self, monkeypatch):
         from app.llm.client import request_llm_decision
