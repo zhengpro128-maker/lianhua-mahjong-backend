@@ -1,6 +1,8 @@
 import pytest
 
-from app.llm.reasoning import infer_provider_type, resolve_reasoning_policy
+from app.llm.reasoning import (
+    infer_provider_dialect, infer_provider_type, resolve_reasoning_policy,
+)
 
 
 @pytest.mark.parametrize(('provider_type', 'model', 'expected'), [
@@ -27,29 +29,33 @@ def test_reasoning_only_models_are_identified_without_request_precheck(provider_
     assert result.mode == 'reasoning-only'
 
 
-def test_glm_5_3_flash_custom_proxy_uses_capped_low_and_enables_medium_reasoning():
-    result = resolve_reasoning_policy(
-        'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash')
-    assert result.provider_type == 'glm'
-    assert result.mode == 'explicit-off'
-    assert result.accept_reasoning_response
-    assert result.request_body == {'reasoning_effort': 'low'}
-    assert resolve_reasoning_policy(
-        'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash',
-        reasoning=True).request_body == {
-            'reasoning_effort': 'medium'}
+def test_glm_5_3_flash_uses_official_and_orcarouter_dialects():
+    official = resolve_reasoning_policy(
+        'glm', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flash', reasoning=True)
+    orca = resolve_reasoning_policy(
+        'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash', reasoning=True)
+    relay = resolve_reasoning_policy(
+        'custom', 'https://proxy.example.com/v1', 'z-ai/glm-5.3-flash', reasoning=True)
+    assert official.mode == orca.mode == relay.mode == 'always-on'
+    assert official.request_body == {'reasoning_effort': 'low'}
+    assert orca.request_body == {'reasoning_effort': 'medium'}
+    assert relay.request_body == {'reasoning_effort': 'low'}
 
 
-def test_full_glm_5_3_remains_always_on():
-    quick = resolve_reasoning_policy(
-        'glm', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3')
-    deep = resolve_reasoning_policy(
+def test_full_glm_5_3_official_uses_high_and_orcarouter_uses_medium():
+    official = resolve_reasoning_policy(
+        'glm', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', reasoning=True)
+    orca = resolve_reasoning_policy(
         'glm', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3', reasoning=True)
-    assert quick.mode == 'always-on'
-    assert quick.request_body == {
-        'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low'}
-    assert deep.request_body == {
-        'thinking': {'type': 'enabled'}, 'reasoning_effort': 'medium'}
+    assert official.mode == orca.mode == 'always-on'
+    assert official.request_body == {'reasoning_effort': 'high'}
+    assert orca.request_body == {'reasoning_effort': 'medium'}
+
+
+def test_provider_dialect_inference():
+    assert infer_provider_dialect('https://open.bigmodel.cn/api/paas/v4') == 'official'
+    assert infer_provider_dialect('https://api.orcarouter.ai/v1') == 'orcarouter'
+    assert infer_provider_dialect('https://proxy.example.com/v1') == 'compatible'
 
 
 def test_kimi_k3_qualified_model_uses_effort_without_sampling_parameters():

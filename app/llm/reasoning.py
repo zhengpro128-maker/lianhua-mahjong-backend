@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 PROVIDER_TYPES = (
     'deepseek', 'qwen', 'kimi', 'doubao', 'minimax', 'openai', 'glm', 'claude', 'custom',
@@ -37,6 +38,19 @@ def infer_provider_type(base_url: str, model: str, provider_id: str = '') -> str
     return 'custom'
 
 
+def infer_provider_dialect(base_url: str) -> str:
+    """官方、OrcaRouter 与未知兼容中转必须使用各自参数方言。"""
+    host = (urlparse(base_url).hostname or '').lower()
+    if host == 'api.orcarouter.ai':
+        return 'orcarouter'
+    if re.match(
+            r'^(?:api\.deepseek\.com|dashscope\.aliyuncs\.com|api\.moonshot\.(?:cn|ai)|'
+            r'ark\.[^.]+\.volces\.com|api\.minimax\.(?:chat|io)|api\.openai\.com|'
+            r'open\.bigmodel\.cn|api\.z\.ai|api\.anthropic\.com)$', host):
+        return 'official'
+    return 'compatible'
+
+
 def _policy(provider_type: str, mode: str, message: str,
             request_body: dict | None = None,
             accept_reasoning_response: bool = False) -> ReasoningPolicy:
@@ -51,6 +65,7 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
         else provider_type
     qualified_name = (model or '').strip().lower()
     name = qualified_name.rsplit('/', 1)[-1]
+    dialect = infer_provider_dialect(base_url)
 
     if kind == 'deepseek':
         if re.search(r'reasoner|(^|[-_.])r1(?:[-_.]|$)', name):
@@ -116,16 +131,16 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
         if 'thinking' in name:
             return _policy(kind, 'reasoning-only', '显式 Thinking 型号不用于实时麻将决策')
         if re.match(r'^glm-5\.3-flash(?:[.-]|$)', name):
-            return _policy(kind, 'explicit-on', '已开启 GLM-5.3-Flash 条件思考', {
-                'reasoning_effort': 'medium',
-            }) if reasoning else _policy(
-                kind, 'explicit-off', 'GLM-5.3-Flash 使用快速低强度', {
-                    'reasoning_effort': 'low',
-                }, accept_reasoning_response=True)
+            effort = 'medium' if reasoning and dialect == 'orcarouter' else 'low'
+            message = 'GLM-5.3-Flash 官方接口始终思考' \
+                if dialect == 'official' else 'GLM-5.3-Flash 始终思考'
+            return _policy(kind, 'always-on', message, {'reasoning_effort': effort})
         if re.match(r'^glm-5\.3(?:[.-]|$)', name):
+            effort = ('high' if dialect == 'official' else
+                      'medium' if dialect == 'orcarouter' else 'low') \
+                if reasoning else 'low'
             return _policy(kind, 'always-on', 'GLM-5.3 始终思考', {
-                'thinking': {'type': 'enabled'},
-                'reasoning_effort': 'medium' if reasoning else 'low',
+                'reasoning_effort': effort,
             })
         if re.match(r'^glm-(?:4\.(?:5|6|7)|5)(?:[.-]|$)', name):
             return _policy(kind, 'explicit-off', '已强制关闭 GLM 思考模式',

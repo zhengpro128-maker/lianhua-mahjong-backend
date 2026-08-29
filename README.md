@@ -272,7 +272,7 @@ LLM_PROVIDER_GLM_ORCA_TYPE=glm
   `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
   Base / Key / Model。
 - 所有供应商的游戏决策默认最多等待 40 秒；可通过全局 `LLM_TIMEOUT_ENABLED=false` 或提供商 `_TIMEOUT_ENABLED=false` 关闭服务端截止时间。快速路径自动关闭思考，困难局面可条件开启（每个AI座位每小局 2 次、全桌整场 24 次）；开局不因候选接近或审计抽样升级思考，超时回退启发式；
-  Kimi K3 与完整 GLM-5.3 始终思考；Kimi K3 普通使用 `low/128` 且不发送 `temperature/top_p`，疑难升级 `high/512`；完整 GLM-5.3 普通 low、疑难 medium；GLM-5.3-Flash 在 OrcaRouter 普通使用 `low/512`，疑难使用 `medium/1024`，并启用 JSON Object（OrcaRouter 不接受 `none`）；Kimi K2.5/K2.6 普通关闭、疑难开启；Claude Sonnet 5 普通显式关闭 adaptive thinking、疑难使用 medium；
+  官方 API、OrcaRouter 和未知自定义中转使用独立参数方言。Kimi K3 普通 `low/128`、疑难 `high/512`；GLM-5.3-Flash 始终思考，官方接口普通/疑难均使用其允许的 low（预算 512/1024），OrcaRouter 普通 `low/512`、疑难 `medium/1024`，两者均启用 JSON Object；完整 GLM-5.3 官方疑难使用 high，OrcaRouter 使用 medium；
   后端统一请求 `stream:true` 并解析 SSE。普通 always-on low 不先播“让我想想怎么打”等台词/TTS，但收到推理块后仍通过 `llm_status` 广播安全进度气泡；原始 `reasoning_content` 永不广播、记录或送入 TTS；
   百炼 `qwen3.5`～`qwen3.8` 自动设置 `enable_thinking=false` 并请求 JSON Object，
   未显式配置 `TIMEOUT_MS` 时使用统一 40 秒决策预算；
