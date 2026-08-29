@@ -1375,6 +1375,9 @@ class TestPerSeatAssembly:
             'app.game.room.get_tts_service',
             lambda: SimpleNamespace(available=False),
         )
+        async def fallback_reaction(_controller, _reaction_type, fallback, _variation_index):
+            return fallback
+        monkeypatch.setattr(room, '_generate_llm_round_reaction', fallback_reaction)
 
         WSEvents(room).show_table_action(action_type, 1, 0, 'm1', -1)
 
@@ -1417,7 +1420,11 @@ class TestPerSeatAssembly:
         async def fake_emit(seat, text, _controller):
             spoken.append((seat, text))
 
+        async def fallback_reaction(_controller, _reaction_type, fallback, _variation_index):
+            return fallback
+
         monkeypatch.setattr(room, '_emit_llm_round_reaction', fake_emit)
+        monkeypatch.setattr(room, '_generate_llm_round_reaction', fallback_reaction)
         run(room._announce_llm_round_reactions({'winnerIndex': 2}))
         assert [seat for seat, _ in spoken] == [2, 3, 1]
         assert spoken[0][1].startswith('自摸')
@@ -1434,6 +1441,40 @@ class TestPerSeatAssembly:
         run(room._announce_llm_round_reactions({'winnerIndex': 0}))
         assert [seat for seat, _ in spoken] == [1, 2, 3]
         assert all('自摸' not in text for _, text in spoken)
+
+    def test_round_reaction_uses_fast_model_then_falls_back_safely(self, monkeypatch):
+        from app.game.room import RoomSession
+
+        room = RoomSession('NATURALREACTION', mode='east', capacity=4, llm_enabled=True)
+        controller = LLMPlayer(
+            config=deepseek_provider(style='高冷').to_config(),
+            seat=1, provider_id='deepseek',
+        )
+        captured = []
+
+        async def generated(cfg, system, user, candidate_ids, **options):
+            captured.append((cfg, system, user, candidate_ids, options))
+            return 'R', '下局，拿回来。'
+
+        monkeypatch.setattr('app.game.room.request_llm_decision', generated)
+        text = run(room._generate_llm_round_reaction(
+            controller, 'loss', '这局输了，仅此而已。', 1))
+        assert text == '下局，拿回来。'
+        cfg, system, user, candidate_ids, options = captured[0]
+        assert cfg.timeout_s == 5.0
+        assert cfg.timeout_enabled is True
+        assert candidate_ids == ['R']
+        assert options['reasoning'] is False
+        assert '你输了本局' in user
+        assert all(term not in user for term in ('手牌', '听口', '牌河', '副露'))
+        assert '严格 JSON' in system
+
+        async def failed(*_args, **_kwargs):
+            raise RuntimeError('timeout')
+
+        monkeypatch.setattr('app.game.room.request_llm_decision', failed)
+        assert run(room._generate_llm_round_reaction(
+            controller, 'loss', '这局输了，仅此而已。', 1)) is None
 
     def test_settled_snapshot_is_hidden_until_round_reactions_finish(self):
         from app.game.manager import GameManager
