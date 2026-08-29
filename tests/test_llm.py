@@ -819,7 +819,7 @@ class TestProviderRegistry:
         assert captured['top_p'] == 0.95
         run(http.aclose())
 
-    def test_glm_5_3_flash_custom_proxy_uses_low_128_on_quick_path(
+    def test_glm_5_3_flash_custom_proxy_uses_low_512_json_on_quick_path(
             self, monkeypatch):
         from app.llm.client import request_llm_decision
         from app.llm.config import LlmServerConfig
@@ -846,9 +846,60 @@ class TestProviderRegistry:
             model='z-ai/glm-5.3-flash', provider_id='glm-orca', provider_type='custom')
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
         assert captured['model'] == 'z-ai/glm-5.3-flash'
-        assert captured['max_tokens'] == 128
+        assert captured['max_tokens'] == 512
         assert captured['reasoning_effort'] == 'low'
+        assert captured['response_format'] == {'type': 'json_object'}
         assert 'thinking' not in captured
+        run(http.aclose())
+
+    def test_glm_5_3_flash_deep_path_uses_medium_1024(self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                    'finish_reason': 'stop',
+                }],
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://api.orcarouter.ai/v1', api_key='sk-glm',
+            model='z-ai/glm-5.3-flash', provider_type='custom')
+        assert run(request_llm_decision(
+            cfg, 'system', 'user', ['A1'], reasoning=True)) == ('A1', '稳住')
+        assert captured['max_tokens'] == 1024
+        assert captured['reasoning_effort'] == 'medium'
+        assert captured['response_format'] == {'type': 'json_object'}
+        run(http.aclose())
+
+    def test_length_response_does_not_retry_with_wrong_choice_feedback(self, monkeypatch):
+        from app.llm.client import LlmClientError, request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        calls = 0
+
+        async def handler(_request: httpx.Request):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json={
+                'choices': [{'message': {'content': ''}, 'finish_reason': 'length'}],
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://proxy.example.com/v1', api_key='sk', model='test')
+        with pytest.raises(LlmClientError) as exc:
+            run(request_llm_decision(cfg, 'system', 'user', ['A1']))
+        assert exc.value.kind == LlmClientError.KIND_LENGTH
+        assert calls == 1
         run(http.aclose())
 
     def test_kimi_k3_quick_uses_low_128_without_sampling_parameters(self, monkeypatch):

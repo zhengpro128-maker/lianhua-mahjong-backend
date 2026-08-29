@@ -23,6 +23,7 @@ class LlmClientError(Exception):
     KIND_NETWORK = 'network'
     KIND_PARSE = 'parse'
     KIND_REASONING = 'reasoning'
+    KIND_LENGTH = 'length'
 
     def __init__(self, kind: str, message: str):
         super().__init__(message)
@@ -238,7 +239,9 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     if kimi_k3:
         payload.pop('temperature', None)
         payload.pop('top_p', None)
-    if not reasoning and (kimi_k3 or glm_5_3_flash):
+    if glm_5_3_flash:
+        max_tokens = max(max_tokens, 1024 if reasoning else 512)
+    elif not reasoning and kimi_k3:
         max_tokens = max(max_tokens, 128)
     elif always_thinking:
         max_tokens = max(max_tokens, 512)
@@ -247,7 +250,7 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         payload['max_completion_tokens'] = max_tokens
     else:
         payload['max_tokens'] = max_tokens
-    if reasoning_policy.provider_type == 'qwen':
+    if reasoning_policy.provider_type == 'qwen' or glm_5_3_flash:
         payload['response_format'] = {'type': 'json_object'}
     client = get_llm_client()
     request_started = time.monotonic()
@@ -311,10 +314,10 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
             f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
             f'attempt={attempt_no} elapsed={elapsed_ms}ms kind=network')
         raise LlmClientError(LlmClientError.KIND_NETWORK, f'网络错误: {exc}') from exc
+    if finish_reason == 'length' and strict_length:
+        raise LlmClientError(LlmClientError.KIND_LENGTH, 'finish_reason=length（输出被截断）')
     if not isinstance(message, str) or not message:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
-    if finish_reason == 'length' and strict_length:
-        raise LlmClientError(LlmClientError.KIND_PARSE, 'finish_reason=length（输出被截断）')
     details = usage.get('completion_tokens_details') \
         if isinstance(usage.get('completion_tokens_details'), dict) else {}
     reasoning_tokens = details.get('reasoning_tokens')
