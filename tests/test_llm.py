@@ -413,6 +413,7 @@ class FakeClient:
 
 
 def make_llm_player(monkeypatch, responses, *, seat=-1, provider_id='', on_message=None,
+                    on_fallback=None,
                     **cfg_overrides):
     cfg = dict(
         enabled=True, base_url='https://api.deepseek.com/v1', api_key='sk-x',
@@ -437,6 +438,7 @@ def make_llm_player(monkeypatch, responses, *, seat=-1, provider_id='', on_messa
         seat=seat,
         provider_id=provider_id,
         on_message=on_message,
+        on_fallback=on_fallback,
     )
     return player, fake
 
@@ -565,11 +567,15 @@ class TestLLMPlayer:
         assert player.stats['fallbacks'] >= 1
 
     def test_network_error_falls_back(self, monkeypatch):
-        player, fake = make_llm_player(monkeypatch, [Exception('boom')])
+        fallbacks = []
+        player, fake = make_llm_player(
+            monkeypatch, [Exception('boom')], seat=1,
+            on_fallback=lambda *args: fallbacks.append(args))
         ctx = turn_ctx(hand=['m3', 'm5', 'm6'])
         action = run(player.request_turn(ctx))
         assert action['kind'] == 'discard'
         assert player.stats['fallbacks'] >= 1
+        assert fallbacks == [(1, 'turn', 'discard', 'normal')]
 
     def test_claim_hu_short_circuit(self, monkeypatch):
         player, fake = make_llm_player(monkeypatch, [])
@@ -1088,6 +1094,48 @@ class TestProviderRegistry:
 
 
 class TestPerSeatAssembly:
+    def test_room_fallback_question_mark_obeys_frequency_without_tts(self, monkeypatch):
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+
+        emitted = []
+        room = RoomSession('FALLBACK', mode='east', capacity=4, llm_enabled=True)
+        monkeypatch.setattr(room.conn, 'broadcast', lambda message: emitted.append(message))
+        controller = LLMPlayer(
+            config=deepseek_provider(style='稳健').to_config(), seat=1,
+            provider_id='deepseek')
+        room.manager = SimpleNamespace(
+            controllers=[AIPlayer(), controller, AIPlayer(), AIPlayer()])
+
+        room._on_llm_fallback(1, 'turn', 'discard', 'normal')
+        room._on_llm_fallback(1, 'turn', 'discard', 'normal')
+
+        assert emitted == [{
+            'kind': 'llm_message', 'id': 1, 'seat': 1,
+            'text': '？', 'priority': 'normal',
+        }]
+        assert room._tts_tasks == set()
+        assert room._tts_match_stats['requests'] == 0
+
+    def test_room_chatter_fallback_question_mark_is_mandatory_without_tts(self, monkeypatch):
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+
+        emitted = []
+        room = RoomSession('FALLBACK-CHATTER', mode='east', capacity=4, llm_enabled=True)
+        monkeypatch.setattr(room.conn, 'broadcast', lambda message: emitted.append(message))
+        controller = LLMPlayer(
+            config=deepseek_provider(style='话痨').to_config(), seat=1,
+            provider_id='deepseek')
+        room.manager = SimpleNamespace(
+            controllers=[AIPlayer(), controller, AIPlayer(), AIPlayer()])
+
+        room._on_llm_fallback(1, 'turn', 'discard', 'chatter-turn')
+        room._on_llm_fallback(1, 'turn', 'discard', 'chatter-turn')
+
+        assert [item['text'] for item in emitted] == ['？', '？']
+        assert room._tts_tasks == set()
+
     def test_room_delivers_every_chatter_turn_without_exposing_internal_priority(
             self, monkeypatch):
         from app.game.player import AIPlayer

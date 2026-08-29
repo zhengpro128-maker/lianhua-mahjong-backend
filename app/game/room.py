@@ -695,6 +695,7 @@ class RoomSession:
                                                  seat=seat_index,
                                                  provider_id=provider.provider_id,
                                                  on_message=self._on_llm_message,
+                                                 on_fallback=self._on_llm_fallback,
                                                  on_status=self._on_llm_status,
                                                  reasoning=conditional_reasoning))
                 else:
@@ -767,6 +768,29 @@ class RoomSession:
             controller.provider_id, priority))
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
+
+    def _on_llm_fallback(self, seat: int, decision: str, action_kind: str,
+                         priority: str = 'normal') -> None:
+        """LLM 转交引擎：服从发言频率，只广播问号气泡，绝不创建 TTS。"""
+        if not 0 <= seat < self.player_count:
+            return
+        controller = None
+        if self.manager is not None and 0 <= seat < len(self.manager.controllers):
+            controller = self.manager.controllers[seat]
+        style = controller.config.style if isinstance(controller, LLMPlayer) else '稳健'
+        mandatory = priority == 'chatter-turn' \
+            or style == '话痨' and decision == 'turn' and action_kind == 'discard'
+        public_priority = 'important' if priority == 'important' else 'normal'
+        if not self._llm_speech_policy.admit(
+                seat, style, public_priority, mandatory=mandatory):
+            return
+        self._llm_message_seq += 1
+        entry = {
+            'id': self._llm_message_seq, 'seat': seat, 'text': '？',
+            'priority': public_priority,
+        }
+        self._llm_messages.append(entry)
+        self.conn.broadcast({'kind': 'llm_message', **entry})
 
     def _on_llm_status(self, seat: int, active: bool, text: str = '',
                        speak: bool = True) -> None:

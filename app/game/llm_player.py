@@ -40,6 +40,7 @@ class LLMPlayer(AIPlayer):
                  seat: int = -1,
                  provider_id: str = '',
                  on_message: Optional[Callable[[int, str, str], None]] = None,
+                 on_fallback: Optional[Callable[..., None]] = None,
                  on_status: Optional[Callable[..., None]] = None,
                  reasoning: Optional[ConditionalReasoningCoordinator] = None):
         super().__init__(delays=delays, random=random, rule_set=rule_set)
@@ -53,6 +54,7 @@ class LLMPlayer(AIPlayer):
         self.seat = seat
         self.provider_id = provider_id
         self.on_message = on_message
+        self.on_fallback = on_fallback
         self.on_status = on_status
         self.reasoning = reasoning or ConditionalReasoningCoordinator()
         self.reasoning_status_sequence = 0
@@ -115,12 +117,27 @@ class LLMPlayer(AIPlayer):
         """LLM 决定 → 候选动作；失败/非法 → None（调用方回退启发式）。"""
         if built is None or len(built['request']['candidates']) <= 1:
             return built['fallbackAction'] if built else None
+        request = built['request']
+
+        def notify_fallback():
+            action = built.get('fallbackAction')
+            if not action or self.on_fallback is None:
+                return
+            kind = action.get('kind', 'discard')
+            priority = 'important' if kind in IMPORTANT_SPEECH_ACTIONS else \
+                'chatter-turn' if self.config.style == '话痨' \
+                and request.get('decision') == 'turn' and kind == 'discard' else 'normal'
+            try:
+                self.on_fallback(
+                    self.seat, request.get('decision', ''), kind, priority)
+            except Exception:
+                pass
         # 房间预算：超出后直接回退启发式（不阻塞游戏循环）
         if self.config.max_requests_per_room > 0 \
                 and self.requests >= self.config.max_requests_per_room:
+            notify_fallback()
             return None
         self.requests += 1
-        request = built['request']
         ids = [candidate['id'] for candidate in request['candidates']]
         system, user = build_prompt(self.config.style, request)
         reasoning_policy = resolve_reasoning_policy(
@@ -177,6 +194,7 @@ class LLMPlayer(AIPlayer):
                 on_reasoning_progress=on_reasoning_progress)
         except Exception:
             self.stats['fallbacks'] += 1
+            notify_fallback()
             return None
         finally:
             if reasoning_status_active and self.on_status is not None:
@@ -187,11 +205,13 @@ class LLMPlayer(AIPlayer):
         candidate = next((item for item in request['candidates'] if item['id'] == choice), None)
         if candidate is None:
             self.stats['fallbacks'] += 1
+            notify_fallback()
             return None
         # §8.2 自校验：对照请求时刻的 ctx 复核（引擎执行层还会再复核一次）
         if not validate_action(ctx, candidate['action'], self.rules):
             self.stats['invalid'] += 1
             self.stats['fallbacks'] += 1
+            notify_fallback()
             return None
         self.stats['successes'] += 1
         # choice 决定真实动作；message 可作牌桌闲聊/烟雾弹，不要求与动作一致。
