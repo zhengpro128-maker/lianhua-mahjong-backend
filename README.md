@@ -271,7 +271,7 @@ LLM_PROVIDER_GLM_ORCA_TYPE=glm
 - 任何 **OpenAI 兼容** API 均可（Kimi `/v1`、通义 `compatible-mode/v1`、豆包
   `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
   Base / Key / Model。
-- 所有供应商的游戏决策默认最多等待 40 秒；可通过全局 `LLM_TIMEOUT_ENABLED=false` 或提供商 `_TIMEOUT_ENABLED=false` 关闭服务端截止时间。快速路径自动关闭思考，困难局面可条件开启（每个AI座位每小局 2 次、全桌整场 24 次）；开局不因候选接近或审计抽样升级思考，超时回退启发式；
+- 所有供应商的游戏决策默认最多等待 40 秒；可通过全局 `LLM_TIMEOUT_ENABLED=false` 或提供商 `_TIMEOUT_ENABLED=false` 关闭服务端截止时间。快速路径自动关闭思考，困难局面可条件开启（每个AI座位每小局 2 次，其中普通软触发最多 1 次；全桌整场 24 次）；庄家首打及 AI 前两巡不因候选接近或审计抽样升级，完全同质的并列候选直接走确定性引擎，多个不同听牌方案或破坏听牌风险仍可强触发；对手暗手与用户私有听牌提示不进入 LLM 快照，早巡公开威胁需达到 90；超时回退启发式；
   官方 API、OrcaRouter 和未知自定义中转使用独立参数方言。Kimi K3 普通 `low/128`、疑难 `high/512`；GLM-5.3-Flash 始终思考，官方接口普通/疑难均使用其允许的 low（预算 128/1024），OrcaRouter 既有配置按 `low/512`、`medium/1024` 兼容但不再作为前端推荐预设；完整 GLM-5.3 官方疑难使用 high，OrcaRouter 使用 medium；
   自定义中转的 Kimi K2.5/K2.6 非思考保持 `disabled/64`，条件思考使用 `enabled/2048` 并请求 JSON Object；官方 Moonshot 维持官方参数与 512 思考上限；
   后端统一请求 `stream:true` 并解析 SSE。普通 always-on low 不先播“让我想想怎么打”等台词/TTS，但收到推理块后仍通过 `llm_status` 广播安全进度气泡；原始 `reasoning_content` 永不广播、记录或送入 TTS；
