@@ -233,7 +233,7 @@ LLM_PROVIDER_KIMI_API_KEY=sk-yyy
 LLM_PROVIDER_KIMI_MODEL=kimi-k2.6
 LLM_PROVIDER_KIMI_TYPE=kimi
 
-# GLM-5.3 Flash via OrcaRouter（始终思考：普通 low，疑难 medium）
+# GLM-5.3 Flash via OrcaRouter（普通关闭思考，疑难 medium）
 LLM_PROVIDER_GLM_ORCA_BASE_URL=https://api.orcarouter.ai/v1
 LLM_PROVIDER_GLM_ORCA_API_KEY=sk-zzz
 LLM_PROVIDER_GLM_ORCA_MODEL=z-ai/glm-5.3-flash
@@ -272,7 +272,7 @@ LLM_PROVIDER_GLM_ORCA_TYPE=glm
   `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
   Base / Key / Model。
 - 所有供应商的游戏决策默认最多等待 40 秒；可通过全局 `LLM_TIMEOUT_ENABLED=false` 或提供商 `_TIMEOUT_ENABLED=false` 关闭服务端截止时间。快速路径自动关闭思考，困难局面可条件开启（每个AI座位每小局 2 次、全桌整场 24 次）；开局不因候选接近或审计抽样升级思考，超时回退启发式；
-  Kimi K3 与 GLM-5.3/5.3-Flash 始终思考，普通局面分别使用 low，疑难局面取得额度后分别升级 high / medium；Kimi K2.5/K2.6 普通关闭、疑难开启；Claude Sonnet 5 普通显式关闭 adaptive thinking、疑难使用 medium；
+  Kimi K3 与完整 GLM-5.3 始终思考，普通局面使用 low，疑难局面取得额度后分别升级 high / medium；GLM-5.3-Flash 普通使用 `reasoning_effort=none` 与 64 tokens，疑难升级 medium 与 512 tokens；Kimi K2.5/K2.6 普通关闭、疑难开启；Claude Sonnet 5 普通显式关闭 adaptive thinking、疑难使用 medium；
   后端统一请求 `stream:true` 并解析 SSE。普通 always-on low 不先播“让我想想怎么打”等台词/TTS，但收到推理块后仍通过 `llm_status` 广播安全进度气泡；原始 `reasoning_content` 永不广播、记录或送入 TTS；
   百炼 `qwen3.5`～`qwen3.8` 自动设置 `enable_thinking=false` 并请求 JSON Object，
   未显式配置 `TIMEOUT_MS` 时使用统一 40 秒决策预算；

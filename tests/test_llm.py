@@ -674,7 +674,7 @@ class TestProviderRegistry:
 
         assert policy('kimi/kimi-k3').request_body['reasoning_effort'] == 'low'
         assert policy('kimi/kimi-k3', True).request_body['reasoning_effort'] == 'high'
-        assert policy('z-ai/glm-5.3-flash').request_body['reasoning_effort'] == 'low'
+        assert policy('z-ai/glm-5.3-flash').request_body['reasoning_effort'] == 'none'
         assert policy('z-ai/glm-5.3-flash', True).request_body['reasoning_effort'] == 'medium'
         assert policy('kimi/kimi-k2.6', provider_type='kimi').request_body == {
             'thinking': {'type': 'disabled'}, 'temperature': 0.6, 'top_p': 0.95,
@@ -819,7 +819,7 @@ class TestProviderRegistry:
         assert captured['top_p'] == 0.95
         run(http.aclose())
 
-    def test_glm_5_3_custom_proxy_uses_low_reasoning_and_accepts_reasoning_content(
+    def test_glm_5_3_flash_custom_proxy_disables_reasoning_on_quick_path(
             self, monkeypatch):
         from app.llm.client import request_llm_decision
         from app.llm.config import LlmServerConfig
@@ -832,11 +832,10 @@ class TestProviderRegistry:
                 'choices': [{
                     'message': {
                         'content': '{"choice":"A1","message":"稳住"}',
-                        'reasoning_content': '先分析候选牌',
                     },
                     'finish_reason': 'stop',
                 }],
-                'usage': {'completion_tokens_details': {'reasoning_tokens': 80}},
+                'usage': {'completion_tokens_details': {'reasoning_tokens': 0}},
             })
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -846,9 +845,9 @@ class TestProviderRegistry:
             model='z-ai/glm-5.3-flash', provider_id='glm-orca', provider_type='custom')
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
         assert captured['model'] == 'z-ai/glm-5.3-flash'
-        assert captured['max_tokens'] == 512
-        assert captured['thinking'] == {'type': 'enabled'}
-        assert captured['reasoning_effort'] == 'low'
+        assert captured['max_tokens'] == 64
+        assert captured['reasoning_effort'] == 'none'
+        assert 'thinking' not in captured
         run(http.aclose())
 
     def test_kimi_k3_uses_fixed_sampling_and_accepts_reasoning_content(self, monkeypatch):

@@ -116,6 +116,13 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
     if kind == 'glm':
         if 'thinking' in name:
             return _policy(kind, 'reasoning-only', '显式 Thinking 型号不用于实时麻将决策')
+        if re.match(r'^glm-5\.3-flash(?:[.-]|$)', name):
+            return _policy(kind, 'explicit-on', '已开启 GLM-5.3-Flash 条件思考', {
+                'reasoning_effort': 'medium',
+            }) if reasoning else _policy(
+                kind, 'explicit-off', '已关闭 GLM-5.3-Flash 思考', {
+                    'reasoning_effort': 'none',
+                })
         if re.match(r'^glm-5\.3(?:[.-]|$)', name):
             return _policy(kind, 'always-on', 'GLM-5.3 始终思考', {
                 'thinking': {'type': 'enabled'},

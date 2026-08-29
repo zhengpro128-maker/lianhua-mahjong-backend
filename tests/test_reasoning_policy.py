@@ -27,17 +27,28 @@ def test_reasoning_only_models_are_identified_without_request_precheck(provider_
     assert result.mode == 'reasoning-only'
 
 
-def test_glm_5_3_flash_custom_proxy_uses_lowest_always_on_reasoning():
+def test_glm_5_3_flash_custom_proxy_disables_quick_and_enables_medium_reasoning():
     result = resolve_reasoning_policy(
         'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash')
     assert result.provider_type == 'glm'
-    assert result.mode == 'always-on'
-    assert result.request_body == {
-        'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low'}
+    assert result.mode == 'explicit-off'
+    assert result.request_body == {'reasoning_effort': 'none'}
     assert resolve_reasoning_policy(
         'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash',
         reasoning=True).request_body == {
-            'thinking': {'type': 'enabled'}, 'reasoning_effort': 'medium'}
+            'reasoning_effort': 'medium'}
+
+
+def test_full_glm_5_3_remains_always_on():
+    quick = resolve_reasoning_policy(
+        'glm', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3')
+    deep = resolve_reasoning_policy(
+        'glm', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3', reasoning=True)
+    assert quick.mode == 'always-on'
+    assert quick.request_body == {
+        'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low'}
+    assert deep.request_body == {
+        'thinking': {'type': 'enabled'}, 'reasoning_effort': 'medium'}
 
 
 def test_kimi_k3_qualified_model_uses_fixed_sampling_parameters():
