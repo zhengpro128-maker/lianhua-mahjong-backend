@@ -37,8 +37,11 @@ class LlmSpeechPolicy:
         self._last_seat: dict[int, float] = {}
         self._normal_attempts: dict[int, int] = {}
 
-    def admit(self, seat: int, style: str, priority: str = 'normal') -> bool:
+    def admit(self, seat: int, style: str, priority: str = 'normal',
+              mandatory: bool = False) -> bool:
         current = self._now()
+        if mandatory:
+            return True
         if priority == 'important':
             self._last_global = current
             self._last_seat[seat] = current

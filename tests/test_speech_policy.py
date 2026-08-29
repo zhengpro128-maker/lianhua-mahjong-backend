@@ -25,6 +25,14 @@ def test_normal_speech_is_deterministically_thinned_by_style():
     assert policy.admit(1, '稳健') is True
 
 
+def test_chatter_turn_speech_is_mandatory_without_consuming_normal_cooldown():
+    policy = LlmSpeechPolicy(now=lambda: 10.0)
+    assert policy.admit(1, '话痨', mandatory=True)
+    assert policy.admit(1, '话痨', mandatory=True)
+    assert policy.admit(1, '话痨', mandatory=True)
+    assert policy.admit(2, '稳健')
+
+
 def test_compact_speech_keeps_first_short_sentence():
     assert compact_speech_text('  先稳住这一手。后面不用念。 ') == '先稳住这一手。'
     assert len(compact_speech_text('这是一句明显超过十六个汉字的超长牌桌吐槽文本')) == 16

@@ -442,6 +442,16 @@ def make_llm_player(monkeypatch, responses, *, seat=-1, provider_id='', on_messa
 
 
 class TestLLMPlayer:
+    def test_chatter_turn_discard_marks_speech_as_mandatory_frequency(self, monkeypatch):
+        messages = []
+        player, _ = make_llm_player(
+            monkeypatch, ['{"choice":"A1","message":"轮到我出牌啦。"}'],
+            seat=1, style='话痨',
+            on_message=lambda seat, text, priority: messages.append((seat, text, priority)))
+        action = run(player.request_turn(turn_ctx(hand=['m3', 'm5', 'm6'])))
+        assert action['kind'] == 'discard'
+        assert messages == [(1, '轮到我出牌啦。', 'chatter-turn')]
+
     def test_always_on_low_skips_opening_speech_but_keeps_stream_progress(
             self, monkeypatch):
         from app.llm.config import LlmServerConfig
@@ -974,6 +984,25 @@ class TestProviderRegistry:
 
 
 class TestPerSeatAssembly:
+    def test_room_delivers_every_chatter_turn_without_exposing_internal_priority(
+            self, monkeypatch):
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+
+        emitted = []
+        room = RoomSession('CHATTER', mode='east', capacity=4, llm_enabled=True)
+        monkeypatch.setattr(room.conn, 'broadcast', lambda message: emitted.append(message))
+        controller = LLMPlayer(
+            config=deepseek_provider(style='话痨').to_config(), seat=1,
+            provider_id='deepseek')
+        room.manager = SimpleNamespace(
+            controllers=[AIPlayer(), controller, AIPlayer(), AIPlayer()])
+
+        room._on_llm_message(1, '第一张。', 'chatter-turn')
+        room._on_llm_message(1, '第二张。', 'chatter-turn')
+        assert [item['text'] for item in emitted] == ['第一张。', '第二张。']
+        assert all(item['priority'] == 'normal' for item in emitted)
+
     def test_room_broadcasts_messages_and_logs_match_summary(self, monkeypatch):
         from app.game.player import AIPlayer
         from app.game.room import RoomSession

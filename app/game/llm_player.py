@@ -204,7 +204,9 @@ class LLMPlayer(AIPlayer):
         if self.on_message is not None:
             try:
                 action_kind = candidate['action']['kind']
-                priority = 'important' if action_kind in IMPORTANT_SPEECH_ACTIONS else 'normal'
+                priority = 'important' if action_kind in IMPORTANT_SPEECH_ACTIONS else \
+                    'chatter-turn' if self.config.style == '话痨' \
+                    and request.get('decision') == 'turn' and action_kind == 'discard' else 'normal'
                 self.on_message(self.seat, speech, priority)
             except Exception:
                 # 吐槽属于表现副作用；广播失败不能影响动作执行和对局推进。
