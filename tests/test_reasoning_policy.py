@@ -27,12 +27,13 @@ def test_reasoning_only_models_are_identified_without_request_precheck(provider_
     assert result.mode == 'reasoning-only'
 
 
-def test_glm_5_3_flash_custom_proxy_disables_quick_and_enables_medium_reasoning():
+def test_glm_5_3_flash_custom_proxy_uses_capped_low_and_enables_medium_reasoning():
     result = resolve_reasoning_policy(
         'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash')
     assert result.provider_type == 'glm'
     assert result.mode == 'explicit-off'
-    assert result.request_body == {'reasoning_effort': 'none'}
+    assert result.accept_reasoning_response
+    assert result.request_body == {'reasoning_effort': 'low'}
     assert resolve_reasoning_policy(
         'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash',
         reasoning=True).request_body == {

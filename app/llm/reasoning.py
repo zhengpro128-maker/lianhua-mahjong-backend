@@ -120,9 +120,9 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
             return _policy(kind, 'explicit-on', '已开启 GLM-5.3-Flash 条件思考', {
                 'reasoning_effort': 'medium',
             }) if reasoning else _policy(
-                kind, 'explicit-off', '已关闭 GLM-5.3-Flash 思考', {
-                    'reasoning_effort': 'none',
-                })
+                kind, 'explicit-off', 'GLM-5.3-Flash 使用快速低强度', {
+                    'reasoning_effort': 'low',
+                }, accept_reasoning_response=True)
         if re.match(r'^glm-5\.3(?:[.-]|$)', name):
             return _policy(kind, 'always-on', 'GLM-5.3 始终思考', {
                 'thinking': {'type': 'enabled'},
