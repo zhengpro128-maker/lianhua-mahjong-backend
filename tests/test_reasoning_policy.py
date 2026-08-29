@@ -52,17 +52,15 @@ def test_full_glm_5_3_remains_always_on():
         'thinking': {'type': 'enabled'}, 'reasoning_effort': 'medium'}
 
 
-def test_kimi_k3_qualified_model_uses_fixed_sampling_parameters():
+def test_kimi_k3_qualified_model_uses_effort_without_sampling_parameters():
     result = resolve_reasoning_policy(
         'kimi', 'https://api.orcarouter.ai/v1', 'kimi/kimi-k3')
     assert result.provider_type == 'kimi'
     assert result.mode == 'always-on'
-    assert result.request_body == {
-        'temperature': 1.0, 'top_p': 0.95, 'reasoning_effort': 'low'}
+    assert result.request_body == {'reasoning_effort': 'low'}
     assert resolve_reasoning_policy(
         'kimi', 'https://api.orcarouter.ai/v1', 'kimi/kimi-k3',
-        reasoning=True).request_body == {
-            'temperature': 1.0, 'top_p': 0.95, 'reasoning_effort': 'high'}
+        reasoning=True).request_body == {'reasoning_effort': 'high'}
 
 
 @pytest.mark.parametrize('model', ['kimi/kimi-k2.5', 'kimi/kimi-k2.6'])

@@ -227,11 +227,16 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         getattr(cfg, 'provider_id', ''), reasoning=reasoning)
     always_thinking = reasoning_policy.mode == 'always-on'
     model_name = (cfg.model or '').strip().lower().rsplit('/', 1)[-1]
+    kimi_k3 = reasoning_policy.provider_type == 'kimi' \
+        and re.match(r'^kimi-k3(?:[.-]|$)', model_name)
     if reasoning_policy.provider_type == 'claude' \
             and re.match(r'^claude-sonnet-5(?:[.-]|$)', model_name):
         payload.pop('temperature', None)
         payload.pop('top_p', None)
-    if always_thinking:
+    if kimi_k3:
+        payload.pop('temperature', None)
+        payload.pop('top_p', None)
+    if always_thinking and not (kimi_k3 and not reasoning):
         max_tokens = max(max_tokens, 512)
     payload.update(reasoning_policy.request_body)
     if reasoning and reasoning_policy.provider_type == 'openai':

@@ -851,7 +851,7 @@ class TestProviderRegistry:
         assert 'thinking' not in captured
         run(http.aclose())
 
-    def test_kimi_k3_uses_fixed_sampling_and_accepts_reasoning_content(self, monkeypatch):
+    def test_kimi_k3_quick_uses_low_64_without_sampling_parameters(self, monkeypatch):
         from app.llm.client import request_llm_decision
         from app.llm.config import LlmServerConfig
 
@@ -877,11 +877,11 @@ class TestProviderRegistry:
             model='kimi/kimi-k3', provider_id='kimi-orca', provider_type='kimi')
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
         assert captured['model'] == 'kimi/kimi-k3'
-        assert captured['max_tokens'] == 512
-        assert captured['temperature'] == 1.0
-        assert captured['top_p'] == 0.95
+        assert captured['max_tokens'] == 64
         assert captured['reasoning_effort'] == 'low'
         assert 'thinking' not in captured
+        assert 'temperature' not in captured
+        assert 'top_p' not in captured
         run(http.aclose())
 
     def test_streaming_reasoning_only_emits_safe_progress_pulse(self, monkeypatch):

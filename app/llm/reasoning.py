@@ -73,7 +73,6 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
     if kind == 'kimi':
         if re.match(r'^kimi-k3(?:[.-]|$)', name):
             return _policy(kind, 'always-on', 'Kimi K3 始终思考', {
-                'temperature': 1.0, 'top_p': 0.95,
                 'reasoning_effort': 'high' if reasoning else 'low',
             })
         if 'thinking' in name:
