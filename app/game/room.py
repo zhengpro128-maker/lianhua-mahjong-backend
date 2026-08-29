@@ -76,6 +76,23 @@ _LLM_WIN_LINES = {
     },
 }
 
+_LLM_LOSS_LINES = {
+    '激进': ('这局算你们走运，下局再来！', '输一局而已，我马上打回来！', '先让一局，下一把见真章！'),
+    '稳健': ('这局承让，我再复盘一下。', '胜负常事，下一局稳住。', '这局判断有偏差，下局调整。'),
+    '话痨': ('哎呀这局没接住，下局继续！', '输了输了，容我喝口水再战！', '这把牌有自己的想法，下局来过！'),
+    '高冷': ('这局输了，仅此而已。', '结果已定，下一局。', '一局而已，继续。'),
+}
+
+_LLM_DRAW_LINES = {
+    '激进': ('荒庄？下一局别再躲了！', '没人拿下，那就下局决胜！', '这局没分胜负，继续来！'),
+    '稳健': ('荒庄收场，下一局再寻机会。', '这局无人和牌，重新来过。', '牌局未定，下一局继续。'),
+    '话痨': ('荒庄啦，大家都藏得挺深！', '谁也没胡成，这局真能憋！', '好嘛，全员陪跑，下一局继续！'),
+    '高冷': ('荒庄，下一局。', '无人和牌，继续。', '未分胜负，仅此而已。'),
+}
+
+_ROUND_REACTION_TEXT_SECONDS = 1.5
+_ROUND_REACTION_MAX_SECONDS = 8.0
+
 
 def _make_rejoin_code() -> str:
     """8 位重进码：4+4 随机 hex，大写带连字符（如 'K7Q3-M9XP'）。"""
@@ -144,8 +161,6 @@ class WSEvents:
                 'meldIndex': meld_index,
             },
         })
-        if type_ in _LLM_WIN_LINES:
-            self.room._announce_llm_win(actor_index, type_)
 
     def show_score_flow(self, deltas) -> None:
         self.room.conn.broadcast({'kind': 'score_flow', 'deltas': deltas})
@@ -201,7 +216,8 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
             data = p.model_dump(mode='json', by_alias=True)
             # 结算快照亮出全部手牌（局已结束，赢牌翻牌需要展示三家手牌）；
             # 进行中只对本人显示手牌，他人用 null 占位（防作弊）。
-            reveal = mgr.phase == 'settled' and mgr.result is not None
+            settlement_visible = mgr.phase != 'settled' or room._settlement_snapshot_released
+            reveal = settlement_visible and mgr.phase == 'settled' and mgr.result is not None
             if p.seat != seat and not reveal:
                 data['hand'] = [None] * len(data['hand'])
             # 前端只对大模型座位抑制牌名/吃碰杠/胡牌原始音效；普通 AI 与真人不变。
@@ -212,7 +228,8 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'roomId': room.room_id,
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
-        'phase': mgr.phase if mgr else room.status,
+        'phase': (mgr.phase if mgr.phase != 'settled' or room._settlement_snapshot_released else 'revealing')
+        if mgr else room.status,
         'round': mgr.round if mgr else 1,
         'dealer': mgr.dealer if mgr else 0,
         'honba': mgr.honba if mgr else 0,
@@ -232,7 +249,7 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'currentPlayer': mgr.current_player if mgr else -1,
         'players': players,
         'seat': seat,
-        'result': mgr.result if mgr else None,
+        'result': mgr.result if mgr and (mgr.phase != 'settled' or room._settlement_snapshot_released) else None,
         'announcement': mgr.announcement if mgr else None,
         'matchFinished': bool(mgr.match_finished) if mgr else False,
         'lastDiscard': mgr.last_discard if mgr else None,
@@ -298,6 +315,8 @@ class RoomSession:
             'requests': 0, 'hits': 0, 'misses': 0,
             'successes': 0, 'failures': 0,
         }
+        # settled 快照只在所有 LLM AI 依次发表完赛后感言后向客户端放行。
+        self._settlement_snapshot_released = False
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
         # 不再中断整场驱动，数据留在队列等下次落库机会重试。
         self._pending_writes: list = []
@@ -468,6 +487,11 @@ class RoomSession:
 
     def broadcast_snapshot(self) -> None:
         """向所有在位连接广播 per-seat 快照（本人手牌可见，他座隐藏）。"""
+        if self.manager is not None:
+            if self.manager.phase == 'settled' and not self._settlement_snapshot_released:
+                return
+            if self.manager.phase != 'settled':
+                self._settlement_snapshot_released = False
         for seat in self.conn.connected_seats:
             self.conn.send_to_seat_nowait(seat, build_snapshot(self, seat))
 
@@ -828,19 +852,92 @@ class RoomSession:
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
-    def _announce_llm_win(self, seat: int, action_type: str) -> None:
-        """让 LLM 赢家通过吐槽/TTS 链路播报自摸、放枪或抢杠胡。"""
-        if self.manager is None or not 0 <= seat < len(self.manager.controllers):
+    async def _emit_llm_round_reaction(self, seat: int, text: str,
+                                       controller: LLMPlayer) -> None:
+        """合成后同时广播气泡和音频，并等待本句预计播放完再轮到下一位。"""
+        text = compact_speech_text(text)
+        if not text:
             return
-        controller = self.manager.controllers[seat]
-        if not isinstance(controller, LLMPlayer):
+        service = get_tts_service()
+        audio = None
+        if service.available:
+            self._tts_match_stats['requests'] += 1
+            try:
+                audio = await service.ensure_audio(
+                    text, controller.config.style, controller.provider_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                audio = None
+            if audio is None:
+                self._tts_match_stats['failures'] += 1
+            else:
+                self._tts_match_stats['successes'] += 1
+                self._tts_match_stats['hits' if audio.cached else 'misses'] += 1
+
+        self._llm_message_seq += 1
+        message_id = self._llm_message_seq
+        entry = {
+            'id': message_id, 'seat': seat, 'text': text, 'priority': 'important',
+        }
+        self._llm_messages.append(entry)
+        self.conn.broadcast({'kind': 'llm_message', **entry})
+        if audio is not None:
+            self.conn.broadcast({
+                'kind': 'llm_audio', 'messageId': message_id, 'seat': seat,
+                'audioUrl': audio.audio_url, 'cached': audio.cached,
+                'priority': 'important',
+            })
+
+        if not self.conn.connected_seats:
             return
-        lines = _LLM_WIN_LINES.get(action_type)
-        if lines is None:
+        duration = _ROUND_REACTION_TEXT_SECONDS if audio is None else min(
+            _ROUND_REACTION_MAX_SECONDS,
+            max(1.0, audio.size_bytes * 8 / 64_000 + 0.35),
+        )
+        await asyncio.sleep(duration)
+
+    async def _announce_llm_round_reactions(self, result: dict) -> None:
+        """赢家先说，其余 LLM AI 顺时针依次说；荒庄按座位顺序，真人永不入队。"""
+        if self.manager is None:
             return
-        variants = lines.get(controller.config.style, lines['稳健'])
-        line = variants[self._llm_message_seq % len(variants)]
-        self._on_llm_message(seat, line, 'important')
+        llm_seats = [
+            seat for seat, controller in enumerate(self.manager.controllers)
+            if isinstance(controller, LLMPlayer)
+        ]
+        if not llm_seats:
+            return
+        draw = bool(result.get('draw'))
+        raw_winner = result.get('winnerIndex')
+        winner = raw_winner if isinstance(raw_winner, int) and not draw else None
+        if winner is not None and winner in llm_seats:
+            order = [winner, *sorted(
+                (seat for seat in llm_seats if seat != winner),
+                key=lambda seat: (seat - winner) % self.player_count,
+            )]
+        else:
+            order = sorted(llm_seats)
+
+        if result.get('robbedKong') or result.get('winType') == 'robbed-kong':
+            win_type = 'robbed-kong-win'
+        elif result.get('sourceFrom') is not None or result.get('winType') in ('discard', 'dihu'):
+            win_type = 'discard-win'
+        else:
+            win_type = 'self-draw'
+
+        for seat in order:
+            controller = self.manager.controllers[seat]
+            if not isinstance(controller, LLMPlayer):
+                continue
+            if draw:
+                lines = _LLM_DRAW_LINES
+            elif seat == winner:
+                lines = _LLM_WIN_LINES[win_type]
+            else:
+                lines = _LLM_LOSS_LINES
+            variants = lines.get(controller.config.style, lines['稳健'])
+            line = variants[self._llm_message_seq % len(variants)]
+            await self._emit_llm_round_reaction(seat, line, controller)
 
     async def _synthesize_llm_audio(self, generation: int, message_id: int,
                                     seat: int, text: str, style: str,
@@ -1051,11 +1148,20 @@ class RoomSession:
             await self.manager.start_game(self.mode)
             while not self.manager.match_finished:
                 if self.manager.phase == 'settled':
+                    try:
+                        await self._announce_llm_round_reactions(self.manager.result or {})
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception('赛后 AI 感言队列失败，直接放行结算')
+                    self._settlement_snapshot_released = True
+                    self.broadcast_snapshot()
                     self.conn.broadcast({'kind': 'hand_result', 'result': self.manager.result})
                     await self._persist_round(self.manager.result)
                     logger.bind(room_id=self.room_id).info(f"第{self.manager.round}局结算")
                     # 确认屏障：等所有在线真人点「继续」（10s 倒计时 / 兜底超时）再进下一局
                     await self._wait_for_continue()
+                    self._settlement_snapshot_released = False
                     await self.manager.next_round()
                 elif self.manager.phase == 'lobby':
                     break

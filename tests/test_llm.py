@@ -1346,12 +1346,13 @@ class TestPerSeatAssembly:
             ('discard-win', '放枪，这张正合适。'),
         ],
     )
-    def test_llm_winner_uses_message_tts_path_and_is_marked_in_snapshot(
-            self, action_type, expected_text):
+    def test_llm_winner_reacts_after_hand_and_is_marked_in_snapshot(
+            self, action_type, expected_text, monkeypatch):
         from app.game.manager import GameManager
         from app.game.player import AIPlayer
         from app.game.room import RoomSession, WSEvents, build_snapshot
         from app.models.game import GamePlayer
+        from types import SimpleNamespace
 
         emitted = []
         room = RoomSession('WINVOICE', mode='east', capacity=4, llm_enabled=True)
@@ -1370,24 +1371,97 @@ class TestPerSeatAssembly:
             )
             for seat in range(4)
         ]
+        monkeypatch.setattr(
+            'app.game.room.get_tts_service',
+            lambda: SimpleNamespace(available=False),
+        )
 
         WSEvents(room).show_table_action(action_type, 1, 0, 'm1', -1)
 
         assert emitted[0]['kind'] == 'table_action'
+        assert len(emitted) == 1, '胡牌动作只负责表现，赛后感言必须等结算队列'
+        result = {'winnerIndex': 1}
+        if action_type == 'discard-win':
+            result['sourceFrom'] = 0
+        run(room._announce_llm_round_reactions(result))
         assert emitted[1] == {
             'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': expected_text, 'priority': 'important',
         }
         snapshot = build_snapshot(room, 0)
         assert [player['isLlm'] for player in snapshot['players']] == [False, True, False, False]
 
-    def test_llm_win_lines_have_three_short_variants_per_style(self):
-        from app.game.room import _LLM_WIN_LINES
-        for styles in _LLM_WIN_LINES.values():
+    def test_llm_round_reaction_lines_have_three_short_variants_per_style(self):
+        from app.game.room import _LLM_DRAW_LINES, _LLM_LOSS_LINES, _LLM_WIN_LINES
+        for styles in [*_LLM_WIN_LINES.values(), _LLM_LOSS_LINES, _LLM_DRAW_LINES]:
             for variants in styles.values():
                 assert len(variants) == 3
                 assert len(set(variants)) == 3
-                assert all(len(line) <= 16 for line in variants)
+                assert all(len(line) <= 18 for line in variants)
             assert all('稳稳' not in line for line in styles['稳健'])
+
+    def test_round_reactions_are_winner_first_clockwise_and_exclude_non_llm(self,
+                                                                           monkeypatch):
+        from app.game.manager import GameManager
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+
+        room = RoomSession('REACTIONS', mode='east', capacity=4, llm_enabled=True)
+        controllers = [AIPlayer()] + [
+            LLMPlayer(config=deepseek_provider(style='高冷').to_config(), seat=seat,
+                      provider_id='deepseek')
+            for seat in (1, 2, 3)
+        ]
+        room.manager = GameManager(controllers=controllers)
+        spoken = []
+
+        async def fake_emit(seat, text, _controller):
+            spoken.append((seat, text))
+
+        monkeypatch.setattr(room, '_emit_llm_round_reaction', fake_emit)
+        run(room._announce_llm_round_reactions({'winnerIndex': 2}))
+        assert [seat for seat, _ in spoken] == [2, 3, 1]
+        assert spoken[0][1].startswith('自摸')
+        assert all('输' in text or '结果已定' in text or '一局而已' in text
+                   for _, text in spoken[1:])
+
+        spoken.clear()
+        run(room._announce_llm_round_reactions({'draw': True}))
+        assert [seat for seat, _ in spoken] == [1, 2, 3]
+        assert all('荒庄' in text or '无人和牌' in text or '未分胜负' in text
+                   for _, text in spoken)
+
+        spoken.clear()
+        run(room._announce_llm_round_reactions({'winnerIndex': 0}))
+        assert [seat for seat, _ in spoken] == [1, 2, 3]
+        assert all('自摸' not in text for _, text in spoken)
+
+    def test_settled_snapshot_is_hidden_until_round_reactions_finish(self):
+        from app.game.manager import GameManager
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession, build_snapshot
+        from app.models.game import GamePlayer
+
+        room = RoomSession('DEFERRESULT', mode='east', capacity=4)
+        room.manager = GameManager(controllers=[AIPlayer() for _ in range(4)])
+        room.manager.players = [
+            GamePlayer(name=f'P{seat}', avatar='', score=1000, seat=seat,
+                       hand=['m1'], discards=[], melds=[], redCount=0,
+                       drawnTileIndex=0)
+            for seat in range(4)
+        ]
+        room.manager.phase = 'settled'
+        room.manager.result = {'winnerIndex': 1, 'winner': 'P1'}
+
+        pending = build_snapshot(room, 0)
+        assert pending['phase'] == 'revealing'
+        assert pending['result'] is None
+        assert pending['players'][1]['hand'] == [None]
+
+        room._settlement_snapshot_released = True
+        released = build_snapshot(room, 0)
+        assert released['phase'] == 'settled'
+        assert released['result']['winnerIndex'] == 1
+        assert released['players'][1]['hand'] == ['m1']
 
     def test_seat_provider_ids_resolve_per_seat(self, monkeypatch):
         from app.game.player import AIPlayer
