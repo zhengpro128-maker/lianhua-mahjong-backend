@@ -229,6 +229,8 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     model_name = (cfg.model or '').strip().lower().rsplit('/', 1)[-1]
     kimi_k3 = reasoning_policy.provider_type == 'kimi' \
         and re.match(r'^kimi-k3(?:[.-]|$)', model_name)
+    glm_5_3_flash = reasoning_policy.provider_type == 'glm' \
+        and re.match(r'^glm-5\.3-flash(?:[.-]|$)', model_name)
     if reasoning_policy.provider_type == 'claude' \
             and re.match(r'^claude-sonnet-5(?:[.-]|$)', model_name):
         payload.pop('temperature', None)
@@ -236,7 +238,9 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     if kimi_k3:
         payload.pop('temperature', None)
         payload.pop('top_p', None)
-    if always_thinking and not (kimi_k3 and not reasoning):
+    if not reasoning and (kimi_k3 or glm_5_3_flash):
+        max_tokens = max(max_tokens, 128)
+    elif always_thinking:
         max_tokens = max(max_tokens, 512)
     payload.update(reasoning_policy.request_body)
     if reasoning and reasoning_policy.provider_type == 'openai':

@@ -819,7 +819,7 @@ class TestProviderRegistry:
         assert captured['top_p'] == 0.95
         run(http.aclose())
 
-    def test_glm_5_3_flash_custom_proxy_uses_capped_low_on_quick_path(
+    def test_glm_5_3_flash_custom_proxy_uses_low_128_on_quick_path(
             self, monkeypatch):
         from app.llm.client import request_llm_decision
         from app.llm.config import LlmServerConfig
@@ -846,12 +846,12 @@ class TestProviderRegistry:
             model='z-ai/glm-5.3-flash', provider_id='glm-orca', provider_type='custom')
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
         assert captured['model'] == 'z-ai/glm-5.3-flash'
-        assert captured['max_tokens'] == 64
+        assert captured['max_tokens'] == 128
         assert captured['reasoning_effort'] == 'low'
         assert 'thinking' not in captured
         run(http.aclose())
 
-    def test_kimi_k3_quick_uses_low_64_without_sampling_parameters(self, monkeypatch):
+    def test_kimi_k3_quick_uses_low_128_without_sampling_parameters(self, monkeypatch):
         from app.llm.client import request_llm_decision
         from app.llm.config import LlmServerConfig
 
@@ -877,7 +877,7 @@ class TestProviderRegistry:
             model='kimi/kimi-k3', provider_id='kimi-orca', provider_type='kimi')
         assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
         assert captured['model'] == 'kimi/kimi-k3'
-        assert captured['max_tokens'] == 64
+        assert captured['max_tokens'] == 128
         assert captured['reasoning_effort'] == 'low'
         assert 'thinking' not in captured
         assert 'temperature' not in captured
