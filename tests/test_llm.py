@@ -906,6 +906,32 @@ class TestProviderRegistry:
         assert captured['response_format'] == {'type': 'json_object'}
         run(http.aclose())
 
+    def test_glm_5_3_flash_official_quick_path_uses_low_128(self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                    'finish_reason': 'stop',
+                }],
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://open.bigmodel.cn/api/paas/v4', api_key='sk-glm',
+            model='glm-5.3-flash', provider_type='glm')
+        assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
+        assert captured['max_tokens'] == 128
+        assert captured['reasoning_effort'] == 'low'
+        assert captured['response_format'] == {'type': 'json_object'}
+        run(http.aclose())
+
     def test_length_response_does_not_retry_with_wrong_choice_feedback(self, monkeypatch):
         from app.llm.client import LlmClientError, request_llm_decision
         from app.llm.config import LlmServerConfig

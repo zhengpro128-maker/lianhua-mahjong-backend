@@ -14,7 +14,7 @@ import httpx
 from loguru import logger
 
 from app.llm.config import LlmServerConfig, llm_semaphore
-from app.llm.reasoning import resolve_reasoning_policy
+from app.llm.reasoning import infer_provider_dialect, resolve_reasoning_policy
 
 
 class LlmClientError(Exception):
@@ -232,6 +232,7 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         and re.match(r'^kimi-k3(?:[.-]|$)', model_name)
     glm_5_3_flash = reasoning_policy.provider_type == 'glm' \
         and re.match(r'^glm-5\.3-flash(?:[.-]|$)', model_name)
+    dialect = infer_provider_dialect(cfg.base_url)
     if reasoning_policy.provider_type == 'claude' \
             and re.match(r'^claude-sonnet-5(?:[.-]|$)', model_name):
         payload.pop('temperature', None)
@@ -240,7 +241,7 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         payload.pop('temperature', None)
         payload.pop('top_p', None)
     if glm_5_3_flash:
-        max_tokens = max(max_tokens, 1024 if reasoning else 512)
+        max_tokens = max(max_tokens, 1024 if reasoning else 128 if dialect == 'official' else 512)
     elif not reasoning and kimi_k3:
         max_tokens = max(max_tokens, 128)
     elif always_thinking:
