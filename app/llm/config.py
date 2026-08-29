@@ -2,7 +2,7 @@
 
 - 旧全局配置：LLM_ENABLED + LLM_API_BASE/KEY/MODEL/STYLE...（id=default 的单提供商，
   仅当未使用 LLM_PROVIDER_* 时作为兜底注册）
-- 多提供商：LLM_PROVIDER_<ID>_{BASE_URL,API_KEY,MODEL,TYPE,STYLE,NICKNAME,TIMEOUT_MS,NAME,AVATAR_FOLDER}
+- 多提供商：LLM_PROVIDER_<ID>_{BASE_URL,API_KEY,MODEL,TYPE,STYLE,NICKNAME,TIMEOUT_MS,TIMEOUT_ENABLED,NAME,AVATAR_FOLDER}
   （ID 字母/数字/下划线，如 LLM_PROVIDER_DEEPSEEK_BASE_URL）——Key 全部在服务端，
   客户端只拿 id；建房/开局引用 providerId。
 """
@@ -19,6 +19,7 @@ BASE_URL_KEY = 'LLM_API_BASE'
 API_KEY_KEY = 'LLM_API_KEY'
 MODEL_KEY = 'LLM_MODEL'
 TIMEOUT_S_KEY = 'LLM_TIMEOUT_S'
+TIMEOUT_ENABLED_KEY = 'LLM_TIMEOUT_ENABLED'
 POOL_TIMEOUT_S_KEY = 'LLM_POOL_TIMEOUT_S'
 STYLE_KEY = 'LLM_STYLE'
 CONCURRENCY_KEY = 'LLM_CONCURRENCY'
@@ -42,6 +43,7 @@ class LlmServerConfig:
                  model: str = '',
                  style: str = '稳健',
                  timeout_s: float = LLM_DECISION_TIMEOUT_S,
+                 timeout_enabled: bool = True,
                  pool_timeout_s: float = 1.0,
                  concurrency: int = 4,
                  max_requests_per_room: int = 0,
@@ -54,6 +56,8 @@ class LlmServerConfig:
         self.model = model
         self.style = style if style in ('激进', '稳健', '话痨', '高冷') else '稳健'
         self.timeout_s = timeout_s
+        self.timeout_enabled = (timeout_enabled.strip().lower() != 'false') \
+            if isinstance(timeout_enabled, str) else timeout_enabled
         self.pool_timeout_s = pool_timeout_s
         self.concurrency = concurrency
         self.max_requests_per_room = max_requests_per_room
@@ -66,6 +70,7 @@ LLM_STYLES = ('激进', '稳健', '话痨', '高冷')
 _PROVIDER_SUFFIXES = (
     ('BASE_URL', 'base_url'), ('API_KEY', 'api_key'), ('MODEL', 'model'),
     ('STYLE', 'style'), ('NICKNAME', 'nickname'), ('TIMEOUT_MS', 'timeout_ms'),
+    ('TIMEOUT_ENABLED', 'timeout_enabled'),
     ('AVATAR_FOLDER', 'avatar_folder'), ('NAME', 'name'), ('TYPE', 'provider_type'),
 )
 
@@ -76,6 +81,7 @@ class LlmProvider:
     def __init__(self, provider_id: str, name: str = '', base_url: str = '',
                  api_key: str = '', model: str = '', style: str = '稳健',
                  nickname: str = '', timeout_ms: Optional[float] = None,
+                 timeout_enabled: Optional[bool] = None,
                  avatar_folder: str = '', provider_type: str = ''):
         self.provider_id = provider_id
         self.name = name.strip() or provider_id
@@ -85,6 +91,8 @@ class LlmProvider:
         self.style = style if style in LLM_STYLES else '稳健'
         self.nickname = nickname.strip()
         self.timeout_ms = timeout_ms
+        self.timeout_enabled = (timeout_enabled.strip().lower() != 'false') \
+            if isinstance(timeout_enabled, str) else timeout_enabled
         self.avatar_folder = avatar_folder.strip()
         self.provider_type = provider_type if provider_type in PROVIDER_TYPES else \
             infer_provider_type(self.base_url, self.model, self.provider_id)
@@ -105,6 +113,8 @@ class LlmProvider:
             model=self.model,
             style=style_override if style_override in LLM_STYLES else self.style,
             timeout_s=max(0.5, min(timeout_s, 120.0)),
+            timeout_enabled=global_cfg.timeout_enabled
+            if self.timeout_enabled is None else self.timeout_enabled,
             pool_timeout_s=global_cfg.pool_timeout_s,
             concurrency=global_cfg.concurrency,
             max_requests_per_room=global_cfg.max_requests_per_room,
@@ -122,6 +132,7 @@ def load_llm_config() -> LlmServerConfig:
         model=os.environ.get(MODEL_KEY, '').strip(),
         style=os.environ.get(STYLE_KEY, '稳健').strip(),
         timeout_s=float(os.environ.get(TIMEOUT_S_KEY, '40')),
+        timeout_enabled=os.environ.get(TIMEOUT_ENABLED_KEY, 'true').strip().lower() != 'false',
         pool_timeout_s=float(os.environ.get(POOL_TIMEOUT_S_KEY, '1')),
         concurrency=max(1, int(os.environ.get(CONCURRENCY_KEY, '4'))),
         max_requests_per_room=max(0, int(os.environ.get(MAX_PER_ROOM_KEY, '0'))),
@@ -179,6 +190,7 @@ def load_llm_providers() -> dict[str, LlmProvider]:
             style=(entry.get('style') or '稳健').strip(),
             nickname=(entry.get('nickname') or '').strip(),
             timeout_ms=timeout_ms,
+            timeout_enabled=entry.get('timeout_enabled'),
             avatar_folder=(entry.get('avatar_folder') or '').strip(),
             provider_type=(entry.get('provider_type') or '').strip().lower(),
         )

@@ -16,7 +16,9 @@ from app.llm.candidates import build_request
 from app.llm.client import request_llm_decision
 from app.llm.config import LlmServerConfig, load_llm_config
 from app.llm.prompt import build_prompt
-from app.llm.decision_speech import reasoning_status_speech, resolve_decision_speech
+from app.llm.decision_speech import (
+    reasoning_status_speech, resolve_decision_speech, safe_reasoning_status,
+)
 from app.llm.validation import validate_action
 from app.llm.conditional_reasoning import ConditionalReasoningCoordinator
 from app.llm.reasoning import resolve_reasoning_policy
@@ -38,13 +40,14 @@ class LLMPlayer(AIPlayer):
                  seat: int = -1,
                  provider_id: str = '',
                  on_message: Optional[Callable[[int, str, str], None]] = None,
-                 on_status: Optional[Callable[[int, bool, str], None]] = None,
+                 on_status: Optional[Callable[..., None]] = None,
                  reasoning: Optional[ConditionalReasoningCoordinator] = None):
         super().__init__(delays=delays, random=random, rule_set=rule_set)
         self.config = config or load_llm_config()
         self.stats = stats if stats is not None else {
             'requests': 0, 'successes': 0, 'fallbacks': 0, 'messages': 0,
             'invalid': 0, 'reasoningRequests': 0,
+            'thinkingRequests': 0, 'enhancedReasoningRequests': 0,
         }
         self.requests = 0  # 本座位自建以来请求数（房间预算近似：每座位独立计数）
         self.seat = seat
@@ -123,30 +126,62 @@ class LLMPlayer(AIPlayer):
         reasoning_policy = resolve_reasoning_policy(
             getattr(self.config, 'provider_type', ''), self.config.base_url, self.config.model,
             getattr(self.config, 'provider_id', ''), reasoning=True)
-        use_reasoning = reasoning_policy.mode == 'explicit-on' and self.reasoning.admit(
+        always_thinking = reasoning_policy.mode == 'always-on'
+        supports_reasoning = reasoning_policy.mode == 'explicit-on' or always_thinking
+        use_reasoning = supports_reasoning and self.reasoning.admit(
             request, self.seat, self.reasoning.config.min_remaining_budget_ms)
+        reasoning_status_active = use_reasoning
+        reasoning_progress_sequence = 0
+        thinking_counted = False
+
+        def count_thinking():
+            nonlocal thinking_counted
+            if thinking_counted:
+                return
+            thinking_counted = True
+            self.stats['thinkingRequests'] = self.stats.get('thinkingRequests', 0) + 1
+
+        def on_reasoning_progress():
+            nonlocal reasoning_status_active, reasoning_progress_sequence
+            count_thinking()
+            reasoning_progress_sequence += 1
+            reasoning_status_active = True
+            if self.on_status is not None:
+                try:
+                    self.on_status(
+                        self.seat, True,
+                        safe_reasoning_status(reasoning_progress_sequence), False)
+                except Exception:
+                    pass
+
         self.stats['requests'] += 1
+        if always_thinking:
+            count_thinking()
         if use_reasoning:
             self.stats['reasoningRequests'] = self.stats.get('reasoningRequests', 0) + 1
+            self.stats['enhancedReasoningRequests'] = \
+                self.stats.get('enhancedReasoningRequests', 0) + 1
+            count_thinking()
             if self.on_status is not None:
                 try:
                     status_text = reasoning_status_speech(
                         self.config.style, self.reasoning_status_sequence)
                     self.reasoning_status_sequence += 1
-                    self.on_status(self.seat, True, status_text)
+                    self.on_status(self.seat, True, status_text, True)
                 except Exception:
                     pass
         try:
             choice, message = await request_llm_decision(
                 self.config, system, user, ids, reasoning=use_reasoning,
-                deadline_ms=self.reasoning.config.deadline_ms if use_reasoning else None)
+                deadline_ms=self.reasoning.config.deadline_ms if use_reasoning else None,
+                on_reasoning_progress=on_reasoning_progress)
         except Exception:
             self.stats['fallbacks'] += 1
             return None
         finally:
-            if use_reasoning and self.on_status is not None:
+            if reasoning_status_active and self.on_status is not None:
                 try:
-                    self.on_status(self.seat, False, '')
+                    self.on_status(self.seat, False, '', False)
                 except Exception:
                     pass
         candidate = next((item for item in request['candidates'] if item['id'] == choice), None)

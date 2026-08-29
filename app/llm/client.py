@@ -8,7 +8,7 @@ import asyncio
 import json
 import re
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import httpx
 from loguru import logger
@@ -138,10 +138,70 @@ def parse_llm_output(raw: str, candidate_ids: list[str]) -> tuple[str, str]:
     return choice, message
 
 
+def _has_reasoning_value(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    return isinstance(value, (dict, list)) and bool(value)
+
+
+def _emit_reasoning_progress(callback: Optional[Callable[[], None]]) -> None:
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception:
+        pass
+
+
+async def _read_sse_response(response: httpx.Response,
+                             on_reasoning_progress: Optional[Callable[[], None]]):
+    """读取 OpenAI 兼容 SSE；只发进度脉冲，不保留或暴露原始推理文本。"""
+    content_parts: list[str] = []
+    finish_reason = None
+    usage: dict = {}
+    saw_data = False
+    saw_reasoning = False
+    async for raw_line in response.aiter_lines():
+        line = raw_line.strip()
+        if not line or not line.startswith('data:'):
+            continue
+        data = line[5:].strip()
+        if data == '[DONE]':
+            break
+        try:
+            event = json.loads(data)
+        except ValueError:
+            continue
+        saw_data = True
+        if isinstance(event.get('usage'), dict):
+            usage = event['usage']
+        event_reasoning = _has_reasoning_value(event.get('reasoning'))
+        choices = event.get('choices') or []
+        if choices:
+            choice = choices[0] or {}
+            delta = choice.get('delta') or choice.get('message') or {}
+            chunk = delta.get('content')
+            if isinstance(chunk, str):
+                content_parts.append(chunk)
+            event_reasoning = event_reasoning or any(
+                _has_reasoning_value(delta.get(key))
+                for key in ('reasoning_content', 'reasoning', 'thinking')
+            )
+            if choice.get('finish_reason') is not None:
+                finish_reason = choice.get('finish_reason')
+        if event_reasoning:
+            saw_reasoning = True
+            _emit_reasoning_progress(on_reasoning_progress)
+    if not saw_data:
+        raise LlmClientError(LlmClientError.KIND_PARSE, 'API 流式响应没有有效数据')
+    return ''.join(content_parts), finish_reason, usage, saw_reasoning
+
+
 async def _call_once(cfg: LlmServerConfig, system: str, user: str,
-                     budget_s: float, max_tokens: int = 64,
+                     budget_s: Optional[float], max_tokens: int = 64,
                      strict_length: bool = True, attempt_no: int = 1,
-                     reasoning: bool = False) -> str:
+                     reasoning: bool = False,
+                     on_reasoning_progress: Optional[Callable[[], None]] = None) -> str:
     endpoint = _normalize_endpoint(cfg.base_url)
     if endpoint is None:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'baseUrl 非法（userinfo 或协议不支持）')
@@ -159,13 +219,18 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         ],
         'temperature': 0.4,
         'top_p': 1,
-        'stream': False,
+        'stream': True,
         'n': 1,
     }
     reasoning_policy = resolve_reasoning_policy(
         getattr(cfg, 'provider_type', ''), cfg.base_url, cfg.model,
         getattr(cfg, 'provider_id', ''), reasoning=reasoning)
     always_thinking = reasoning_policy.mode == 'always-on'
+    model_name = (cfg.model or '').strip().lower().rsplit('/', 1)[-1]
+    if reasoning_policy.provider_type == 'claude' \
+            and re.match(r'^claude-sonnet-5(?:[.-]|$)', model_name):
+        payload.pop('temperature', None)
+        payload.pop('top_p', None)
     if always_thinking:
         max_tokens = max(max_tokens, 512)
     payload.update(reasoning_policy.request_body)
@@ -179,8 +244,40 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
     request_started = time.monotonic()
     try:
         async with llm_semaphore():
-            response = await client.post(
-                endpoint, headers=headers, json=payload, timeout=budget_s)
+            async with client.stream(
+                    'POST', endpoint, headers=headers, json=payload,
+                    timeout=budget_s) as response:
+                if response.status_code != 200:
+                    detail = (await response.aread()).decode(errors='replace')[:200]
+                    raise LlmClientError(
+                        LlmClientError.KIND_HTTP,
+                        f'HTTP {response.status_code}: {detail}')
+                content_type = response.headers.get('content-type', '')
+                if 'application/json' in content_type.lower():
+                    await response.aread()
+                    try:
+                        body = response.json()
+                    except ValueError as exc:
+                        raise LlmClientError(
+                            LlmClientError.KIND_PARSE, 'API 响应非 JSON') from exc
+                    choices = body.get('choices') or []
+                    if not choices:
+                        raise LlmClientError(
+                            LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
+                    first = choices[0]
+                    message_obj = first.get('message') or {}
+                    message = message_obj.get('content')
+                    finish_reason = first.get('finish_reason')
+                    usage = body.get('usage') if isinstance(body.get('usage'), dict) else {}
+                    leaked_reasoning = any(
+                        _has_reasoning_value(message_obj.get(key))
+                        for key in ('reasoning_content', 'reasoning', 'thinking')
+                    ) or _has_reasoning_value(body.get('reasoning'))
+                    if leaked_reasoning:
+                        _emit_reasoning_progress(on_reasoning_progress)
+                else:
+                    message, finish_reason, usage, leaked_reasoning = \
+                        await _read_sse_response(response, on_reasoning_progress)
     except httpx.TimeoutException as exc:
         elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
         logger.bind(
@@ -192,6 +289,8 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
             f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
             f'attempt={attempt_no} elapsed={elapsed_ms}ms kind=timeout')
         raise LlmClientError(LlmClientError.KIND_TIMEOUT, '请求超时') from exc
+    except LlmClientError:
+        raise
     except httpx.HTTPError as exc:
         elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
         logger.bind(
@@ -203,41 +302,14 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
             f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
             f'attempt={attempt_no} elapsed={elapsed_ms}ms kind=network')
         raise LlmClientError(LlmClientError.KIND_NETWORK, f'网络错误: {exc}') from exc
-    if response.status_code != 200:
-        elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
-        logger.bind(
-            llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
-            llm_attempt=attempt_no,
-            llm_elapsed_ms=elapsed_ms,
-            llm_http_status=response.status_code, llm_error='http',
-        ).warning(
-            f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
-            f'attempt={attempt_no} elapsed={elapsed_ms}ms '
-            f'kind=http status={response.status_code}')
-        detail = response.text[:200]
-        raise LlmClientError(LlmClientError.KIND_HTTP, f'HTTP {response.status_code}: {detail}')
-    try:
-        body = response.json()
-    except ValueError as exc:
-        raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应非 JSON') from exc
-    choices = body.get('choices') or []
-    if not choices:
-        raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
-    first = choices[0]
-    message_obj = first.get('message') or {}
-    message = message_obj.get('content')
     if not isinstance(message, str) or not message:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
-    if first.get('finish_reason') == 'length' and strict_length:
+    if finish_reason == 'length' and strict_length:
         raise LlmClientError(LlmClientError.KIND_PARSE, 'finish_reason=length（输出被截断）')
-    usage = body.get('usage') if isinstance(body.get('usage'), dict) else {}
     details = usage.get('completion_tokens_details') \
         if isinstance(usage.get('completion_tokens_details'), dict) else {}
-    reasoning_content = message_obj.get('reasoning_content')
     reasoning_tokens = details.get('reasoning_tokens')
-    leaked_reasoning = isinstance(reasoning_content, str) and bool(reasoning_content.strip())
     leaked_reasoning = leaked_reasoning or isinstance(reasoning_tokens, (int, float)) and reasoning_tokens > 0
-    leaked_reasoning = leaked_reasoning or isinstance(body.get('reasoning'), (str, list)) and bool(body.get('reasoning'))
     if leaked_reasoning and not reasoning and not always_thinking \
             and not reasoning_policy.accept_reasoning_response:
         raise LlmClientError(
@@ -248,13 +320,13 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
         llm_attempt=attempt_no,
         llm_elapsed_ms=elapsed_ms,
-        llm_finish_reason=first.get('finish_reason'),
+        llm_finish_reason=finish_reason,
         llm_completion_tokens=usage.get('completion_tokens'),
         llm_reasoning_tokens=details.get('reasoning_tokens'),
     ).info(
         f'LLM 请求完成 provider={cfg.provider_id or "default"} model={cfg.model} '
         f'attempt={attempt_no} elapsed={elapsed_ms}ms '
-        f'finish={first.get("finish_reason")} '
+        f'finish={finish_reason} '
         f'completionTokens={usage.get("completion_tokens")} '
         f'reasoningTokens={details.get("reasoning_tokens")}')
     return message
@@ -267,25 +339,31 @@ def _feedback_retry(user: str, error: str, legal_ids: list[str]) -> str:
 
 async def request_llm_decision(cfg: LlmServerConfig, system: str, user: str,
                                candidate_ids: list[str], reasoning: bool = False,
-                               deadline_ms: Optional[int] = None) -> tuple[str, str]:
+                               deadline_ms: Optional[int] = None,
+                               on_reasoning_progress: Optional[Callable[[], None]] = None,
+                               ) -> tuple[str, str]:
     """快速路径使用 cfg.timeout_s；条件深思使用独立 deadline_ms（均含语义重试）。"""
     started = time.monotonic()
-    total_budget_s = deadline_ms / 1000.0 \
-        if reasoning and deadline_ms is not None else cfg.timeout_s
+    timeout_enabled = getattr(cfg, 'timeout_enabled', True)
+    total_budget_s = (deadline_ms / 1000.0
+                      if reasoning and deadline_ms is not None else cfg.timeout_s) \
+        if timeout_enabled else float('inf')
     error_for_retry: Optional[str] = None
 
     async def attempt(messages_http_user: str) -> tuple[str, str]:
         left = total_budget_s - (time.monotonic() - started)
         if left <= 0:
             raise LlmClientError(LlmClientError.KIND_TIMEOUT, '总预算耗尽')
+        request_timeout = left if timeout_enabled else None
         try:
-            raw = await asyncio.wait_for(
-                _call_once(
-                    cfg, system, messages_http_user, budget_s=left,
-                    max_tokens=512 if reasoning else 64,
-                    attempt_no=2 if error_for_retry is not None else 1,
-                    reasoning=reasoning),
-                timeout=left)
+            call = _call_once(
+                cfg, system, messages_http_user, budget_s=request_timeout,
+                max_tokens=512 if reasoning else 64,
+                attempt_no=2 if error_for_retry is not None else 1,
+                reasoning=reasoning,
+                on_reasoning_progress=on_reasoning_progress)
+            raw = await asyncio.wait_for(call, timeout=left) \
+                if timeout_enabled else await call
         except asyncio.TimeoutError as exc:
             raise LlmClientError(
                 LlmClientError.KIND_TIMEOUT, '总预算耗尽') from exc

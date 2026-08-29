@@ -71,10 +71,24 @@ REASONING_STATUS_LINES = {
     '高冷': ('稍等。', '容我想想。', '这手要算。'),
 }
 
+SAFE_REASONING_STAGES = (
+    '正在观察公开牌局',
+    '正在整理规则约束',
+    '正在比较可行动作',
+    '正在评估攻守节奏',
+    '正在复核最终选择',
+)
+
 
 def reasoning_status_speech(style: str, sequence: int = 0) -> str:
     variants = REASONING_STATUS_LINES.get(style, REASONING_STATUS_LINES['稳健'])
     return variants[abs(sequence) % len(variants)]
+
+
+def safe_reasoning_status(sequence: int) -> str:
+    """只按推理块序号生成进度，不接触供应商原始思考内容。"""
+    count = max(1, int(sequence))
+    return f'思考中 · {SAFE_REASONING_STAGES[(count - 1) % len(SAFE_REASONING_STAGES)]}'
 
 
 def decision_speech(action: dict, style: str, sequence: int = 0) -> str:

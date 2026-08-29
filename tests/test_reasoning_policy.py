@@ -34,6 +34,10 @@ def test_glm_5_3_flash_custom_proxy_uses_lowest_always_on_reasoning():
     assert result.mode == 'always-on'
     assert result.request_body == {
         'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low'}
+    assert resolve_reasoning_policy(
+        'custom', 'https://api.orcarouter.ai/v1', 'z-ai/glm-5.3-flash',
+        reasoning=True).request_body == {
+            'thinking': {'type': 'enabled'}, 'reasoning_effort': 'medium'}
 
 
 def test_kimi_k3_qualified_model_uses_fixed_sampling_parameters():
@@ -41,7 +45,12 @@ def test_kimi_k3_qualified_model_uses_fixed_sampling_parameters():
         'kimi', 'https://api.orcarouter.ai/v1', 'kimi/kimi-k3')
     assert result.provider_type == 'kimi'
     assert result.mode == 'always-on'
-    assert result.request_body == {'temperature': 1.0, 'top_p': 0.95}
+    assert result.request_body == {
+        'temperature': 1.0, 'top_p': 0.95, 'reasoning_effort': 'low'}
+    assert resolve_reasoning_policy(
+        'kimi', 'https://api.orcarouter.ai/v1', 'kimi/kimi-k3',
+        reasoning=True).request_body == {
+            'temperature': 1.0, 'top_p': 0.95, 'reasoning_effort': 'high'}
 
 
 @pytest.mark.parametrize('model', ['kimi/kimi-k2.5', 'kimi/kimi-k2.6'])
@@ -53,6 +62,24 @@ def test_kimi_k2_switchable_qualified_models_keep_non_reasoning_parameters(model
     assert result.accept_reasoning_response
     assert result.request_body == {
         'thinking': {'type': 'disabled'}, 'temperature': 0.6, 'top_p': 0.95}
+    enabled = resolve_reasoning_policy(
+        'kimi', 'https://api.orcarouter.ai/v1', model, reasoning=True)
+    assert enabled.mode == 'explicit-on'
+    assert enabled.request_body == {
+        'thinking': {'type': 'enabled'}, 'temperature': 1.0, 'top_p': 0.95}
+
+
+def test_claude_sonnet_5_disables_default_thinking_then_enables_medium_adaptive():
+    quick = resolve_reasoning_policy(
+        'custom', 'https://api.orcarouter.ai/v1', 'anthropic/claude-sonnet-5')
+    deep = resolve_reasoning_policy(
+        'custom', 'https://api.orcarouter.ai/v1', 'anthropic/claude-sonnet-5',
+        reasoning=True)
+    assert quick.request_body == {'thinking': {'type': 'disabled'}}
+    assert deep.request_body == {
+        'thinking': {'type': 'adaptive', 'display': 'summarized'},
+        'output_config': {'effort': 'medium'},
+    }
 
 
 def test_kimi_k2_base_alias_remains_naturally_non_reasoning():

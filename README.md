@@ -203,7 +203,8 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `LLM_API_BASE` | 空 | OpenAI 兼容 API 根地址（**单提供商兼容路径**，见下） |
 | `LLM_API_KEY` | 空 | API 密钥（服务端持有，不下发） |
 | `LLM_MODEL` | 空 | 模型名，如 `deepseek-chat` |
-| `LLM_TIMEOUT_S` | `20` | 单次决策总预算（秒，含并发排队 + 一次语义重试） |
+| `LLM_TIMEOUT_S` | `40` | 单次决策总预算（秒，含并发排队 + 一次语义重试） |
+| `LLM_TIMEOUT_ENABLED` | `true` | 是否启用牌桌请求超时；`false` 表示不设置服务端截止时间 |
 | `LLM_POOL_TIMEOUT_S` | `1` | 并发信号量排队等待（秒） |
 | `LLM_STYLE` | `稳健` | 出牌风格：激进 / 稳健 / 话痨 / 高冷（单提供商路径） |
 | `LLM_CONCURRENCY` | `4` | 决策请求并发上限 |
@@ -232,7 +233,7 @@ LLM_PROVIDER_KIMI_API_KEY=sk-yyy
 LLM_PROVIDER_KIMI_MODEL=kimi-k2.6
 LLM_PROVIDER_KIMI_TYPE=kimi
 
-# GLM-5.3 Flash via OrcaRouter（始终思考，服务端自动使用 low + 512 tokens）
+# GLM-5.3 Flash via OrcaRouter（始终思考：普通 low，疑难 medium）
 LLM_PROVIDER_GLM_ORCA_BASE_URL=https://api.orcarouter.ai/v1
 LLM_PROVIDER_GLM_ORCA_API_KEY=sk-zzz
 LLM_PROVIDER_GLM_ORCA_MODEL=z-ai/glm-5.3-flash
@@ -241,6 +242,7 @@ LLM_PROVIDER_GLM_ORCA_TYPE=glm
 
 - 提供商 id = 变量名中段（小写）：`deepseek`、`kimi`…；可加 `_STYLE`（四风格）、
   `_NICKNAME`（缺省按 base URL 推导：DeepSeek=大肥鱼等）、`_TIMEOUT_MS`（毫秒）、
+  `_TIMEOUT_ENABLED`（默认 true；false 表示该提供商永不超时）、
   `_NAME`（展示名，缺省=id）、`_AVATAR_FOLDER`（头像素材文件夹）、`_TYPE`
   （`deepseek/qwen/kimi/doubao/minimax/openai/glm/claude/custom`）。使用自定义代理时建议设置
   `_TYPE`；未设置或设为 `custom` 时仍会按 Base URL/完整模型 ID 识别已知厂商参数。未知或推理专用模型不在请求前拦截，由上游返回真实错误。
@@ -269,10 +271,11 @@ LLM_PROVIDER_GLM_ORCA_TYPE=glm
 - 任何 **OpenAI 兼容** API 均可（Kimi `/v1`、通义 `compatible-mode/v1`、豆包
   `/api/v3`、MiniMax `/v1`、OpenAI `/v1`、智谱 `/api/paas/v4` 等），只需换
   Base / Key / Model。
-- 所有供应商的游戏决策统一最多等待 40 秒；快速路径自动关闭思考，困难局面可条件开启（每个AI座位每小局 2 次、全桌整场 24 次）；开局不因候选接近或审计抽样深思，超时回退启发式；深思状态短句可走 TTS，状态气泡在结果返回前保持；
-  GLM-5.3/5.3-Flash 例外：该系列无法完全关闭思考，固定发送 `thinking.enabled + reasoning_effort=low`，将 `max_tokens` 提高到 512，并允许响应携带 `reasoning_content`；
+- 所有供应商的游戏决策默认最多等待 40 秒；可通过全局 `LLM_TIMEOUT_ENABLED=false` 或提供商 `_TIMEOUT_ENABLED=false` 关闭服务端截止时间。快速路径自动关闭思考，困难局面可条件开启（每个AI座位每小局 2 次、全桌整场 24 次）；开局不因候选接近或审计抽样升级思考，超时回退启发式；
+  Kimi K3 与 GLM-5.3/5.3-Flash 始终思考，普通局面分别使用 low，疑难局面取得额度后分别升级 high / medium；Kimi K2.5/K2.6 普通关闭、疑难开启；Claude Sonnet 5 普通显式关闭 adaptive thinking、疑难使用 medium；
+  后端统一请求 `stream:true` 并解析 SSE。普通 always-on low 不先播“让我想想怎么打”等台词/TTS，但收到推理块后仍通过 `llm_status` 广播安全进度气泡；原始 `reasoning_content` 永不广播、记录或送入 TTS；
   百炼 `qwen3.5`～`qwen3.8` 自动设置 `enable_thinking=false` 并请求 JSON Object，
-  未显式配置 `TIMEOUT_MS` 时使用 8 秒决策预算；
+  未显式配置 `TIMEOUT_MS` 时使用统一 40 秒决策预算；
   Anthropic 自动追加浏览器访问头；`http://127.0.0.1:端口` 本地代理（如
   Ollama）允许使用，远端仅允许 https。
 - 失败兜底：任何一次决策超时 / 网络 / 非法返回都会自动回退启发式 AI

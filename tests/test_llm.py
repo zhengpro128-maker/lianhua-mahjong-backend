@@ -442,6 +442,46 @@ def make_llm_player(monkeypatch, responses, *, seat=-1, provider_id='', on_messa
 
 
 class TestLLMPlayer:
+    def test_always_on_low_skips_opening_speech_but_keeps_stream_progress(
+            self, monkeypatch):
+        from app.llm.config import LlmServerConfig
+
+        calls = []
+        statuses = []
+
+        async def fake_decision(_cfg, _system, _user, _ids, **options):
+            calls.append(options)
+            options['on_reasoning_progress']()
+            return 'A1', '稳住。'
+
+        monkeypatch.setattr('app.game.llm_player.request_llm_decision', fake_decision)
+        player = LLMPlayer(
+            delays={'turn': 0, 'after_kong': 0, 'claim': 0},
+            config=LlmServerConfig(
+                enabled=True, base_url='https://api.orcarouter.ai/v1', api_key='sk',
+                model='kimi/kimi-k3', provider_type='kimi', style='稳健'),
+            seat=1,
+            on_status=lambda *args: statuses.append(args),
+        )
+        opening = turn_ctx(hand=['m3', 'm5', 'm6'], turnOrigin='opening')
+        assert run(player.request_turn(opening))['kind'] == 'discard'
+        assert calls[0]['reasoning'] is False
+        assert (1, True, '让我想想怎么打。', True) not in statuses
+        assert (1, True, '思考中 · 正在观察公开牌局', False) in statuses
+        assert statuses[-1] == (1, False, '', False)
+        assert player.stats['thinkingRequests'] == 1
+        assert player.stats['enhancedReasoningRequests'] == 0
+
+        statuses.clear()
+        late = turn_ctx(hand=['m3', 'm5', 'm6'], turnOrigin='draw')
+        late.wallCount = 12
+        assert run(player.request_turn(late))['kind'] == 'discard'
+        assert calls[1]['reasoning'] is True
+        assert (1, True, '让我想想怎么打。', True) in statuses
+        assert (1, True, '思考中 · 正在观察公开牌局', False) in statuses
+        assert player.stats['thinkingRequests'] == 2
+        assert player.stats['enhancedReasoningRequests'] == 1
+
     def test_turn_win_short_circuit_no_llm_call(self, monkeypatch):
         player, fake = make_llm_player(monkeypatch, [])
         # 白板癞子 + 4 面子 + 一对 → 胡
@@ -614,6 +654,34 @@ class TestPersona:
 
 
 class TestProviderRegistry:
+    def test_reasoning_capability_matrix_matches_frontend(self):
+        from app.llm.reasoning import resolve_reasoning_policy
+
+        def policy(model, reasoning=False, provider_type='custom'):
+            return resolve_reasoning_policy(
+                provider_type, 'https://api.orcarouter.ai/v1', model,
+                reasoning=reasoning)
+
+        assert policy('kimi/kimi-k3').request_body['reasoning_effort'] == 'low'
+        assert policy('kimi/kimi-k3', True).request_body['reasoning_effort'] == 'high'
+        assert policy('z-ai/glm-5.3-flash').request_body['reasoning_effort'] == 'low'
+        assert policy('z-ai/glm-5.3-flash', True).request_body['reasoning_effort'] == 'medium'
+        assert policy('kimi/kimi-k2.6', provider_type='kimi').request_body == {
+            'thinking': {'type': 'disabled'}, 'temperature': 0.6, 'top_p': 0.95,
+        }
+        assert policy(
+            'kimi/kimi-k2.6', True, provider_type='kimi').request_body == {
+                'thinking': {'type': 'enabled'}, 'temperature': 1.0, 'top_p': 0.95,
+            }
+        assert policy('anthropic/claude-sonnet-5').request_body == {
+            'thinking': {'type': 'disabled'},
+        }
+        assert policy('anthropic/claude-sonnet-5', True).request_body == {
+            'thinking': {'type': 'adaptive', 'display': 'summarized'},
+            'output_config': {'effort': 'medium'},
+        }
+        assert policy('kimi/kimi-k2', True, provider_type='kimi').mode == 'naturally-off'
+
     def test_env_registry_parsing(self, monkeypatch):
         # 与开发机 backend/.env 隔离，只验证本用例声明的注册表。
         for key in list(os.environ):
@@ -628,6 +696,7 @@ class TestProviderRegistry:
         monkeypatch.setenv('LLM_PROVIDER_KIMI_TYPE', 'kimi')
         monkeypatch.setenv('LLM_PROVIDER_KIMI_STYLE', '话痨')
         monkeypatch.setenv('LLM_PROVIDER_KIMI_AVATAR_FOLDER', 'kimi')
+        monkeypatch.setenv('LLM_PROVIDER_KIMI_TIMEOUT_ENABLED', 'false')
         from app.llm.config import load_llm_providers
         providers = load_llm_providers()
         assert set(providers) == {'deepseek', 'kimi'}
@@ -635,6 +704,8 @@ class TestProviderRegistry:
         assert providers['kimi'].name == 'kimi'
         assert providers['kimi'].avatar_folder == 'kimi'
         assert providers['kimi'].provider_type == 'kimi'
+        assert providers['kimi'].timeout_enabled is False
+        assert providers['kimi'].to_config().timeout_enabled is False
 
     def test_incomplete_provider_skipped(self, monkeypatch):
         monkeypatch.delenv('LLM_PROVIDER_X_API_KEY', raising=False)
@@ -799,8 +870,84 @@ class TestProviderRegistry:
         assert captured['max_tokens'] == 512
         assert captured['temperature'] == 1.0
         assert captured['top_p'] == 0.95
+        assert captured['reasoning_effort'] == 'low'
         assert 'thinking' not in captured
         run(http.aclose())
+
+    def test_streaming_reasoning_only_emits_safe_progress_pulse(self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+        pulses = []
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            sse = (
+                'data: {"choices":[{"delta":{"reasoning_content":"private"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"{\\"choice\\":\\"A1\\","}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"\\"message\\":\\"稳住\\"}"},'
+                '"finish_reason":"stop"}]}\n\n'
+                'data: [DONE]\n\n'
+            )
+            return httpx.Response(
+                200, text=sse, headers={'content-type': 'text/event-stream'})
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://api.orcarouter.ai/v1', api_key='sk-kimi',
+            model='kimi/kimi-k3', provider_id='kimi-orca', provider_type='kimi')
+        assert run(request_llm_decision(
+            cfg, 'system', 'user', ['A1'],
+            on_reasoning_progress=lambda: pulses.append('progress'))) == ('A1', '稳住')
+        assert captured['stream'] is True
+        assert pulses == ['progress']
+        run(http.aclose())
+
+    def test_claude_sonnet_5_quick_request_disables_thinking_without_sampling(
+            self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                    'finish_reason': 'stop',
+                }],
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://api.orcarouter.ai/v1', api_key='sk',
+            model='anthropic/claude-sonnet-5', provider_type='custom')
+        assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
+        assert captured['thinking'] == {'type': 'disabled'}
+        assert 'temperature' not in captured
+        assert 'top_p' not in captured
+        run(http.aclose())
+
+    def test_disabled_timeout_passes_no_deadline_to_http_call(self, monkeypatch):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        budgets = []
+
+        async def fake_call(*_args, budget_s=None, **_kwargs):
+            budgets.append(budget_s)
+            return '{"choice":"A1","message":"稳住"}'
+
+        monkeypatch.setattr('app.llm.client._call_once', fake_call)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://proxy.example.com/v1', api_key='sk',
+            model='custom', timeout_s=0.01, timeout_enabled=False)
+        assert run(request_llm_decision(cfg, 'system', 'user', ['A1'])) == ('A1', '稳住')
+        assert budgets == [None]
 
     def test_reasoning_leak_is_rejected(self, monkeypatch):
         from app.llm.client import LlmClientError, request_llm_decision
@@ -932,6 +1079,8 @@ class TestPerSeatAssembly:
             room._on_llm_status(1, True, '让我想想怎么打。')
             await asyncio.gather(*list(room._tts_tasks))
             room._on_llm_status(1, False, '')
+            room._on_llm_status(1, True, '思考中 · 正在观察公开牌局', False)
+            room._on_llm_status(1, False, '', False)
 
         run(scenario())
         assert emitted[0] == {
@@ -943,6 +1092,12 @@ class TestPerSeatAssembly:
             'priority': 'normal',
         }
         assert emitted[2] == {'kind': 'llm_status', 'seat': 1, 'active': False}
+        assert emitted[3] == {
+            'kind': 'llm_status', 'seat': 1, 'active': True,
+            'text': '思考中 · 正在观察公开牌局',
+        }
+        assert emitted[4] == {'kind': 'llm_status', 'seat': 1, 'active': False}
+        assert sum(item['kind'] == 'llm_audio' for item in emitted) == 1
         assert room._llm_messages == []
 
     @pytest.mark.parametrize(

@@ -2,7 +2,7 @@
 
 from app.llm.decision_speech import (
     DECISION_SPEECH_LINES, REASONING_STATUS_LINES, decision_speech,
-    reasoning_status_speech, resolve_decision_speech,
+    reasoning_status_speech, resolve_decision_speech, safe_reasoning_status,
 )
 
 
@@ -33,6 +33,8 @@ def test_reasoning_status_has_multiple_short_lines_per_style():
         assert all(len(line) <= 16 and '稳稳' not in line for line in lines)
     assert reasoning_status_speech('稳健', 0) == '让我想想怎么打。'
     assert reasoning_status_speech('稳健', 3) == '让我想想怎么打。'
+    assert safe_reasoning_status(1) == '思考中 · 正在观察公开牌局'
+    assert safe_reasoning_status(6) == '思考中 · 正在观察公开牌局'
 
 
 def test_vague_bluff_is_kept_but_explicitly_keeping_discard_and_backstage_terms_fallback():

@@ -766,8 +766,9 @@ class RoomSession:
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
-    def _on_llm_status(self, seat: int, active: bool, text: str = '') -> None:
-        """深思状态不进入普通台词历史/限流；状态台词可独立合成 TTS。"""
+    def _on_llm_status(self, seat: int, active: bool, text: str = '',
+                       speak: bool = True) -> None:
+        """思考状态不进历史/限流；开场台词可 TTS，安全流式进度只显示气泡。"""
         if not 0 <= seat < self.player_count:
             return
         if not active:
@@ -779,6 +780,8 @@ class RoomSession:
         self.conn.broadcast({
             'kind': 'llm_status', 'seat': seat, 'active': True, 'text': text,
         })
+        if not speak:
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -885,6 +888,8 @@ class RoomSession:
                 'LLM 场次统计 '
                 f'请求={stats.get("requests", 0)} 成功={stats.get("successes", 0)} '
                 f'回退={stats.get("fallbacks", 0)} 吐槽={stats.get("messages", 0)} '
+                f'思考={stats.get("thinkingRequests", 0)} '
+                f'升级={stats.get("enhancedReasoningRequests", stats.get("reasoningRequests", 0))} '
                 f'非法={stats.get("invalid", 0)}')
         if not reports:
             return

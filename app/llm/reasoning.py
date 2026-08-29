@@ -72,15 +72,19 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
         return _policy(kind, 'unknown', '无法确认该千问型号是否支持非思考模式')
     if kind == 'kimi':
         if re.match(r'^kimi-k3(?:[.-]|$)', name):
-            return _policy(kind, 'always-on', 'Kimi K3 自动思考，已使用模型固定采样参数', {
+            return _policy(kind, 'always-on', 'Kimi K3 始终思考', {
                 'temperature': 1.0, 'top_p': 0.95,
+                'reasoning_effort': 'high' if reasoning else 'low',
             })
         if 'thinking' in name:
             return _policy(kind, 'reasoning-only', 'Kimi Thinking 型号无法关闭思考')
         if re.match(r'^kimi-k2[.-](?:5|6)(?:[.-]|$)', name):
-            return _policy(kind, 'explicit-off', '已强制关闭 Kimi 思考模式', {
-                'thinking': {'type': 'disabled'}, 'temperature': 0.6, 'top_p': 0.95,
-            }, accept_reasoning_response=True)
+            return _policy(kind, 'explicit-on', '已开启 Kimi K2.5/K2.6 条件思考', {
+                'thinking': {'type': 'enabled'}, 'temperature': 1.0, 'top_p': 0.95,
+            }) if reasoning else _policy(
+                kind, 'explicit-off', '已强制关闭 Kimi 思考模式', {
+                    'thinking': {'type': 'disabled'}, 'temperature': 0.6, 'top_p': 0.95,
+                }, accept_reasoning_response=True)
         if re.match(r'^(?:kimi-k2|moonshot-v1)', name):
             return _policy(kind, 'naturally-off', '该 Kimi 型号本身不输出思考链')
         return _policy(kind, 'unknown', '无法确认该 Kimi 型号是否支持非思考模式')
@@ -113,8 +117,9 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
         if 'thinking' in name:
             return _policy(kind, 'reasoning-only', '显式 Thinking 型号不用于实时麻将决策')
         if re.match(r'^glm-5\.3(?:[.-]|$)', name):
-            return _policy(kind, 'always-on', 'GLM-5.3 始终思考，已使用最低推理强度', {
-                'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low',
+            return _policy(kind, 'always-on', 'GLM-5.3 始终思考', {
+                'thinking': {'type': 'enabled'},
+                'reasoning_effort': 'medium' if reasoning else 'low',
             })
         if re.match(r'^glm-(?:4\.(?:5|6|7)|5)(?:[.-]|$)', name):
             return _policy(kind, 'explicit-off', '已强制关闭 GLM 思考模式',
@@ -123,5 +128,13 @@ def resolve_reasoning_policy(provider_type: str, base_url: str, model: str,
             return _policy(kind, 'naturally-off', '该 GLM 型号本身不是思考模型')
         return _policy(kind, 'unknown', '无法确认该 GLM 型号是否支持非思考模式')
     if kind == 'claude':
+        if re.match(r'^claude-sonnet-5(?:[.-]|$)', name):
+            return _policy(kind, 'explicit-on', '已开启 Claude Sonnet 5 自适应思考', {
+                'thinking': {'type': 'adaptive', 'display': 'summarized'},
+                'output_config': {'effort': 'medium'},
+            }) if reasoning else _policy(
+                kind, 'explicit-off', '已关闭 Claude Sonnet 5 自适应思考', {
+                    'thinking': {'type': 'disabled'},
+                })
         return _policy(kind, 'naturally-off', 'Claude 扩展思考未显式开启')
     return _policy(kind, 'unknown', '自定义 OpenAI 兼容协议按用户配置直接请求')
