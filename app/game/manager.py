@@ -1246,6 +1246,7 @@ class GameManager:
                     'name': player.name,
                     'avatar': player.avatar,
                     'characterId': player.characterId,
+                    'playerKind': player.playerKind,
                     'score': player.score,
                     'delta': player.score - scores_before[index],
                     'rank': ranks.get(index),

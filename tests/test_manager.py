@@ -223,7 +223,8 @@ def test_end_draw_records_tenpai():
     manager.players = [
         _GP(name='A', avatar='', score=1000, seat=i, hand=(tenpai_hand if i in (0, 2) else noten_hand),
             discards=[], melds=[], redCount=0, drawnTileIndex=-1,
-            characterId=('qwen' if i == 0 else 'deepseek'))
+            characterId=('qwen' if i == 0 else 'deepseek'),
+            playerKind=('human', 'llm', 'bot', 'bot')[i])
         for i in range(4)
     ]
     manager.dealer = 0   # 庄家（seat 0）听牌
@@ -235,6 +236,9 @@ def test_end_draw_records_tenpai():
     assert all(change['delta'] == 0 for change in manager.result['scoreChanges'])
     assert [change['characterId'] for change in manager.result['scoreChanges']] == [
         'qwen', 'deepseek', 'deepseek', 'deepseek',
+    ]
+    assert [change['playerKind'] for change in manager.result['scoreChanges']] == [
+        'human', 'llm', 'bot', 'bot',
     ]
 
 
