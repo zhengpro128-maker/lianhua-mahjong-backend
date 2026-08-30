@@ -34,6 +34,7 @@ TileType = Literal[
 
 # 场次类型
 MatchType = Literal['east', 'hanchan']
+PlayerKind = Literal['human', 'llm', 'bot']
 
 # ─── 副露 ─────────────────────────────────────────────────
 
@@ -63,6 +64,9 @@ class GamePlayer(BaseModel):
     melds: list[Meld]
     redCount: int
     drawnTileIndex: int
+    # llmAnime 表现身份；旧构造方/旧快照不提供时保持兼容。
+    characterId: Optional[str] = None
+    playerKind: Optional[PlayerKind] = None
 
 
 # ─── 桌面动作 ─────────────────────────────────────────────

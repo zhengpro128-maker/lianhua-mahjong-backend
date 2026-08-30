@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from app.game.anime_characters import resolve_anime_character_id
 from app.game.manager import PLAY_PACE
 from app.game.room import RoomError, RoomSession, room_registry
 from app.llm.config import (LLM_STYLES, default_provider_id,
@@ -94,6 +95,7 @@ def _room_response(room: RoomSession) -> dict:
             None if state is None else {
                 'seat': state.seat,
                 'nickname': state.nickname,
+                'characterId': state.character_id,
                 'ready': state.ready,
                 'connected': state.controller.connected,
             }
@@ -116,6 +118,8 @@ class CreateRoomRequest(BaseModel):
 class JoinRequest(BaseModel):
     nickname: str = Field(min_length=1, max_length=20)
     playerId: Optional[str] = Field(default=None, max_length=64)  # 客户端匿名身份（guestId）
+    # 只做长度边界；未知/非法值由角色白名单归一化为 DeepSeek，而不是返回 422。
+    characterId: Optional[str] = Field(default=None, max_length=64)
 
 
 class SeatActionRequest(BaseModel):
@@ -202,7 +206,9 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
     if body.playerId and room_registry.find_room_by_player(body.playerId) is not None:
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
     try:
-        seat, is_rejoin, state = room.join_or_rejoin(body.nickname, player_id=body.playerId)
+        character_id = resolve_anime_character_id(body.characterId)
+        seat, is_rejoin, state = room.join_or_rejoin(
+            body.nickname, player_id=body.playerId, character_id=character_id)
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"加入房间失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})
@@ -212,6 +218,7 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
         'roomId': room.room_id,
         'seat': seat,
         'nickname': state.nickname,
+        'characterId': state.character_id,
         'rejoinCode': state.rejoin_code,
         'playerId': state.player_id,
         'rejoin': is_rejoin,

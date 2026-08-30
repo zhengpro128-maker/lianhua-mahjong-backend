@@ -80,6 +80,7 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
         'nickname': state.nickname,
+        'characterId': state.character_id,
         'rejoinCode': state.rejoin_code,
     })
     await room.conn.send_to_seat(seat, build_snapshot(room, seat))

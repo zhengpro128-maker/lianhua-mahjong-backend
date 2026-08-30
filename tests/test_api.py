@@ -291,21 +291,37 @@ async def test_join_leave_room(server, fresh_rooms, temp_storage):
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
 
         # join 甲 → seat 0 + rejoinCode
-        resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '甲'})
+        resp = await http.post(f'/api/rooms/{room_id}/join', json={
+            'nickname': '甲', 'characterId': '  ＱＷＥＮ  ',
+        })
         assert resp.status_code == 200
         join_a = resp.json()
         assert join_a['seat'] == 0
         assert join_a['rejoin'] is False
+        assert join_a['characterId'] == 'qwen'
         assert len(join_a['rejoinCode']) == 9  # XXXX-XXXX
 
-        # 乙加入 seat 1
+        # 乙加入 seat 1；非法角色不是协议错误，安全回退 DeepSeek。
         join_b = (await http.post(f'/api/rooms/{room_id}/join',
-                                  json={'nickname': '乙'})).json()
+                                  json={'nickname': '乙', 'characterId': '../gpt'})).json()
+        assert join_b['characterId'] == 'deepseek'
+
+        # bounded string：过长值仍由请求模型拒绝。
+        too_long = await http.post(f'/api/rooms/{room_id}/join', json={
+            'nickname': '丙', 'characterId': 'q' * 65,
+        })
+        assert too_long.status_code == 422
 
         # 房间信息反映座位占用
         seats = (await http.get(f'/api/rooms/{room_id}')).json()['seats']
-        assert seats[0] == {'seat': 0, 'nickname': '甲', 'ready': False, 'connected': False}
-        assert seats[1] == {'seat': 1, 'nickname': '乙', 'ready': False, 'connected': False}
+        assert seats[0] == {
+            'seat': 0, 'nickname': '甲', 'characterId': 'qwen',
+            'ready': False, 'connected': False,
+        }
+        assert seats[1] == {
+            'seat': 1, 'nickname': '乙', 'characterId': 'deepseek',
+            'ready': False, 'connected': False,
+        }
 
         # 非房主（乙）leave 释放座位，房间保留
         resp = await http.post(f'/api/rooms/{room_id}/leave',

@@ -440,15 +440,20 @@ class GameManager:
     # ── 发牌与牌墙 ──
 
     def _reset_players(self) -> None:
-        previous = [p.score for p in self.players]
+        previous = self.players
         self.players = []
         for index, seed in enumerate(self.seeds):
-            score = previous[index] if index < len(previous) else seed['score']
+            prior = previous[index] if index < len(previous) else None
+            score = prior.score if prior is not None else seed['score']
             if self.rules.code == 'lotus-legacy' and index >= len(previous):
                 score = 2000
             self.players.append(GamePlayer(
                 name=seed['name'], avatar=seed['avatar'], score=score, seat=index,
                 hand=[], discards=[], melds=[], redCount=0, drawnTileIndex=-1,
+                characterId=seed.get(
+                    'characterId', prior.characterId if prior is not None else None),
+                playerKind=seed.get(
+                    'playerKind', prior.playerKind if prior is not None else None),
             ))
         self._table_context.players = self.players
 

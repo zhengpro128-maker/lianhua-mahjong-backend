@@ -22,13 +22,17 @@ from typing import Optional
 
 from loguru import logger
 
+from app.game.anime_characters import (
+    DEFAULT_ANIME_CHARACTER_ID,
+    resolve_anime_character_id,
+)
 from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.llm_player import LLMPlayer
 from app.game.remote_player import RemotePlayer
 from app.llm.config import (default_provider_id, llm_server_available,
                             load_llm_providers)
-from app.llm.persona import avatar_url, default_nickname, display_name
+from app.llm.persona import avatar_url, default_nickname, display_name, provider_folder
 from app.llm.speech_policy import LlmSpeechPolicy, compact_speech_text
 from app.llm.conditional_reasoning import ConditionalReasoningCoordinator
 from app.tts.service import get_tts_service
@@ -123,15 +127,17 @@ def _fetch_random_avatar() -> str:
 class SeatState:
     """座位会话元数据：真人占座后的身份 / 重进码 / 头像 / 控制器 / 准备态。"""
 
-    __slots__ = ('seat', 'nickname', 'rejoin_code', 'player_id', 'avatar',
+    __slots__ = ('seat', 'nickname', 'rejoin_code', 'player_id', 'character_id', 'avatar',
                  'controller', 'connected_at', 'ready')
 
     def __init__(self, seat: int, nickname: str, rejoin_code: str, controller: RemotePlayer,
-                 player_id: Optional[str] = None):
+                 player_id: Optional[str] = None,
+                 character_id: str = DEFAULT_ANIME_CHARACTER_ID):
         self.seat = seat
         self.nickname = nickname
         self.rejoin_code = rejoin_code
         self.player_id = player_id
+        self.character_id = resolve_anime_character_id(character_id)
         self.avatar = ''   # 头像 URL：join 时按 player_id 持久化分配；空串 → 前端座位默认
         self.controller = controller
         self.connected_at: Optional[float] = None
@@ -367,7 +373,8 @@ class RoomSession:
         state.avatar = avatar
 
     def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None,
-                       player_id: Optional[str] = None):
+                       player_id: Optional[str] = None,
+                       character_id: str = DEFAULT_ANIME_CHARACTER_ID):
         """REST join：占第一个空座并签发重进码（is_rejoin=False）。失败抛 RoomError。
 
         真人占座受 capacity 上限约束（超出 → ROOM_FULL）；AI 座位不在此列。
@@ -391,7 +398,7 @@ class RoomSession:
                 controller = RemotePlayer(seat, self.conn, timeout=self.turn_timeout,
                                           room_id=self.room_id, rule_set=self.rules)
                 state = SeatState(seat, nickname, _make_rejoin_code(), controller,
-                                  player_id=player_id)
+                                  player_id=player_id, character_id=character_id)
                 self.seats[seat] = state
                 self._ensure_seat_avatar(state)
                 if self.creator_seat is None:
@@ -732,7 +739,13 @@ class RoomSession:
         for seat, state in enumerate(self.seats):
             if state is not None:
                 # 真人头像 = join 时按 player_id 持久化分配的 URL（空串 → 前端座位默认）
-                seeds.append({'name': state.nickname, 'avatar': state.avatar, 'score': 1000})
+                seeds.append({
+                    'name': state.nickname,
+                    'avatar': state.avatar,
+                    'score': 1000,
+                    'characterId': state.character_id,
+                    'playerKind': 'human',
+                })
             else:
                 provider = providers.get(self._seat_provider_id(seat))
                 if provider is not None:
@@ -747,10 +760,23 @@ class RoomSession:
                         'avatar': avatar_url(provider.base_url, style,
                                              provider.avatar_folder, provider.provider_id),
                         'score': 1000,
+                        'characterId': resolve_anime_character_id(
+                            provider_id=provider.provider_id,
+                            avatar_folder=provider_folder(
+                                provider.base_url,
+                                provider.avatar_folder,
+                                provider.provider_id,
+                            ),
+                        ),
+                        'playerKind': 'llm',
                     })
                 else:
                     # AI 空座：固定种子头像，不随用户变化
-                    seeds.append(PLAYER_SEED[seat])
+                    seeds.append({
+                        **PLAYER_SEED[seat],
+                        'characterId': DEFAULT_ANIME_CHARACTER_ID,
+                        'playerKind': 'bot',
+                    })
         return seeds
 
     def _on_llm_message(self, seat: int, text: str,
