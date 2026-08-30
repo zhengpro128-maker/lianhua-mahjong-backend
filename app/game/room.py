@@ -872,21 +872,24 @@ class RoomSession:
                     # LLM 空位：按提供商/策略给出头像与显示名（「昵称（策略）」，
                     # 昵称缺省按供应商推导：DeepSeek=大肥鱼等）
                     style = self._seat_style(seat, provider)
+                    avatar_folder = provider_folder(
+                        provider.base_url,
+                        provider.avatar_folder,
+                        provider.provider_id,
+                        provider.model,
+                        provider.provider_type,
+                    )
                     seeds.append({
                         'name': display_name(provider.nickname or default_nickname(
                                                  provider.base_url,
                                                  provider_id=provider.provider_id),
                                              style),
-                        'avatar': avatar_url(provider.base_url, style,
-                                             provider.avatar_folder, provider.provider_id),
+                        'avatar': avatar_url(
+                            provider.base_url, style, avatar_folder, provider.provider_id),
                         'score': 1000,
                         'characterId': resolve_anime_character_id(
-                            provider_id=provider.provider_id,
-                            avatar_folder=provider_folder(
-                                provider.base_url,
-                                provider.avatar_folder,
-                                provider.provider_id,
-                            ),
+                            provider_id=provider.provider_type,
+                            avatar_folder=avatar_folder,
                         ),
                         'playerKind': 'llm',
                     })

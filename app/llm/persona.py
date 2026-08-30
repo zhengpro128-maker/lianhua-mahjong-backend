@@ -9,6 +9,8 @@
 import re
 from typing import Optional
 
+from app.llm.reasoning import infer_provider_type
+
 _STYLE_FILES = {
     '激进': 'llm-avatar-jijin.png',
     '稳健': 'llm-avatar-wenjian.png',
@@ -52,14 +54,21 @@ def _profile_from_id(provider_id: str) -> tuple[str, str] | None:
     return None
 
 
-def provider_folder(base_url: str, avatar_folder: str = '', provider_id: str = '') -> str:
-    """供应商头像文件夹：显式配置 > 官方 Base URL > provider id > custom。"""
+def provider_folder(base_url: str, avatar_folder: str = '', provider_id: str = '',
+                    model: str = '', provider_type: str = '') -> str:
+    """供应商头像文件夹：显式配置 > 官方 URL > 模型/类型 > provider id > custom。"""
     override = (avatar_folder or '').strip().lower()
     if override and re.fullmatch(r'[a-z0-9_-]+', override):
         return override
     for pattern, folder, _ in _PROFILES:
         if pattern.search(base_url or ''):
             return folder
+    effective_type = provider_type if provider_type and provider_type != 'custom' else \
+        infer_provider_type(base_url, model, provider_id)
+    if effective_type == 'openai':
+        return 'gpt'
+    if effective_type in _ID_PROFILES:
+        return _ID_PROFILES[effective_type][0]
     inferred = _profile_from_id(provider_id)
     if inferred:
         return inferred[0]

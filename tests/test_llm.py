@@ -671,6 +671,9 @@ class TestPersona:
         assert provider_folder('https://my.proxy.local/v1', provider_id='relay_gpt') == 'gpt'
         assert provider_folder('https://my.proxy.local/v1', avatar_folder='claude',
                                provider_id='relay_gpt') == 'claude'
+        assert provider_folder(
+            'https://api.orcarouter.ai/v1', provider_id='orca-router',
+            model='anthropic/claude-sonnet-5', provider_type='custom') == 'claude'
         assert default_nickname('https://api.deepseek.com/v1') == '大肥鱼'
         assert default_nickname('https://x.com/v1', fallback='AI玩家') == 'AI玩家'
         assert default_nickname('https://x.com/v1', provider_id='relay_gpt') == 'GPT'
@@ -1693,6 +1696,23 @@ class TestPerSeatAssembly:
         monkeypatch.setattr('app.game.room.llm_server_available', lambda: False)
         room2 = RoomSession('SEEDS2', mode='east', capacity=4, llm_enabled=True)
         assert room2._seeds()[1]['name'] == PLAYER_SEED[1]['name']
+
+    def test_custom_orcarouter_model_maps_claude_character(self, monkeypatch):
+        from app.game.room import RoomSession
+        from app.llm.config import LlmProvider
+        monkeypatch.setattr('app.game.room.llm_server_available', lambda: True)
+        provider = LlmProvider(
+            provider_id='orca-claude', name='Orca Claude',
+            base_url='https://api.orcarouter.ai/v1', api_key='sk-test',
+            model='anthropic/claude-sonnet-5', provider_type='custom')
+        monkeypatch.setattr(
+            'app.game.room.load_llm_providers', lambda: {'orca-claude': provider})
+        room = RoomSession('ORCA-CLAUDE', mode='east', capacity=4, llm_enabled=True)
+        room._llm_default_provider = 'orca-claude'
+
+        seed = room._seeds()[1]
+        assert seed['characterId'] == 'claude'
+        assert seed['avatar'] == 'img/llm/claude/llm-avatar-wenjian.png'
 
     def test_unknown_provider_falls_back_to_heuristic(self, monkeypatch):
         from app.game.player import AIPlayer
