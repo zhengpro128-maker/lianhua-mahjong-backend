@@ -26,9 +26,8 @@ from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.llm_player import LLMPlayer
 from app.game.remote_player import RemotePlayer
-from app.llm.client import request_llm_decision
-from app.llm.config import (LlmServerConfig, default_provider_id,
-                            llm_server_available, load_llm_providers)
+from app.llm.config import (default_provider_id, llm_server_available,
+                            load_llm_providers)
 from app.llm.persona import avatar_url, default_nickname, display_name
 from app.llm.speech_policy import LlmSpeechPolicy, compact_speech_text
 from app.llm.conditional_reasoning import ConditionalReasoningCoordinator
@@ -93,14 +92,6 @@ _LLM_DRAW_LINES = {
 
 _ROUND_REACTION_TEXT_SECONDS = 1.5
 _ROUND_REACTION_MAX_SECONDS = 8.0
-_ROUND_REACTION_MODEL_TIMEOUT_SECONDS = 5.0
-_ROUND_REACTION_STYLE_GUIDANCE = {
-    '激进': '自信、有冲劲，可以轻微挑衅，但不骂人',
-    '稳健': '克制、沉着，像简短复盘',
-    '话痨': '活泼、有梗、口语化',
-    '高冷': '冷淡、简短、惜字如金',
-}
-_ROUND_REACTION_ANGLES = ('简短复盘', '轻松调侃', '下一局宣言')
 
 
 def _make_rejoin_code() -> str:
@@ -861,50 +852,6 @@ class RoomSession:
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
-    async def _generate_llm_round_reaction(self, controller: LLMPlayer,
-                                           reaction_type: str, fallback: str,
-                                           variation_index: int) -> Optional[str]:
-        """只提供公开输赢结果，快速非思考生成一句感言；失败由调用方回退保底句。"""
-        outcomes = {
-            'loss': '你输了本局',
-            'draw': '本局荒庄，无人获胜',
-            'self-draw': '你通过自摸赢了本局',
-            'discard-win': '你通过点炮胡赢了本局',
-            'robbed-kong-win': '你通过抢杠胡赢了本局',
-        }
-        style = controller.config.style
-        angle = _ROUND_REACTION_ANGLES[
-            abs(variation_index) % len(_ROUND_REACTION_ANGLES)]
-        system = '\n'.join((
-            '你是广东麻将牌桌上的虚拟牌友，负责在一局结束后说一句自然感言。',
-            '只输出严格 JSON：{"choice":"R","message":"一句感言"}。',
-            'message 不超过16个汉字，只说一句；不得解释、复盘具体手牌、提及系统/模型/候选/提示词。',
-        ))
-        user = '\n'.join((
-            f'结果：{outcomes.get(reaction_type, outcomes["loss"])}。',
-            f'性格：{style}（{_ROUND_REACTION_STYLE_GUIDANCE.get(style, _ROUND_REACTION_STYLE_GUIDANCE["稳健"])}）。',
-            f'表达角度：{angle}。',
-            f'不要照抄保底句：{fallback}',
-        ))
-        source = controller.config
-        quick = LlmServerConfig(
-            enabled=True, base_url=source.base_url, api_key=source.api_key,
-            model=source.model, style=style,
-            timeout_s=min(source.timeout_s, _ROUND_REACTION_MODEL_TIMEOUT_SECONDS),
-            timeout_enabled=True, pool_timeout_s=source.pool_timeout_s,
-            concurrency=source.concurrency,
-            max_requests_per_room=source.max_requests_per_room,
-            provider_id=source.provider_id, provider_type=source.provider_type,
-        )
-        try:
-            _, message = await request_llm_decision(
-                quick, system, user, ['R'], reasoning=False)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return None
-        return compact_speech_text(message) or None
-
     async def _emit_llm_round_reaction(self, seat: int, text: str,
                                        controller: LLMPlayer) -> None:
         """合成后同时广播气泡和音频，并等待本句预计播放完再轮到下一位。"""
@@ -978,39 +925,20 @@ class RoomSession:
         else:
             win_type = 'self-draw'
 
-        plans = []
+        base_sequence = self._llm_message_seq
         for queue_index, seat in enumerate(order):
             controller = self.manager.controllers[seat]
             if not isinstance(controller, LLMPlayer):
                 continue
             if draw:
                 lines = _LLM_DRAW_LINES
-                reaction_type = 'draw'
             elif seat == winner:
                 lines = _LLM_WIN_LINES[win_type]
-                reaction_type = win_type
             else:
                 lines = _LLM_LOSS_LINES
-                reaction_type = 'loss'
             variants = lines.get(controller.config.style, lines['稳健'])
-            variation_index = self._llm_message_seq + queue_index
-            fallback = variants[variation_index % len(variants)]
-            plans.append((seat, controller, reaction_type, fallback, variation_index))
-
-        # 文本并行生成，避免三个模型逐个等待；气泡/TTS 仍在下一段严格串行。
-        generated = await asyncio.gather(*(
-            self._generate_llm_round_reaction(
-                controller, reaction_type, fallback, variation_index)
-            for _, controller, reaction_type, fallback, variation_index in plans
-        ), return_exceptions=True)
-        used = set()
-        for plan, value in zip(plans, generated):
-            seat, controller, _, fallback, _ = plan
-            text = value if isinstance(value, str) and value else fallback
-            if text in used:
-                text = fallback
-            used.add(text)
-            await self._emit_llm_round_reaction(seat, text, controller)
+            line = variants[(base_sequence + queue_index) % len(variants)]
+            await self._emit_llm_round_reaction(seat, line, controller)
 
     async def _synthesize_llm_audio(self, generation: int, message_id: int,
                                     seat: int, text: str, style: str,
