@@ -883,6 +883,37 @@ class TestProviderRegistry:
         assert 'response_format' not in captured
         run(http.aclose())
 
+    @pytest.mark.parametrize(('provider_type', 'model'), [
+        ('deepseek', 'deepseek/deepseek-v4-flash'),
+        ('qwen', 'qwen/qwen3.8-flash'),
+        ('kimi', 'kimi/kimi-k2.5'),
+    ])
+    def test_orcarouter_deepseek_qwen_kimi_thinking_uses_65536(
+            self, monkeypatch, provider_type, model):
+        from app.llm.client import request_llm_decision
+        from app.llm.config import LlmServerConfig
+
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={
+                'choices': [{
+                    'message': {'content': '{"choice":"A1","message":"稳住"}'},
+                    'finish_reason': 'stop',
+                }],
+            })
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr('app.llm.client.get_llm_client', lambda: http)
+        cfg = LlmServerConfig(
+            enabled=True, base_url='https://api.orcarouter.ai/v1', api_key='sk-relay',
+            model=model, provider_type=provider_type)
+        assert run(request_llm_decision(
+            cfg, 'system', 'user', ['A1'], reasoning=True)) == ('A1', '稳住')
+        assert captured['max_tokens'] == 65536
+        run(http.aclose())
+
     def test_glm_5_3_flash_custom_proxy_uses_low_512_json_on_quick_path(
             self, monkeypatch):
         from app.llm.client import request_llm_decision

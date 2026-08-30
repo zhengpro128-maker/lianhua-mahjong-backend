@@ -243,7 +243,11 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         payload.pop('temperature', None)
         payload.pop('top_p', None)
     relay_kimi_thinking = reasoning and kimi_k2_switchable and dialect != 'official'
-    if relay_kimi_thinking:
+    orca_long_reasoning = reasoning and dialect == 'orcarouter' \
+        and reasoning_policy.provider_type in ('deepseek', 'qwen', 'kimi')
+    if orca_long_reasoning:
+        max_tokens = max(max_tokens, 65536)
+    elif relay_kimi_thinking:
         max_tokens = max(max_tokens, 2048)
     elif glm_5_3_flash:
         max_tokens = max(max_tokens, 1024 if reasoning else 128 if dialect == 'official' else 512)
