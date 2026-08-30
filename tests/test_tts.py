@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -26,6 +27,10 @@ from app.tts.config import (
     load_tts_config,
 )
 from app.tts.provider import TtsProviderError
+from app.tts.fixed_lines import (
+    fixed_line_voice_candidates,
+    resolve_fixed_line_tts_request,
+)
 from app.tts.service import TtsService, normalize_tts_text, tts_cache_key
 from app.tts.volcengine import VolcengineTtsClient
 
@@ -215,8 +220,11 @@ def test_text_normalization_and_provider_are_part_of_cache_key(tmp_path):
     steady, _ = tts_cache_key(text, '稳健', volc, profile)
     steady_again, _ = tts_cache_key(text, '稳健', volc, profile)
     fallback, _ = tts_cache_key(text, '稳健', baidu, baidu.profile_for('稳健', 'default'))
+    namespaced, _ = tts_cache_key(text, '稳健', volc, profile, 'llm-anime-cache-v1')
+    namespaced_v2, _ = tts_cache_key(text, '稳健', volc, profile, 'llm-anime-cache-v2')
     assert steady == steady_again
     assert steady != fallback
+    assert len({steady, namespaced, namespaced_v2}) == 3
 
 
 @pytest.mark.asyncio
@@ -334,6 +342,102 @@ async def test_local_tts_gateway_has_independent_cache_and_voice_allowlist(tmp_p
         assert gateway.normalize_voice_key('../bad') is None
     finally:
         await gateway.close()
+
+
+def test_fixed_line_request_is_derived_from_catalog_and_has_safe_metadata():
+    action = resolve_fixed_line_tts_request('  QWEN  ', 'chi')
+    assert action is not None
+    assert action.character_id == 'qwen'
+    assert action.purpose == 'action'
+    assert action.speech_source == 'fixed-line'
+    assert action.text == '这张我吃。'
+    assert action.style == '稳健'
+    assert (action.voice_key, action.fallback_voice_key) == ('qwen', 'default')
+
+    reaction = resolve_fixed_line_tts_request('unknown', 'loss')
+    assert reaction is not None
+    assert reaction.character_id == 'deepseek'
+    assert reaction.purpose == 'round-reaction'
+    assert reaction.text == '这局没吃饱，下局再来！'
+    assert resolve_fixed_line_tts_request('qwen', '../arbitrary') is None
+
+
+def test_fixed_line_voice_candidates_never_pass_illegal_or_unconfigured_values():
+    request = resolve_fixed_line_tts_request('deepseek', 'peng')
+    assert request is not None
+    unsafe = replace(
+        request,
+        voice_key='../bad',
+        fallback_voice_key='QWEN',
+    )
+    assert fixed_line_voice_candidates(
+        unsafe, {'default', 'qwen', '../bad'},
+    ) == ('qwen', 'default')
+    assert fixed_line_voice_candidates(
+        replace(unsafe, fallback_voice_key='missing'), {'default'},
+    ) == ('default',)
+    assert fixed_line_voice_candidates(unsafe, 'qwen') == ()
+
+
+@pytest.mark.asyncio
+async def test_fixed_line_tts_reuses_existing_text_voice_style_cache(tmp_path):
+    primary = FakeProvider('volcengine')
+    fallback = FakeProvider('baidu')
+    service = TtsService(config(tmp_path), providers={
+        'volcengine': primary,
+        'baidu': fallback,
+    })
+    try:
+        first = await service.ensure_fixed_line_audio('deepseek', 'chi')
+        second = await service.ensure_fixed_line_audio('deepseek', 'chi')
+        assert first is not None and second is not None
+        assert first.request.purpose == 'action'
+        assert first.voice_key == 'deepseek'
+        assert first.audio.cache_key == second.audio.cache_key
+        assert second.audio.cached is True
+        assert primary.calls == 1
+        assert fallback.calls == 0
+
+        # 通用接口使用同一 text+voice+style 时命中同一份缓存；purpose 不分裂音频缓存。
+        generic = await service.ensure_audio(
+            first.request.text, first.request.style, first.voice_key)
+        assert generic is not None and generic.cache_key == first.audio.cache_key
+        assert generic.cached is True
+        assert primary.calls == 1
+
+        # 相同文案换 voice 会改变 profile/cache identity。
+        other_voice = await service.ensure_audio(
+            first.request.text, first.request.style, 'qwen')
+        assert other_voice is not None
+        assert other_voice.cache_key != first.audio.cache_key
+        assert primary.calls == 2
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_fixed_line_tts_falls_back_to_configured_default_voice(tmp_path):
+    cfg = config(tmp_path)
+    only_default = cfg.providers.volcengine.voices['default']
+    volc = cfg.providers.volcengine.model_copy(update={
+        'voices': {'default': only_default},
+    })
+    cfg = cfg.model_copy(update={
+        'providers': cfg.providers.model_copy(update={'volcengine': volc}),
+    })
+    primary = FakeProvider('volcengine')
+    fallback = FakeProvider('baidu')
+    service = TtsService(cfg, providers={
+        'volcengine': primary,
+        'baidu': fallback,
+    })
+    try:
+        result = await service.ensure_fixed_line_audio('deepseek', 'zimo')
+        assert result is not None
+        assert result.voice_key == 'default'
+        assert primary.calls == 1
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ LLMPlayer(AIPlayer)：覆盖 request_turn / request_claim；
 """
 
 import asyncio
+import inspect
 from typing import Callable, Optional
 
 from app.game.player import AIPlayer, ClaimContext, TurnContext
@@ -31,6 +32,18 @@ IMPORTANT_SPEECH_ACTIONS = {
 }
 
 
+def _accepts_message_metadata(callback: Callable[..., None] | None) -> bool:
+    if callback is None:
+        return False
+    try:
+        parameters = inspect.signature(callback).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters) \
+        or {'decision', 'action_kind'}.issubset(
+            inspect.signature(callback).parameters)
+
+
 class LLMPlayer(AIPlayer):
     """LLM 驱动的 AI 玩家（联机空座补位用；超时/断线代打仍用 AIPlayer）。"""
 
@@ -40,7 +53,7 @@ class LLMPlayer(AIPlayer):
                  stats: Optional[dict] = None,
                  seat: int = -1,
                  provider_id: str = '',
-                 on_message: Optional[Callable[[int, str, str], None]] = None,
+                 on_message: Optional[Callable[..., None]] = None,
                  on_fallback: Optional[Callable[..., None]] = None,
                  on_status: Optional[Callable[..., None]] = None,
                  reasoning: Optional[ConditionalReasoningCoordinator] = None):
@@ -55,6 +68,7 @@ class LLMPlayer(AIPlayer):
         self.seat = seat
         self.provider_id = provider_id
         self.on_message = on_message
+        self._on_message_accepts_metadata = _accepts_message_metadata(on_message)
         self.on_fallback = on_fallback
         self.on_status = on_status
         self.reasoning = reasoning or ConditionalReasoningCoordinator()
@@ -229,7 +243,12 @@ class LLMPlayer(AIPlayer):
                 priority = 'important' if action_kind in IMPORTANT_SPEECH_ACTIONS else \
                     'chatter-turn' if self.config.style == '话痨' \
                     and request.get('decision') == 'turn' and action_kind == 'discard' else 'normal'
-                self.on_message(self.seat, speech, priority)
+                if self._on_message_accepts_metadata:
+                    self.on_message(
+                        self.seat, speech, priority,
+                        decision=request.get('decision'), action_kind=action_kind)
+                else:
+                    self.on_message(self.seat, speech, priority)
             except Exception:
                 # 吐槽属于表现副作用；广播失败不能影响动作执行和对局推进。
                 pass

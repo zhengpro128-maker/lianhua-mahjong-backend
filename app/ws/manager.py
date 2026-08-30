@@ -52,5 +52,12 @@ class ConnectionManager:
         queue.put_nowait(message)
         return True
 
+    def connection_token(self, seat: int) -> object | None:
+        """返回当前连接的不可序列化身份 token；重连会换新队列对象。"""
+        return self._queues.get(seat)
+
+    def is_current_connection(self, seat: int, token: object) -> bool:
+        return self._queues.get(seat) is token
+
     def is_connected(self, seat: int) -> bool:
         return seat in self._queues

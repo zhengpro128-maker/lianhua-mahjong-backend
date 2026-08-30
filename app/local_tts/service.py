@@ -37,12 +37,13 @@ class LocalTtsGatewayService:
         return normalized if normalized in self.allowed_voice_keys else None
 
     async def ensure_audio(self, text: str, voice_key: str,
-                           style: str) -> Optional[TtsAudio]:
+                           style: str, cache_identity: str = '') -> Optional[TtsAudio]:
         normalized = self.normalize_voice_key(voice_key)
         if normalized is None or not self.available:
             return None
         provider_id = '' if normalized == 'default' else normalized
-        return await self.tts.ensure_audio(text, style, provider_id)
+        return await self.tts.ensure_audio(
+            text, style, provider_id, cache_namespace=cache_identity)
 
     async def close(self) -> None:
         await self.tts.close()

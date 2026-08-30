@@ -10,6 +10,7 @@ start 走 REST（uvicorn 事件循环），对局 AI 补位自动打完。
 """
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -78,16 +79,21 @@ async def test_local_tts_gateway_validates_profile_and_returns_cached_audio_url(
         def normalize_voice_key(self, value):
             return value if value in {'deepseek', 'relay_gpt'} else None
 
-        async def ensure_audio(self, text, voice_key, style):
-            self.calls.append((text, voice_key, style))
+        async def ensure_audio(self, text, voice_key, style, cache_identity=''):
+            self.calls.append((text, voice_key, style, cache_identity))
             return SimpleNamespace(cache_key=key, cached=True)
 
     service = FakeLocalTts()
     reset_local_tts_rate_limit_for_tests()
     monkeypatch.setattr('app.api.local_tts.get_local_tts_service', lambda: service)
+    cache_identity = json.dumps([
+        'llm-anime-fixed-tts', 1, 1, 'deepseek', 'chi', 'action',
+        '这一手稳住。', 'deepseek', 'speaker', 'default', 'fallback', '稳健',
+    ], ensure_ascii=False, separators=(',', ':'))
     async with httpx.AsyncClient(base_url=server['http'], trust_env=False) as http:
         response = await http.post('/api/local-tts/synthesize', json={
-            'text': '这一手稳住。', 'voiceKey': 'deepseek', 'style': '高冷',
+            'text': '这一手稳住。', 'voiceKey': 'deepseek', 'style': '稳健',
+            'cacheIdentity': cache_identity,
         })
         assert response.status_code == 200
         assert response.json() == {
@@ -95,7 +101,7 @@ async def test_local_tts_gateway_validates_profile_and_returns_cached_audio_url(
             'audioUrl': f'/api/local-tts/audio/{key}.mp3',
             'cached': True,
         }
-        assert service.calls == [('这一手稳住。', 'deepseek', '高冷')]
+        assert service.calls == [('这一手稳住。', 'deepseek', '稳健', cache_identity)]
         audio = await http.get(f'/api/local-tts/audio/{key}.mp3')
         assert audio.status_code == 200
         assert audio.content == b'ID3-local-audio'
@@ -103,6 +109,11 @@ async def test_local_tts_gateway_validates_profile_and_returns_cached_audio_url(
             'text': '测试。', 'voiceKey': 'unknown', 'style': '稳健',
         })
         assert denied.status_code == 400
+        invalid_cache = await http.post('/api/local-tts/synthesize', json={
+            'text': '测试。', 'voiceKey': 'deepseek', 'style': '稳健',
+            'cacheIdentity': 'arbitrary-cache-split',
+        })
+        assert invalid_cache.status_code == 422
         too_long = await http.post('/api/local-tts/synthesize', json={
             'text': '太' * 31, 'voiceKey': 'deepseek', 'style': '稳健',
         })

@@ -21,6 +21,11 @@ from app.tts.config import (
     load_tts_config,
     normalize_voice_key,
 )
+from app.tts.fixed_lines import (
+    FixedLineTtsRequest,
+    fixed_line_voice_candidates,
+    resolve_fixed_line_tts_request,
+)
 from app.tts.provider import TtsProvider, TtsProviderError
 from app.tts.volcengine import VolcengineTtsClient
 
@@ -40,6 +45,15 @@ class TtsAudio:
     @property
     def audio_url(self) -> str:
         return f'/api/tts/audio/{self.cache_key}.mp3'
+
+
+@dataclass(frozen=True)
+class FixedLineTtsAudio:
+    """固定文案合成结果及其安全路由元数据。"""
+
+    request: FixedLineTtsRequest
+    voice_key: str
+    audio: TtsAudio
 
 
 @dataclass(frozen=True)
@@ -63,7 +77,7 @@ def normalize_tts_text(text: str) -> str:
 
 
 def tts_cache_key(text: str, style: str, provider: TtsProvider,
-                  profile: Any) -> tuple[str, str]:
+                  profile: Any, cache_namespace: str = '') -> tuple[str, str]:
     text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
     payload = {
         'provider': provider.provider_id,
@@ -73,6 +87,8 @@ def tts_cache_key(text: str, style: str, provider: TtsProvider,
         'style': style,
         **provider.cache_identity(profile),
     }
+    if cache_namespace:
+        payload['cacheNamespace'] = cache_namespace
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest(), text_hash
 
@@ -133,14 +149,16 @@ class TtsService:
     def stats_snapshot(self) -> dict[str, int]:
         return dict(self.stats)
 
-    def _plans(self, text: str, style: str, voice_key: str) -> list[_SynthesisPlan]:
+    def _plans(self, text: str, style: str, voice_key: str,
+               cache_namespace: str = '') -> list[_SynthesisPlan]:
         plans = []
         for name in self.config.provider_names:
             provider = self.providers.get(name)
             if provider is None:
                 continue
             profile = provider.profile_for(style, voice_key)
-            cache_key, text_hash = tts_cache_key(text, style, provider, profile)
+            cache_key, text_hash = tts_cache_key(
+                text, style, provider, profile, cache_namespace)
             plans.append(_SynthesisPlan(provider, profile, cache_key, text_hash))
         return plans
 
@@ -172,14 +190,15 @@ class TtsService:
         return None
 
     async def ensure_audio(self, text: str, style: str,
-                           provider_id: str = '') -> Optional[TtsAudio]:
+                           provider_id: str = '', *,
+                           cache_namespace: str = '') -> Optional[TtsAudio]:
         if not self.available:
             return None
         normalized = normalize_tts_text(text)
         if not normalized:
             return None
         voice_key = normalize_voice_key(provider_id) or 'default'
-        plans = self._plans(normalized, style, voice_key)
+        plans = self._plans(normalized, style, voice_key, cache_namespace)
         if not plans:
             return None
         self.stats['requests'] += 1
@@ -205,6 +224,31 @@ class TtsService:
                 async with self._lock:
                     if self._inflight.get(route_key) is task:
                         self._inflight.pop(route_key, None)
+
+    async def ensure_fixed_line_audio(
+        self,
+        character_id: object,
+        line_key: object,
+    ) -> Optional[FixedLineTtsAudio]:
+        """使用角色白名单、固定稳健风格和现有缓存合成动作/赛后文案。
+
+        主音色不可用或合成失败时仅尝试 catalog 的替代音色/default；所有候选
+        必须存在于当前 TTS 配置白名单。缓存仍由 ``ensure_audio`` 统一负责。
+        """
+
+        request = resolve_fixed_line_tts_request(character_id, line_key)
+        if request is None:
+            return None
+        voices = fixed_line_voice_candidates(request, self.config.voice_keys)
+        for voice_key in voices:
+            audio = await self.ensure_audio(
+                request.text,
+                request.style,
+                '' if voice_key == 'default' else voice_key,
+            )
+            if audio is not None:
+                return FixedLineTtsAudio(request=request, voice_key=voice_key, audio=audio)
+        return None
 
     async def _generate_chain(self, plans: list[_SynthesisPlan], text: str,
                               style: str) -> Optional[TtsAudio]:

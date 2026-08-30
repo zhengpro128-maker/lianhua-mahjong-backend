@@ -96,6 +96,20 @@ _LLM_DRAW_LINES = {
 
 _ROUND_REACTION_TEXT_SECONDS = 1.5
 _ROUND_REACTION_MAX_SECONDS = 8.0
+_SpeechTarget = tuple[int, object]
+
+_GANG_SPEECH_ACTIONS = frozenset({'gang', 'added-kong', 'concealed-kong', 'wind-kong'})
+
+
+def _model_speech_metadata(action_kind: str | None) -> tuple[str, str | None]:
+    """把内部候选动作归一到稳定 wire 合同；pass 属于 commentary 且不外泄动作键。"""
+    if action_kind in _GANG_SPEECH_ACTIONS:
+        return 'action', 'gang'
+    if action_kind in ('chi', 'peng', 'win'):
+        return 'action', action_kind
+    if action_kind == 'discard':
+        return 'commentary', 'discard'
+    return 'commentary', None
 
 
 def _make_rejoin_code() -> str:
@@ -222,7 +236,9 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
             data = p.model_dump(mode='json', by_alias=True)
             # 结算快照亮出全部手牌（局已结束，赢牌翻牌需要展示三家手牌）；
             # 进行中只对本人显示手牌，他人用 null 占位（防作弊）。
-            settlement_visible = mgr.phase != 'settled' or room._settlement_snapshot_released
+            settlement_visible = mgr.phase != 'settled' \
+                or room._settlement_snapshot_released \
+                or room._presentation_audio_mode(seat) == 'anime-fixed-tts-v1'
             reveal = settlement_visible and mgr.phase == 'settled' and mgr.result is not None
             if p.seat != seat and not reveal:
                 data['hand'] = [None] * len(data['hand'])
@@ -234,7 +250,8 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'roomId': room.room_id,
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
-        'phase': (mgr.phase if mgr.phase != 'settled' or room._settlement_snapshot_released else 'revealing')
+        'phase': (mgr.phase if mgr.phase != 'settled' or room._settlement_snapshot_released
+                  or room._presentation_audio_mode(seat) == 'anime-fixed-tts-v1' else 'revealing')
         if mgr else room.status,
         'round': mgr.round if mgr else 1,
         'dealer': mgr.dealer if mgr else 0,
@@ -255,7 +272,9 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'currentPlayer': mgr.current_player if mgr else -1,
         'players': players,
         'seat': seat,
-        'result': mgr.result if mgr and (mgr.phase != 'settled' or room._settlement_snapshot_released) else None,
+        'result': room._result_with_presentation_key()
+        if mgr and (mgr.phase != 'settled' or room._settlement_snapshot_released
+                    or room._presentation_audio_mode(seat) == 'anime-fixed-tts-v1') else None,
         'announcement': mgr.announcement if mgr else None,
         'matchFinished': bool(mgr.match_finished) if mgr else False,
         'lastDiscard': mgr.last_discard if mgr else None,
@@ -321,6 +340,8 @@ class RoomSession:
             'requests': 0, 'hits': 0, 'misses': 0,
             'successes': 0, 'failures': 0,
         }
+        # 每条 WS 连接独立声明表现音频模式；缺失/重连前一律按旧客户端处理。
+        self._presentation_audio_modes: dict[int, str] = {}
         # settled 快照只在所有 LLM AI 依次发表完赛后感言后向客户端放行。
         self._settlement_snapshot_released = False
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
@@ -331,6 +352,7 @@ class RoomSession:
         self._continue_timeout = 20.0
         self._continue: Optional[dict] = None
         self._continue_event: Optional[asyncio.Event] = None
+        self._early_continue_confirmed: dict[str, set[int]] = {}
         # 开局就绪屏障：等所有在线真人客户端发牌动画结束（opening_done）再开始首回合。
         # 消除固定 openingDelay 在慢设备上的「服务端抢跑」；兜底超时防客户端不响应卡死。
         # 远端莲花开局包含开始音效、两次骰子、翻精展示和发牌动画；
@@ -486,16 +508,87 @@ class RoomSession:
         if state is not None:
             state.controller.set_connected(True)
             state.connected_at = time.time()
+            self._presentation_audio_modes[seat] = 'legacy-dynamic'
 
     def on_disconnect(self, seat: int) -> None:
         state = self.seats[seat]
         if state is not None:
             state.controller.set_connected(False)
+        self._presentation_audio_modes.pop(seat, None)
+
+    def _presentation_audio_mode(self, seat: int) -> str:
+        return self._presentation_audio_modes.get(seat, 'legacy-dynamic')
+
+    def _settlement_presentation_key(self) -> str | None:
+        if self.manager is None or self.manager.phase != 'settled':
+            return None
+        result = self.manager.result or {}
+        winner = result.get('winnerIndex')
+        outcome = 'draw' if result.get('draw') else f'winner:{winner}'
+        return (
+            f'{self.room_id}:match:{self._tts_match_generation}:'
+            f'{self.manager.round}:{self.manager.honba}:{outcome}'
+        )
+
+    def _result_with_presentation_key(self) -> dict | None:
+        if self.manager is None or self.manager.result is None:
+            return None
+        result = dict(self.manager.result)
+        key = self._settlement_presentation_key()
+        if key:
+            result['presentationKey'] = key
+        return result
+
+    def _anime_fixed_connected_seats(self) -> list[int]:
+        return [
+            seat for seat in self.conn.connected_seats
+            if self._presentation_audio_mode(seat) == 'anime-fixed-tts-v1'
+        ]
+
+    def _has_legacy_audio_audience(self) -> bool:
+        connected = self.conn.connected_seats
+        # 无连接的无头测试/维护路径沿用 legacy；真实房间按每连接能力判断。
+        return not connected or any(
+            self._presentation_audio_mode(seat) != 'anime-fixed-tts-v1'
+            for seat in connected
+        )
+
+    def _model_speech_targets(self, purpose: str) -> tuple[_SpeechTarget, ...]:
+        connected = tuple(self.conn.connected_seats)
+        return tuple(
+            (seat, self.conn.connection_token(seat)) for seat in connected
+            if self.conn.connection_token(seat) is not None
+            and (purpose == 'commentary'
+                 or self._presentation_audio_mode(seat) != 'anime-fixed-tts-v1')
+        )
+
+    def _broadcast_model_speech(
+        self,
+        message: dict,
+        purpose: str,
+        targets: tuple[_SpeechTarget, ...] | None = None,
+    ) -> None:
+        """动作/赛后模型语音只投 legacy；普通吐槽仍投所有连接。"""
+        connected = self.conn.connected_seats
+        if not connected:
+            # 保留无头测试/维护脚本的历史广播可观察性。
+            self.conn.broadcast(message)
+            return
+        audience = targets if targets is not None else self._model_speech_targets(purpose)
+        for target, token in audience:
+            if not self.conn.is_current_connection(target, token):
+                continue
+            if purpose != 'commentary' \
+                    and self._presentation_audio_mode(target) == 'anime-fixed-tts-v1':
+                continue
+            self.conn.send_to_seat_nowait(target, message)
 
     def broadcast_snapshot(self) -> None:
         """向所有在位连接广播 per-seat 快照（本人手牌可见，他座隐藏）。"""
         if self.manager is not None:
             if self.manager.phase == 'settled' and not self._settlement_snapshot_released:
+                for seat in self._anime_fixed_connected_seats():
+                    self.conn.send_to_seat_nowait(seat, build_snapshot(self, seat))
                 return
             if self.manager.phase != 'settled':
                 self._settlement_snapshot_released = False
@@ -509,9 +602,19 @@ class RoomSession:
             self.conn.send_to_seat_nowait(seat, {'kind': 'pong'})
             return True, ''
         if message.get('type') == 'continue':
-            return self._confirm_continue(seat)
+            return self._confirm_continue(seat, message.get('presentationKey'))
         if message.get('type') == 'opening_done':
             return self._confirm_opening(seat, message.get('round'))
+        if message.get('type') == 'presentation_audio_mode':
+            mode = message.get('mode')
+            if mode not in ('legacy-dynamic', 'anime-fixed-tts-v1'):
+                return False, 'INVALID_PRESENTATION_AUDIO_MODE'
+            self._presentation_audio_modes[seat] = mode
+            # 已结算但 legacy 感言尚未结束时，新切换的 anime 客户端立即拿到结算。
+            if self.manager is not None and self.manager.phase == 'settled' \
+                    and not self._settlement_snapshot_released:
+                self.conn.send_to_seat_nowait(seat, build_snapshot(self, seat))
+            return True, ''
         state = self.seats[seat]
         if state is None or not isinstance(state.controller, RemotePlayer):
             return False, 'NOT_HUMAN_SEAT'
@@ -523,10 +626,18 @@ class RoomSession:
         """当前在线（WS 已连）的真人座位列表。断线座位由 AI 托管，不参与确认。"""
         return [s.seat for s in self.seats if s is not None and s.controller.connected]
 
-    def _confirm_continue(self, seat: int) -> tuple[bool, str]:
+    def _confirm_continue(self, seat: int, presentation_key: object = None) -> tuple[bool, str]:
         """客户端「继续」：把座位标记为已确认（仅在确认屏障激活时生效）。"""
         if self._continue is None:
+            current_key = self._settlement_presentation_key()
+            if self._presentation_audio_mode(seat) == 'anime-fixed-tts-v1' \
+                    and isinstance(presentation_key, str) \
+                    and presentation_key == current_key:
+                self._early_continue_confirmed.setdefault(current_key, set()).add(seat)
             return True, ''   # 非结算期间：幂等忽略（结算窗早于到达的 continue 不算错）
+        if isinstance(presentation_key, str) \
+                and presentation_key != self._continue.get('presentationKey'):
+            return True, ''
         confirmed = self._continue['confirmed']
         if seat not in confirmed:
             confirmed.add(seat)
@@ -596,8 +707,16 @@ class RoomSession:
         """
         seats = self._human_connected_seats()
         if not seats:
+            self._early_continue_confirmed.clear()
             return
-        self._continue = {'deadline': time.monotonic() + self._continue_timeout, 'confirmed': set()}
+        presentation_key = self._settlement_presentation_key()
+        early = self._early_continue_confirmed.get(presentation_key or '', set()).intersection(seats)
+        self._early_continue_confirmed.clear()
+        self._continue = {
+            'deadline': time.monotonic() + self._continue_timeout,
+            'confirmed': set(early),
+            'presentationKey': presentation_key,
+        }
         self._continue_event = asyncio.Event()
         self.conn.broadcast({'kind': 'continue_prompt', 'total': len(seats)})
         try:
@@ -656,6 +775,7 @@ class RoomSession:
         self._llm_messages = []
         self._llm_message_seq = 0
         self._llm_speech_policy.reset()
+        self._early_continue_confirmed.clear()
         self._tts_match_stats = {
             'requests': 0, 'hits': 0, 'misses': 0,
             'successes': 0, 'failures': 0,
@@ -780,7 +900,9 @@ class RoomSession:
         return seeds
 
     def _on_llm_message(self, seat: int, text: str,
-                        priority: str = 'normal') -> None:
+                        priority: str = 'normal', *,
+                        decision: str | None = None,
+                        action_kind: str | None = None) -> None:
         """LLM 吐槽：记录本场历史并实时广播；失败不影响出牌动作。"""
         if not text or not 0 <= seat < self.player_count:
             return
@@ -797,10 +919,20 @@ class RoomSession:
                 seat, style, priority, mandatory=mandatory):
             return
         self._llm_message_seq += 1
-        entry = {'id': self._llm_message_seq, 'seat': seat, 'text': text,
-                 'priority': priority}
+        purpose, public_action_kind = _model_speech_metadata(action_kind)
+        entry = {
+            'id': self._llm_message_seq, 'seat': seat, 'text': text,
+            'priority': priority, 'purpose': purpose,
+            'speechSource': 'model-message',
+        }
+        if public_action_kind:
+            entry['actionKind'] = public_action_kind
         self._llm_messages.append(entry)
-        self.conn.broadcast({'kind': 'llm_message', **entry})
+        speech_targets = self._model_speech_targets(purpose)
+        self._broadcast_model_speech(
+            {'kind': 'llm_message', **entry}, purpose, speech_targets)
+        if purpose == 'action' and self.conn.connected_seats and not speech_targets:
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -815,7 +947,8 @@ class RoomSession:
         generation = self._tts_match_generation
         task = loop.create_task(self._synthesize_llm_audio(
             generation, entry['id'], seat, text, controller.config.style,
-            controller.provider_id, priority))
+            controller.provider_id, priority, purpose, public_action_kind,
+            speech_targets))
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
@@ -835,12 +968,17 @@ class RoomSession:
                 seat, style, public_priority, mandatory=mandatory):
             return
         self._llm_message_seq += 1
+        purpose, public_action_kind = _model_speech_metadata(action_kind)
         entry = {
             'id': self._llm_message_seq, 'seat': seat, 'text': '？',
             'priority': public_priority,
+            'purpose': purpose,
+            'speechSource': 'model-message',
         }
+        if public_action_kind:
+            entry['actionKind'] = public_action_kind
         self._llm_messages.append(entry)
-        self.conn.broadcast({'kind': 'llm_message', **entry})
+        self._broadcast_model_speech({'kind': 'llm_message', **entry}, purpose)
 
     def _on_llm_status(self, seat: int, active: bool, text: str = '',
                        speak: bool = True) -> None:
@@ -878,8 +1016,13 @@ class RoomSession:
         self._tts_tasks.add(task)
         task.add_done_callback(self._tts_tasks.discard)
 
-    async def _emit_llm_round_reaction(self, seat: int, text: str,
-                                       controller: LLMPlayer) -> None:
+    async def _emit_llm_round_reaction(
+        self,
+        seat: int,
+        text: str,
+        controller: LLMPlayer,
+        speech_targets: tuple[_SpeechTarget, ...] | None = None,
+    ) -> None:
         """合成后同时广播气泡和音频，并等待本句预计播放完再轮到下一位。"""
         text = compact_speech_text(text)
         if not text:
@@ -905,17 +1048,27 @@ class RoomSession:
         message_id = self._llm_message_seq
         entry = {
             'id': message_id, 'seat': seat, 'text': text, 'priority': 'important',
+            'purpose': 'round-reaction', 'speechSource': 'model-message',
         }
         self._llm_messages.append(entry)
-        self.conn.broadcast({'kind': 'llm_message', **entry})
+        self._broadcast_model_speech(
+            {'kind': 'llm_message', **entry}, 'round-reaction', speech_targets)
         if audio is not None:
-            self.conn.broadcast({
+            self._broadcast_model_speech({
                 'kind': 'llm_audio', 'messageId': message_id, 'seat': seat,
                 'audioUrl': audio.audio_url, 'cached': audio.cached,
                 'priority': 'important',
-            })
+                'purpose': 'round-reaction', 'speechSource': 'model-message',
+            }, 'round-reaction', speech_targets)
 
+        active_targets = tuple(
+            (target, token) for target, token in (speech_targets or ())
+            if self.conn.is_current_connection(target, token)
+            and self._presentation_audio_mode(target) != 'anime-fixed-tts-v1'
+        )
         if not self.conn.connected_seats:
+            return
+        if speech_targets is not None and not active_targets:
             return
         duration = _ROUND_REACTION_TEXT_SECONDS if audio is None else min(
             _ROUND_REACTION_MAX_SECONDS,
@@ -925,7 +1078,7 @@ class RoomSession:
 
     async def _announce_llm_round_reactions(self, result: dict) -> None:
         """赢家先说，其余 LLM AI 顺时针依次说；荒庄按座位顺序，真人永不入队。"""
-        if self.manager is None:
+        if self.manager is None or not self._has_legacy_audio_audience():
             return
         llm_seats = [
             seat for seat, controller in enumerate(self.manager.controllers)
@@ -953,6 +1106,9 @@ class RoomSession:
 
         base_sequence = self._llm_message_seq
         for queue_index, seat in enumerate(order):
+            speech_targets = self._model_speech_targets('round-reaction')
+            if self.conn.connected_seats and not speech_targets:
+                break
             controller = self.manager.controllers[seat]
             if not isinstance(controller, LLMPlayer):
                 continue
@@ -964,11 +1120,15 @@ class RoomSession:
                 lines = _LLM_LOSS_LINES
             variants = lines.get(controller.config.style, lines['稳健'])
             line = variants[(base_sequence + queue_index) % len(variants)]
-            await self._emit_llm_round_reaction(seat, line, controller)
+            await self._emit_llm_round_reaction(
+                seat, line, controller, speech_targets)
 
     async def _synthesize_llm_audio(self, generation: int, message_id: int,
                                     seat: int, text: str, style: str,
-                                    provider_id: str, priority: str) -> None:
+                                    provider_id: str, priority: str,
+                                    purpose: str = 'commentary',
+                                    action_kind: str | None = None,
+                                    speech_targets: tuple[_SpeechTarget, ...] | None = None) -> None:
         try:
             audio = await get_tts_service().ensure_audio(text, style, provider_id)
         except asyncio.CancelledError:
@@ -982,14 +1142,20 @@ class RoomSession:
             return
         self._tts_match_stats['successes'] += 1
         self._tts_match_stats['hits' if audio.cached else 'misses'] += 1
-        self.conn.broadcast({
+        message = {
             'kind': 'llm_audio',
             'messageId': message_id,
             'seat': seat,
             'audioUrl': audio.audio_url,
             'cached': audio.cached,
             'priority': priority,
-        })
+            'purpose': purpose,
+            'speechSource': 'model-message',
+        }
+        if action_kind:
+            message['actionKind'] = action_kind
+        self._broadcast_model_speech(
+            message, purpose, speech_targets)
 
     async def _cancel_tts_tasks(self) -> None:
         tasks = list(self._tts_tasks)
@@ -1175,6 +1341,8 @@ class RoomSession:
             await self.manager.start_game(self.mode)
             while not self.manager.match_finished:
                 if self.manager.phase == 'settled':
+                    # anime fixed 客户端先收到权威结算并运行本地四家队列；legacy 继续等旧感言。
+                    self.broadcast_snapshot()
                     try:
                         await self._announce_llm_round_reactions(self.manager.result or {})
                     except asyncio.CancelledError:
@@ -1183,7 +1351,10 @@ class RoomSession:
                         logger.exception('赛后 AI 感言队列失败，直接放行结算')
                     self._settlement_snapshot_released = True
                     self.broadcast_snapshot()
-                    self.conn.broadcast({'kind': 'hand_result', 'result': self.manager.result})
+                    self.conn.broadcast({
+                        'kind': 'hand_result',
+                        'result': self._result_with_presentation_key(),
+                    })
                     await self._persist_round(self.manager.result)
                     logger.bind(room_id=self.room_id).info(f"第{self.manager.round}局结算")
                     # 确认屏障：等所有在线真人点「继续」（10s 倒计时 / 兜底超时）再进下一局

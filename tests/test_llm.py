@@ -444,6 +444,19 @@ def make_llm_player(monkeypatch, responses, *, seat=-1, provider_id='', on_messa
 
 
 class TestLLMPlayer:
+    def test_message_callback_receives_decision_and_action_metadata(self, monkeypatch):
+        messages = []
+
+        def capture(seat, text, priority, **metadata):
+            messages.append((seat, text, priority, metadata))
+
+        player, _ = make_llm_player(
+            monkeypatch, ['{"choice":"A1","message":"先打这一张。"}'],
+            seat=1, on_message=capture)
+        action = run(player.request_turn(turn_ctx(hand=['m3', 'm5', 'm6'])))
+        assert action['kind'] == 'discard'
+        assert messages[0][3] == {'decision': 'turn', 'action_kind': 'discard'}
+
     def test_chatter_turn_discard_marks_speech_as_mandatory_frequency(self, monkeypatch):
         messages = []
         player, _ = make_llm_player(
@@ -1202,6 +1215,8 @@ class TestPerSeatAssembly:
         assert emitted == [{
             'kind': 'llm_message', 'id': 1, 'seat': 1,
             'text': '？', 'priority': 'normal',
+            'purpose': 'commentary', 'actionKind': 'discard',
+            'speechSource': 'model-message',
         }]
         assert room._tts_tasks == set()
         assert room._tts_match_stats['requests'] == 0
@@ -1265,6 +1280,7 @@ class TestPerSeatAssembly:
         room._on_llm_message(1, '稳住，先打这张。')
         assert emitted == [{
             'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '稳住，先打这张。', 'priority': 'normal',
+            'purpose': 'commentary', 'speechSource': 'model-message',
         }]
 
         class BoundLogger:
@@ -1308,16 +1324,20 @@ class TestPerSeatAssembly:
         monkeypatch.setattr('app.game.room.get_tts_service', lambda: FakeTtsService())
 
         async def scenario():
-            room._on_llm_message(1, '这张先放下。')
+            room._on_llm_message(
+                1, '这张先放下。', 'important',
+                decision='claim', action_kind='peng')
             await asyncio.gather(*list(room._tts_tasks))
 
         run(scenario())
         assert emitted[0] == {
-            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '这张先放下。', 'priority': 'normal',
+            'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': '这张先放下。', 'priority': 'important',
+            'purpose': 'action', 'actionKind': 'peng', 'speechSource': 'model-message',
         }
         assert emitted[1] == {
             'kind': 'llm_audio', 'messageId': 1, 'seat': 1,
-            'audioUrl': f'/api/tts/audio/{"a" * 64}.mp3', 'cached': True, 'priority': 'normal',
+            'audioUrl': f'/api/tts/audio/{"a" * 64}.mp3', 'cached': True, 'priority': 'important',
+            'purpose': 'action', 'actionKind': 'peng', 'speechSource': 'model-message',
         }
         assert room._tts_match_stats['hits'] == 1
 
@@ -1360,6 +1380,7 @@ class TestPerSeatAssembly:
             'kind': 'llm_audio', 'messageId': 1, 'seat': 1,
             'audioUrl': f'/api/tts/audio/{"b" * 64}.mp3', 'cached': False,
             'priority': 'normal',
+            'purpose': 'commentary', 'speechSource': 'model-message',
         }
         assert emitted[2] == {'kind': 'llm_status', 'seat': 1, 'active': False}
         assert emitted[3] == {
@@ -1416,6 +1437,7 @@ class TestPerSeatAssembly:
         run(room._announce_llm_round_reactions(result))
         assert emitted[1] == {
             'kind': 'llm_message', 'id': 1, 'seat': 1, 'text': expected_text, 'priority': 'important',
+            'purpose': 'round-reaction', 'speechSource': 'model-message',
         }
         snapshot = build_snapshot(room, 0)
         assert [player['isLlm'] for player in snapshot['players']] == [False, True, False, False]
@@ -1444,7 +1466,7 @@ class TestPerSeatAssembly:
         room.manager = GameManager(controllers=controllers)
         spoken = []
 
-        async def fake_emit(seat, text, _controller):
+        async def fake_emit(seat, text, _controller, _targets=None):
             spoken.append((seat, text))
 
         monkeypatch.setattr(room, '_emit_llm_round_reaction', fake_emit)
@@ -1487,11 +1509,146 @@ class TestPerSeatAssembly:
         assert pending['result'] is None
         assert pending['players'][1]['hand'] == [None]
 
+        room._presentation_audio_modes[0] = 'anime-fixed-tts-v1'
+        anime = build_snapshot(room, 0)
+        assert anime['phase'] == 'settled'
+        assert anime['result']['winnerIndex'] == 1
+        assert anime['players'][1]['hand'] == ['m1']
+
         room._settlement_snapshot_released = True
         released = build_snapshot(room, 0)
         assert released['phase'] == 'settled'
         assert released['result']['winnerIndex'] == 1
         assert released['players'][1]['hand'] == ['m1']
+
+    def test_presentation_audio_mode_is_connection_scoped_and_keeps_early_continue(self):
+        from app.game.room import RoomSession
+
+        room = RoomSession('AUDIO-MODE', mode='east', capacity=4)
+        assert room.handle_client_message(0, {
+            'type': 'presentation_audio_mode', 'mode': 'anime-fixed-tts-v1',
+        }) == (True, '')
+        assert room._presentation_audio_mode(0) == 'anime-fixed-tts-v1'
+        assert room.handle_client_message(0, {
+            'type': 'presentation_audio_mode', 'mode': 'invalid',
+        }) == (False, 'INVALID_PRESENTATION_AUDIO_MODE')
+
+        room.manager = SimpleNamespace(
+            phase='settled', result={'winnerIndex': 0}, round=1, honba=0)
+        key = room._settlement_presentation_key()
+        assert room.handle_client_message(0, {
+            'type': 'continue', 'presentationKey': 'stale-key',
+        }) == (True, '')
+        assert room._early_continue_confirmed == {}
+        assert room.handle_client_message(0, {
+            'type': 'continue', 'presentationKey': key,
+        }) == (True, '')
+        assert room._early_continue_confirmed == {key: {0}}
+
+    @pytest.mark.parametrize(
+        ('internal', 'expected'),
+        [
+            ('added-kong', ('action', 'gang')),
+            ('concealed-kong', ('action', 'gang')),
+            ('wind-kong', ('action', 'gang')),
+            ('peng', ('action', 'peng')),
+            ('discard', ('commentary', 'discard')),
+            ('pass', ('commentary', None)),
+        ],
+    )
+    def test_model_speech_metadata_normalizes_internal_actions(self, internal, expected):
+        from app.game.room import _model_speech_metadata
+        assert _model_speech_metadata(internal) == expected
+
+    def test_settlement_presentation_key_changes_when_same_room_restarts(self):
+        from app.game.room import RoomSession
+
+        room = RoomSession('RESTART-KEY', mode='east', capacity=4)
+        room.manager = SimpleNamespace(
+            phase='settled', result={'winnerIndex': 2}, round=1, honba=0)
+        room._tts_match_generation = 1
+        first = room._settlement_presentation_key()
+        room._tts_match_generation = 2
+        second = room._settlement_presentation_key()
+        assert first != second
+
+    def test_all_anime_connections_skip_legacy_round_reactions(self, monkeypatch):
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+
+        room = RoomSession('ANIME-AUDIENCE', mode='east', capacity=4, llm_enabled=True)
+        controller = LLMPlayer(
+            config=deepseek_provider(style='稳健').to_config(), seat=1,
+            provider_id='deepseek')
+        room.manager = SimpleNamespace(
+            controllers=[AIPlayer(), controller, AIPlayer(), AIPlayer()])
+        room.conn._queues[0] = SimpleNamespace()
+        room._presentation_audio_modes[0] = 'anime-fixed-tts-v1'
+        emitted = []
+        monkeypatch.setattr(room, '_emit_llm_round_reaction',
+                            lambda *args: emitted.append(args))
+
+        run(room._announce_llm_round_reactions({'winnerIndex': 1}))
+        assert emitted == []
+
+    def test_all_anime_connections_skip_dynamic_action_tts(self, monkeypatch):
+        from app.game.player import AIPlayer
+        from app.game.room import RoomSession
+
+        emitted = []
+        room = RoomSession('ANIME-ACTION', mode='east', capacity=4, llm_enabled=True)
+        controller = LLMPlayer(
+            config=deepseek_provider(style='稳健').to_config(), seat=1,
+            provider_id='deepseek')
+        room.manager = SimpleNamespace(
+            controllers=[AIPlayer(), controller, AIPlayer(), AIPlayer()])
+        room.conn._queues[0] = SimpleNamespace()
+        room._presentation_audio_modes[0] = 'anime-fixed-tts-v1'
+        monkeypatch.setattr(room.conn, 'broadcast', lambda message: emitted.append(message))
+
+        room._on_llm_message(
+            1, '这张我碰了。', 'important', decision='claim', action_kind='peng')
+
+        assert emitted == []
+        assert room._tts_tasks == set()
+        assert room._tts_match_stats['requests'] == 0
+
+    def test_mixed_room_routes_model_actions_only_to_legacy_audience(self):
+        from app.game.room import RoomSession
+
+        room = RoomSession('MIXED-AUDIENCE', mode='east', capacity=4, llm_enabled=True)
+        anime_queue = asyncio.Queue()
+        legacy_queue = asyncio.Queue()
+        room.conn._queues.update({0: anime_queue, 1: legacy_queue})
+        room._presentation_audio_modes.update({
+            0: 'anime-fixed-tts-v1',
+            1: 'legacy-dynamic',
+        })
+        action = {
+            'kind': 'llm_audio', 'purpose': 'action',
+            'speechSource': 'model-message',
+        }
+        room._broadcast_model_speech(action, 'action')
+        assert anime_queue.empty()
+        assert legacy_queue.get_nowait() == action
+
+        commentary = {
+            'kind': 'llm_message', 'purpose': 'commentary',
+            'speechSource': 'model-message',
+        }
+        room._broadcast_model_speech(commentary, 'commentary')
+        assert anime_queue.get_nowait() == commentary
+        assert legacy_queue.get_nowait() == commentary
+
+        frozen_targets = ((1, legacy_queue),)
+        reconnected_queue = asyncio.Queue()
+        new_legacy_queue = asyncio.Queue()
+        room.conn._queues.update({1: reconnected_queue, 2: new_legacy_queue})
+        room._presentation_audio_modes.update({1: 'legacy-dynamic', 2: 'legacy-dynamic'})
+        room._broadcast_model_speech(action, 'action', frozen_targets)
+        assert legacy_queue.empty()
+        assert reconnected_queue.empty(), '同座位重连的新连接不能收到旧连接的孤立音频'
+        assert new_legacy_queue.empty(), '合成后新加入的 legacy 连接不能收到孤立音频'
 
     def test_seat_provider_ids_resolve_per_seat(self, monkeypatch):
         from app.game.player import AIPlayer

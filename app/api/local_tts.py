@@ -1,6 +1,7 @@
 """单机模式专用 TTS API；只接受白名单音色与短文本。"""
 
 from collections import defaultdict, deque
+import json
 import re
 import time
 from typing import Literal
@@ -23,6 +24,7 @@ class LocalTtsRequest(BaseModel):
     text: str = Field(min_length=1, max_length=30)
     voiceKey: str = Field(min_length=1, max_length=40)
     style: _STYLE
+    cacheIdentity: str = Field(default='', max_length=1000)
 
     @field_validator('text')
     @classmethod
@@ -39,6 +41,21 @@ class LocalTtsRequest(BaseModel):
         if not _VOICE_KEY_RE.fullmatch(normalized):
             raise ValueError('invalid voiceKey')
         return normalized
+
+    @field_validator('cacheIdentity')
+    @classmethod
+    def validate_cache_identity(cls, value: str) -> str:
+        if not value:
+            return ''
+        try:
+            parts = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('invalid cacheIdentity') from exc
+        if not isinstance(parts, list) or len(parts) != 12 \
+                or parts[0] != 'llm-anime-fixed-tts' \
+                or parts[1] != 1 or parts[2] != 1:
+            raise ValueError('invalid cacheIdentity')
+        return value
 
 
 def _check_rate_limit(client_ip: str, limit: int) -> None:
@@ -62,7 +79,8 @@ async def synthesize_local_tts(payload: LocalTtsRequest, request: Request):
         raise HTTPException(status_code=400, detail={'code': 'LOCAL_TTS_VOICE_NOT_ALLOWED'})
     client_ip = request.client.host if request.client else 'unknown'
     _check_rate_limit(client_ip, service.rate_limit_per_minute)
-    audio = await service.ensure_audio(payload.text, voice_key, payload.style)
+    audio = await service.ensure_audio(
+        payload.text, voice_key, payload.style, payload.cacheIdentity)
     if audio is None:
         raise HTTPException(status_code=503, detail={'code': 'LOCAL_TTS_SYNTHESIS_FAILED'})
     return {
