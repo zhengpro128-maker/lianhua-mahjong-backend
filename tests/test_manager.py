@@ -222,7 +222,8 @@ def test_end_draw_records_tenpai():
     manager = _GM(mode='east', controllers=[AIPlayer() for _ in range(4)])
     manager.players = [
         _GP(name='A', avatar='', score=1000, seat=i, hand=(tenpai_hand if i in (0, 2) else noten_hand),
-            discards=[], melds=[], redCount=0, drawnTileIndex=-1)
+            discards=[], melds=[], redCount=0, drawnTileIndex=-1,
+            characterId=('qwen' if i == 0 else 'deepseek'))
         for i in range(4)
     ]
     manager.dealer = 0   # 庄家（seat 0）听牌
@@ -232,6 +233,9 @@ def test_end_draw_records_tenpai():
     assert manager.result['dealerTenpai'] is True
     # 不付点数：各 delta 为 0
     assert all(change['delta'] == 0 for change in manager.result['scoreChanges'])
+    assert [change['characterId'] for change in manager.result['scoreChanges']] == [
+        'qwen', 'deepseek', 'deepseek', 'deepseek',
+    ]
 
 
 def test_is_human_distinguishes_remote_from_ai():
