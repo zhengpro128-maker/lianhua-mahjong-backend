@@ -276,6 +276,7 @@ LLM_PROVIDER_GLM_ORCA_TYPE=glm
   官方 API、OrcaRouter 和未知自定义中转使用独立参数方言。Kimi K3 普通 `low/128`、疑难 `high/512`；GLM-5.3-Flash 始终思考，官方接口普通/疑难均使用其允许的 low（预算 128/1024），OrcaRouter 既有配置按 `low/512`、`medium/1024` 兼容但不再作为前端推荐预设；完整 GLM-5.3 官方疑难使用 high，OrcaRouter 使用 medium；
   自定义中转的 Kimi K2.5/K2.6 非思考保持 `disabled/64`，条件思考使用 `enabled/2048` 并请求 JSON Object；官方 Moonshot 维持官方参数与 512 思考上限；
   OrcaRouter 域名下的 DeepSeek、Qwen 与 Kimi 条件深思统一使用 `max_tokens=65536`；普通路径、官方 API、其他中转及其他供应商不受影响，服务端超时仍可能先结束请求；
+  深思预算按端点、模型和档位记录最近 32 次 reasoning token，使用 P99+96 动态调整；截断后下一次至少翻倍，最大 65536。同一模型连续两次在满额时截断会暂停条件深思 30 分钟，不对当前局面即时重试；
   后端统一请求 `stream:true` 并解析 SSE。普通 always-on low 不先播“让我想想怎么打”等台词/TTS，但收到推理块后仍通过 `llm_status` 广播安全进度气泡；原始 `reasoning_content` 永不广播、记录或送入 TTS；
   百炼 `qwen3.5`～`qwen3.8` 自动设置 `enable_thinking=false` 并请求 JSON Object，
   未显式配置 `TIMEOUT_MS` 时使用统一 40 秒决策预算；

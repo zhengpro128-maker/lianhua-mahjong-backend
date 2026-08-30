@@ -22,6 +22,7 @@ from app.llm.decision_speech import (
 from app.llm.validation import validate_action
 from app.llm.conditional_reasoning import ConditionalReasoningCoordinator
 from app.llm.reasoning import resolve_reasoning_policy
+from app.llm.reasoning_budget import is_reasoning_suppressed
 from app.rules.base import GameRuleSet
 
 
@@ -144,7 +145,8 @@ class LLMPlayer(AIPlayer):
             getattr(self.config, 'provider_type', ''), self.config.base_url, self.config.model,
             getattr(self.config, 'provider_id', ''), reasoning=True)
         always_thinking = reasoning_policy.mode == 'always-on'
-        supports_reasoning = reasoning_policy.mode == 'explicit-on' or always_thinking
+        supports_reasoning = (reasoning_policy.mode == 'explicit-on' or always_thinking) \
+            and not is_reasoning_suppressed(self.config, reasoning_policy)
         use_reasoning = supports_reasoning and self.reasoning.admit(
             request, self.seat, self.reasoning.config.min_remaining_budget_ms)
         reasoning_status_active = use_reasoning

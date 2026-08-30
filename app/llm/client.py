@@ -14,6 +14,9 @@ import httpx
 from loguru import logger
 
 from app.llm.config import LlmServerConfig, llm_semaphore
+from app.llm.reasoning_budget import (
+    adaptive_reasoning_budget, record_reasoning_length, record_reasoning_success,
+)
 from app.llm.reasoning import infer_provider_dialect, resolve_reasoning_policy
 
 
@@ -255,6 +258,8 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
         max_tokens = max(max_tokens, 128)
     elif always_thinking:
         max_tokens = max(max_tokens, 512)
+    if reasoning:
+        max_tokens = adaptive_reasoning_budget(cfg, reasoning_policy, max_tokens)
     payload.update(reasoning_policy.request_body)
     if reasoning and reasoning_policy.provider_type == 'openai':
         payload['max_completion_tokens'] = max_tokens
@@ -324,19 +329,26 @@ async def _call_once(cfg: LlmServerConfig, system: str, user: str,
             f'LLM 请求失败 provider={cfg.provider_id or "default"} model={cfg.model} '
             f'attempt={attempt_no} elapsed={elapsed_ms}ms kind=network')
         raise LlmClientError(LlmClientError.KIND_NETWORK, f'网络错误: {exc}') from exc
-    if finish_reason == 'length' and strict_length:
-        raise LlmClientError(LlmClientError.KIND_LENGTH, 'finish_reason=length（输出被截断）')
-    if not isinstance(message, str) or not message:
-        raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
     details = usage.get('completion_tokens_details') \
         if isinstance(usage.get('completion_tokens_details'), dict) else {}
     reasoning_tokens = details.get('reasoning_tokens')
+    reasoning_token_count = int(reasoning_tokens) \
+        if isinstance(reasoning_tokens, (int, float)) and reasoning_tokens > 0 else 0
+    if finish_reason == 'length' and strict_length:
+        if reasoning:
+            record_reasoning_length(
+                cfg, reasoning_policy, max_tokens, reasoning_token_count)
+        raise LlmClientError(LlmClientError.KIND_LENGTH, 'finish_reason=length（输出被截断）')
+    if not isinstance(message, str) or not message:
+        raise LlmClientError(LlmClientError.KIND_PARSE, 'API 响应格式无效或无内容')
     leaked_reasoning = leaked_reasoning or isinstance(reasoning_tokens, (int, float)) and reasoning_tokens > 0
     if leaked_reasoning and not reasoning and not always_thinking \
             and not reasoning_policy.accept_reasoning_response:
         raise LlmClientError(
             LlmClientError.KIND_REASONING,
             '供应商仍返回思考内容，非思考模式验证失败')
+    if reasoning:
+        record_reasoning_success(cfg, reasoning_policy, reasoning_token_count)
     elapsed_ms = round((time.monotonic() - request_started) * 1000, 1)
     logger.bind(
         llm_provider=cfg.provider_id or 'default', llm_model=cfg.model,
