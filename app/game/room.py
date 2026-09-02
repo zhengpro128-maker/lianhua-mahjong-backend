@@ -342,6 +342,8 @@ class RoomSession:
         }
         # 每条 WS 连接独立声明表现音频模式；缺失/重连前一律按旧客户端处理。
         self._presentation_audio_modes: dict[int, str] = {}
+        # 房间权威牌桌主题：房主大厅阶段可改，开局后锁定；广播给全房。
+        self.table_theme: str = 'jade'
         # settled 快照只在所有 LLM AI 依次发表完赛后感言后向客户端放行。
         self._settlement_snapshot_released = False
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
@@ -629,6 +631,17 @@ class RoomSession:
             if self.manager is not None and self.manager.phase == 'settled' \
                     and not self._settlement_snapshot_released:
                 self.conn.send_to_seat_nowait(seat, build_snapshot(self, seat))
+            return True, ''
+        if message.get('type') == 'set_table_theme':
+            theme = message.get('theme')
+            if theme not in ('jade', 'majsoul', 'happyMahjong', 'rosewood', 'llm', 'llmAnime'):
+                return False, 'INVALID_TABLE_THEME'
+            if seat != self.creator_seat:
+                return False, 'NOT_CREATOR'
+            if self.status == 'playing':
+                return False, 'ROOM_PLAYING'
+            self.table_theme = theme
+            self.conn.broadcast({'kind': 'table_theme', 'theme': theme})
             return True, ''
         state = self.seats[seat]
         if state is None or not isinstance(state.controller, RemotePlayer):
