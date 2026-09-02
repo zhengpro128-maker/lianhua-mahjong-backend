@@ -128,6 +128,12 @@ class SeatActionRequest(BaseModel):
     ready: Optional[bool] = None  # ready 动作可选显式指定
 
 
+class CharacterUpdateRequest(BaseModel):
+    seat: int = Field(ge=0, le=3)
+    rejoinCode: str
+    characterId: Optional[str] = Field(default=None, max_length=64)
+
+
 class SeatLlmRequest(BaseModel):
     """每座位引用的服务端提供商（只带 id；key 不下发/不携带）。"""
     seat: int = Field(ge=0, le=3)
@@ -223,6 +229,23 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
         'playerId': state.player_id,
         'rejoin': is_rejoin,
     }
+
+
+@router.post('/{room_id}/character')
+def update_character(room_id: str, body: CharacterUpdateRequest) -> dict:
+    """加入后更新本家二次元角色：仅大厅/已结束状态、开局前可改。
+
+    角色只影响表现层（头像、立绘、TTS 台词、结算强调色），开局后由快照锁定，
+    因此 playing 状态拒绝更新。
+    """
+    room = _room_or_404(room_id)
+    _verify_seat(room, body.seat, body.rejoinCode)
+    try:
+        character_id = room.set_character(body.seat, resolve_anime_character_id(body.characterId))
+    except RoomError as exc:
+        logger.bind(room_id=room_id, seat=body.seat).warning(f"更新角色失败 {exc}")
+        raise HTTPException(status_code=409, detail={'code': str(exc)})
+    return {'roomId': room.room_id, 'seat': body.seat, 'characterId': character_id}
 
 
 @router.post('/{room_id}/leave')

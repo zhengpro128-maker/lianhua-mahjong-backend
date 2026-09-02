@@ -501,6 +501,21 @@ class RoomSession:
         state.ready = not state.ready if ready is None else ready
         return state.ready
 
+    def set_character(self, seat: int, character_id: str) -> str:
+        """REST 更新本家二次元角色：仅开局前可改；返回规范化后的角色 id。
+
+        角色只影响表现层，开局后由快照锁定，因此 playing 状态拒绝更新。
+        """
+        if self.status == 'playing':
+            raise RoomError('ROOM_PLAYING')
+        state = self.seats[seat]
+        if state is None:
+            raise RoomError('SEAT_EMPTY')
+        state.character_id = resolve_anime_character_id(character_id)
+        self._ensure_seat_avatar(state)
+        self._persist_seat(seat)
+        return state.character_id
+
     # ── 连接生命周期 ─────────────────────────────────────
 
     def on_connect(self, seat: int) -> None:
