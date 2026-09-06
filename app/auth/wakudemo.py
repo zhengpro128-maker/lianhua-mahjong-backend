@@ -121,6 +121,9 @@ class WakuDemoOAuthConfig:
     transaction_cookie_name: str = 'lgm_wakudemo_oauth_tx'
     cookie_secure: bool = True
     cookie_samesite: str = 'none'
+    # 仅本地开发联调：无真实会话时按客户端 playerId 推导测试身份，绕过 OAuth。
+    # 生产环境严禁开启（联机鉴权会完全失效）。
+    login_bypass: bool = False
 
     @classmethod
     def from_env(cls) -> 'WakuDemoOAuthConfig':
@@ -145,6 +148,7 @@ class WakuDemoOAuthConfig:
                 'WAKUDEMO_TRANSACTION_COOKIE_NAME', 'lgm_wakudemo_oauth_tx').strip(),
             cookie_secure=_env_bool('WAKUDEMO_COOKIE_SECURE', True),
             cookie_samesite=os.getenv('WAKUDEMO_COOKIE_SAMESITE', 'none').strip().lower(),
+            login_bypass=_env_bool('WAKUDEMO_LOGIN_BYPASS', False),
         )
 
     @property

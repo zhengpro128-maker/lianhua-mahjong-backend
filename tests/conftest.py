@@ -104,7 +104,7 @@ def stub_wakudemo_login(monkeypatch):
     import app.api.deps as deps
 
     class _FakeService:
-        config = SimpleNamespace(cookie_name='lgm_wakudemo_session')
+        config = SimpleNamespace(cookie_name='lgm_wakudemo_session', login_bypass=False)
 
         def get_session(self, session_id):
             uid = session_id or 'default'

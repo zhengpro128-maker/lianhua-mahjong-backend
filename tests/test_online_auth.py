@@ -44,14 +44,20 @@ def online_storage(monkeypatch):
 
 @pytest.fixture()
 def fake_auth(monkeypatch):
-    """可编程的假登录服务：控制会话有效性与账户摘要。"""
+    """可编程的假登录服务：控制会话有效性、账户摘要与开发旁路开关。"""
     state = {
         'valid': True,
+        'bypass': False,
         'account': {'id': '10086', 'displayName': '玩家', 'avatarUrl': None},
     }
 
     class FakeService:
-        config = SimpleNamespace(cookie_name='lgm_wakudemo_session')
+        @property
+        def config(self):
+            return SimpleNamespace(
+                cookie_name='lgm_wakudemo_session',
+                login_bypass=state['bypass'],
+            )
 
         def get_session(self, session_id):
             if not state['valid'] or not session_id:
@@ -277,3 +283,78 @@ async def test_report_uses_login_identity(client, fake_auth):
         })
         assert r.status_code == 200
         assert r.json()['reported'] is True
+
+
+# ─── 开发旁路（WAKUDEMO_LOGIN_BYPASS）────────────────────
+
+@pytest.mark.asyncio
+async def test_dev_bypass_skips_login_and_uses_client_player_id(
+        client, fake_auth, fresh_rooms):
+    """旁路开启且无会话：身份按客户端 playerId 推导，多身份可同房测试。"""
+    fake_auth['bypass'] = True
+    fake_auth['valid'] = False
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client),
+                                 base_url='http://test') as http:
+        # 未登录也能建房/加入
+        r = await http.post('/api/rooms', json={'capacity': 2, 'playerId': 'dev-player-1'})
+        assert r.status_code == 200, r.text
+        room_id = r.json()['roomId']
+
+        r = await http.post(f'/api/rooms/{room_id}/join',
+                            json={'nickname': '甲', 'playerId': 'dev-player-1'})
+        assert r.status_code == 200
+        assert r.json()['playerId'] == 'wakudemo-dev-player-1'
+
+        # 第二个旁路身份（另一浏览器/标签页的 guestId）可同房
+        r = await http.post(f'/api/rooms/{room_id}/join',
+                            json={'nickname': '乙', 'playerId': 'dev-player-2'})
+        assert r.status_code == 200
+        assert r.json()['playerId'] == 'wakudemo-dev-player-2'
+
+        # 同身份重复占座仍被拦截（防占房逻辑在旁路下也生效）
+        r = await http.post(f'/api/rooms/{room_id}/join',
+                            json={'nickname': '丙', 'playerId': 'dev-player-1'})
+        assert r.status_code == 409
+        assert r.json()['detail']['code'] == 'ALREADY_IN_ROOM'
+
+
+@pytest.mark.asyncio
+async def test_dev_bypass_falls_back_to_fixed_identity(client, fake_auth, fresh_rooms):
+    """旁路开启但未携带 playerId：使用固定 dev-bypass 身份。"""
+    fake_auth['bypass'] = True
+    fake_auth['valid'] = False
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client),
+                                 base_url='http://test') as http:
+        r = await http.post('/api/rooms', json={'capacity': 2})
+        assert r.status_code == 200
+        room_id = r.json()['roomId']
+        r = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '甲'})
+        assert r.status_code == 200
+        assert r.json()['playerId'] == 'wakudemo-dev-bypass'
+
+
+@pytest.mark.asyncio
+async def test_dev_bypass_session_reports_authenticated(monkeypatch):
+    """旁路开启：/api/login/session 返回已登录（前端联机门禁放行）。"""
+    import app.api.auth as auth_api
+
+    class FakeAuthService:
+        config = SimpleNamespace(
+            cookie_name='lgm_wakudemo_session', login_bypass=True)
+
+        def get_session(self, session_id):
+            return None
+
+    monkeypatch.setattr(auth_api, 'get_wakudemo_oauth_service',
+                        lambda: FakeAuthService())
+    app = FastAPI()
+    app.include_router(auth_api.router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url='http://test') as http:
+        r = await http.get('/api/login/session')
+        assert r.status_code == 200
+        assert r.json() == {
+            'authenticated': True,
+            'account': {'id': 'dev-bypass', 'displayName': '本地开发账号',
+                        'avatarUrl': None},
+        }

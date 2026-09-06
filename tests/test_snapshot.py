@@ -38,6 +38,13 @@ def ws_url(base: str, room_id: str, rejoin_code: str) -> str:
     return f'{base}/ws/room/{room_id}?rejoin_code={quote(rejoin_code)}'
 
 
+async def ws_connect(base: str, room_id: str, rejoin_code: str):
+    """模块级共享 uvicorn：上个测试残留的对局任务收尾可能短暂占用事件循环，
+    握手超时放宽到 30s，避免时序抖动误伤（健康路径毫秒级完成）。"""
+    return await websockets.asyncio.client.connect(
+        ws_url(base, room_id, rejoin_code), open_timeout=30)
+
+
 async def recv_json(ws, timeout=8.0) -> dict:
     return json.loads(await asyncio.wait_for(ws.recv(), timeout))
 
@@ -82,7 +89,7 @@ async def read_until(ws, kind: str, timeout=20.0) -> dict:
 async def test_snapshot_precedes_turn_request(server, fresh_rooms):
     """回合请求前必有一份 state_snapshot，且只对本人显示手牌。"""
     room, codes = await prepare_room('SNAP1', 1, ['本家'])
-    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP1', codes['本家']))
+    a = await ws_connect(server['ws'], 'SNAP1', codes['本家'])
     try:
         await read_until(a, 'rejoin_ok')
         async with httpx.AsyncClient(base_url=server['http']) as http:
@@ -115,7 +122,7 @@ async def test_snapshot_precedes_turn_request(server, fresh_rooms):
 async def test_snapshot_carries_last_discard(server, fresh_rooms):
     """弃牌后广播的快照带 lastDiscard（前端高亮最近弃牌）。"""
     room, codes = await prepare_room('SNAP2', 1, ['阿东'])
-    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP2', codes['阿东']))
+    a = await ws_connect(server['ws'], 'SNAP2', codes['阿东'])
     try:
         await read_until(a, 'rejoin_ok')
         async with httpx.AsyncClient(base_url=server['http']) as http:
@@ -145,7 +152,7 @@ async def test_snapshot_carries_last_discard(server, fresh_rooms):
 async def test_snapshot_after_hand_result(server, fresh_rooms):
     """结算后快照带 phase=settled / result / winPresentation，且先于 hand_result 到达。"""
     room, codes = await prepare_room('SNAP3', 1, ['老纪'])
-    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP3', codes['老纪']))
+    a = await ws_connect(server['ws'], 'SNAP3', codes['老纪'])
     try:
         await read_until(a, 'rejoin_ok')
         async with httpx.AsyncClient(base_url=server['http']) as http:
@@ -181,7 +188,7 @@ async def test_snapshot_after_hand_result(server, fresh_rooms):
 async def test_settled_snapshot_reveals_all_hands(server, fresh_rooms):
     """结算快照亮出全部玩家手牌（赢牌翻牌展示三家），进行中仍只显示本人。"""
     room, codes = await prepare_room('SNAP5', 1, ['纪伯'])
-    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP5', codes['纪伯']))
+    a = await ws_connect(server['ws'], 'SNAP5', codes['纪伯'])
     try:
         await read_until(a, 'rejoin_ok')
         async with httpx.AsyncClient(base_url=server['http']) as http:
@@ -213,7 +220,7 @@ async def test_settled_snapshot_reveals_all_hands(server, fresh_rooms):
 async def test_round_start_carries_dice(server, fresh_rooms):
     """开局广播 round_start：携带骰子值，先于发牌快照到达；快照亦带同款骰子。"""
     room, codes = await prepare_room('SNAP4', 1, ['小骰'])
-    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP4', codes['小骰']))
+    a = await ws_connect(server['ws'], 'SNAP4', codes['小骰'])
     try:
         await read_until(a, 'rejoin_ok')
         async with httpx.AsyncClient(base_url=server['http']) as http:
@@ -243,7 +250,7 @@ async def test_lotus_legacy_round_start_carries_second_dice(server, fresh_rooms)
     room, codes = await prepare_room(
         'SNAP6', 1, ['二骰'], ruleset_id='lotus-legacy',
     )
-    a = await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP6', codes['二骰']))
+    a = await ws_connect(server['ws'], 'SNAP6', codes['二骰'])
     try:
         await read_until(a, 'rejoin_ok')
         async with httpx.AsyncClient(base_url=server['http']) as http:
@@ -267,7 +274,7 @@ async def test_lotus_legacy_two_clients_share_authoritative_opening(server, fres
         'SNAP7', 2, ['庄家', '下家'], ruleset_id='lotus-legacy',
     )
     clients = [
-        await websockets.asyncio.client.connect(ws_url(server['ws'], 'SNAP7', codes[name]))
+        await ws_connect(server['ws'], 'SNAP7', codes[name])
         for name in ('庄家', '下家')
     ]
     try:

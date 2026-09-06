@@ -221,13 +221,20 @@ async def wakudemo_login_callback(
 @router.get('/session')
 async def get_login_session(request: Request):
     service = get_wakudemo_oauth_service()
-    if not _browser_origin_allowed(request):
+    # 真实登录态必须校验浏览器 Origin；开发旁路模式无真实凭据，跳过该校验。
+    if not service.config.login_bypass and not _browser_origin_allowed(request):
         return _auth_error_response('auth_origin_not_allowed', 403)
-    session_id = request.cookies.get(service.config.cookie_name)
-    session = service.get_session(session_id)
+    session = service.get_session(request.cookies.get(service.config.cookie_name))
     if session is None:
+        if service.config.login_bypass:
+            # 仅本地开发：无真实会话也返回已登录，跳过 OAuth 联调。
+            return _harden_auth_response(JSONResponse({
+                'authenticated': True,
+                'account': {'id': 'dev-bypass', 'displayName': '本地开发账号',
+                            'avatarUrl': None},
+            }))
         response = JSONResponse({'authenticated': False})
-        if session_id:
+        if request.cookies.get(service.config.cookie_name):
             _delete_session_cookie(response)
         return _harden_auth_response(response)
     return _harden_auth_response(JSONResponse({
