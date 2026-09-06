@@ -151,4 +151,4 @@ cd D:\vueprojects\lianhua_guangma\backend
 
 应用层登录限流使用 Uvicorn 的 `request.client.host`。反向代理必须删除客户端自带的转发头，再写入真实地址，并把**代理自身的精确 IP/CIDR** 配进 Uvicorn `FORWARDED_ALLOW_IPS`；不要在后端可被公网直连时设为 `*`。如果 EdgeOne/CDN 无法稳定传递受信客户端 IP，请在网关完成 `/api/login/wakudemo` 限流，并将 `WAKUDEMO_LOGIN_RATE_LIMIT_PER_MINUTE=0`，避免所有玩家共享代理 IP 配额。
 
-本次接入只建立 WakuDemo 展示身份；现有房间、战绩与免责声明仍使用匿名 `guestId/playerId`。若要把 Waku `uid` 作为权威玩家身份，需要另行设计账号绑定、旧数据迁移和房间 API 鉴权，不能只在前端替换 ID。
+联机对战已接入 WakuDemo 登录身份：`POST /api/rooms`、`POST /api/rooms/{id}/join`、`GET /api/rooms/meta`、`GET /api/rooms/{id}` 与 `POST /api/reports` 要求登录（未登录 → `401 AUTH_REQUIRED`）；登录身份由会话 `uid` 推导为 `wakudemo-<uid>`，客户端提交的 `playerId` 被忽略，防占房、封禁、战绩与免责声明均绑定该键。座位操作（ready/start/leave/换角色/关房）保持 rejoinCode 校验，断线重连不依赖登录态。单机模式仍使用匿名 guestId。

@@ -1,9 +1,9 @@
-"""风控测试 —— 匿名身份 playerId / 封禁 / 举报（Phase 8 P1，见开发计划 §10）
+"""风控测试 —— 登录身份 playerId / 封禁 / 举报（Phase 8 P1，见开发计划 §10）
 
-- join 携带 playerId 落库（room_seats.player_id）
+- join 落库 room_seats.player_id（联机身份 = wakudemo-<uid>，由登录会话推导）
 - 被 ban 的 playerId：join 被拒（BANNED）；解封后恢复
 - WS 重连握手同样查禁（resume_by_code）
-- admin ban/unban 端点 + 举报端点
+- admin ban/unban 端点 + 举报端点（举报人由登录会话推导）
 - 旧库迁移：无 player_id 列的房间表 init() 后补列
 """
 
@@ -34,31 +34,34 @@ async def read_until(ws, kind: str, timeout=8.0) -> dict:
 
 @pytest.mark.asyncio
 async def test_join_carries_player_id(server, fresh_rooms, temp_storage):
-    """join 携带 playerId → 返回并落库 room_seats.player_id。"""
+    """join 按登录身份落库 room_seats.player_id（wakudemo-<uid>）。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'guest-abc123')
         resp = await http.post(f'/api/rooms/{room_id}/join',
                                json={'nickname': '甲', 'playerId': 'guest-abc123'})
         assert resp.status_code == 200
-        assert resp.json()['playerId'] == 'guest-abc123'
+        assert resp.json()['playerId'] == 'wakudemo-guest-abc123'
         row = temp_storage._conn().execute(
             'SELECT player_id FROM room_seats WHERE room_id = ?', (room_id,)).fetchone()
-        assert row['player_id'] == 'guest-abc123'
+        assert row['player_id'] == 'wakudemo-guest-abc123'
 
 
 @pytest.mark.asyncio
 async def test_banned_player_join_rejected(server, fresh_rooms, temp_storage):
-    """被封禁的 playerId 加入 → 409 BANNED；解封后恢复。"""
+    """被封禁的登录身份加入 → 409 BANNED；解封后恢复。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         await http.post('/api/admin/bans', json={
-            'scope': 'player', 'target': 'guest-evil', 'reason': '赌博引流', 'bannedBy': 'admin'})
+            'scope': 'player', 'target': 'wakudemo-guest-evil',
+            'reason': '赌博引流', 'bannedBy': 'admin'})
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'guest-evil')
         resp = await http.post(f'/api/rooms/{room_id}/join',
                                json={'nickname': '赌徒', 'playerId': 'guest-evil'})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'BANNED'
         # 解封后可加入
-        await http.request('DELETE', '/api/admin/bans/player/guest-evil')
+        await http.request('DELETE', '/api/admin/bans/player/wakudemo-guest-evil')
         resp = await http.post(f'/api/rooms/{room_id}/join',
                                json={'nickname': '赌徒', 'playerId': 'guest-evil'})
         assert resp.status_code == 200
@@ -69,10 +72,12 @@ async def test_banned_player_ws_rejoin_rejected(server, fresh_rooms, temp_storag
     """重连握手同样查禁：座位 player_id 被封 → rejoin_err BANNED。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'guest-rejoin')
         j = (await http.post(f'/api/rooms/{room_id}/join',
                              json={'nickname': '甲', 'playerId': 'guest-rejoin'})).json()
         # 封禁后，凭已签发重进码重连 → BANNED
-        await http.post('/api/admin/bans', json={'scope': 'player', 'target': 'guest-rejoin'})
+        await http.post('/api/admin/bans', json={
+            'scope': 'player', 'target': 'wakudemo-guest-rejoin'})
     ws = await websockets.asyncio.client.connect(
         ws_url(server['ws'], room_id, j['rejoinCode']))
     try:
@@ -84,8 +89,9 @@ async def test_banned_player_ws_rejoin_rejected(server, fresh_rooms, temp_storag
 
 @pytest.mark.asyncio
 async def test_report_endpoint(server, fresh_rooms, temp_storage):
-    """举报端点写入 reports 表。"""
+    """举报端点写入 reports 表（举报人 = 登录身份 wakudemo-<uid>）。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
+        http.cookies.set('lgm_wakudemo_session', 'guest-good')
         resp = await http.post('/api/reports', json={
             'roomId': 'RPT1',
             'reporterPlayerId': 'guest-good',
@@ -96,7 +102,7 @@ async def test_report_endpoint(server, fresh_rooms, temp_storage):
         assert resp.status_code == 200
         row = temp_storage._conn().execute(
             'SELECT * FROM reports WHERE room_id = ?', ('RPT1',)).fetchone()
-        assert row['reporter'] == 'guest-good'
+        assert row['reporter'] == 'wakudemo-guest-good'
         assert row['target'] == 'guest-bad'
         assert row['target_name'] == '老六'
 
@@ -106,8 +112,10 @@ async def test_report_resolves_player_id_by_nickname(server, fresh_rooms, temp_s
     """举报只带昵称时，服务端按房间反查座位 player_id（便于封禁落地）。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'guest-bad')
         await http.post(f'/api/rooms/{room_id}/join',
                         json={'nickname': '老六', 'playerId': 'guest-bad'})
+        http.cookies.set('lgm_wakudemo_session', 'guest-good')
         resp = await http.post('/api/reports', json={
             'roomId': room_id,
             'reporterPlayerId': 'guest-good',
@@ -117,7 +125,7 @@ async def test_report_resolves_player_id_by_nickname(server, fresh_rooms, temp_s
         assert resp.status_code == 200
         row = temp_storage._conn().execute(
             'SELECT target FROM reports WHERE room_id = ?', (room_id,)).fetchone()
-        assert row['target'] == 'guest-bad'   # 按昵称反查出被举报者 player_id
+        assert row['target'] == 'wakudemo-guest-bad'   # 按昵称反查出被举报者 player_id
 
 
 def test_room_seats_migration(tmp_path):

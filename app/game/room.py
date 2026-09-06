@@ -380,12 +380,17 @@ class RoomSession:
 
     # ── 座位 / 重进码 ────────────────────────────────────
 
-    def _ensure_seat_avatar(self, state: SeatState) -> None:
-        """确保座位带持久化头像：按 player_id 首次进房从外部 API 取一次并落库，
-        之后跨房间/场次复用（同一玩家头像稳定）。无 player_id / 无存储 / 取图失败
-        时保持空串，由前端回退座位默认头像。
+    def _ensure_seat_avatar(self, state: SeatState, preferred: str = '') -> None:
+        """确保座位带持久化头像：优先平台登录头像（preferred），否则按 player_id
+        首次进房从外部 API 取一次并落库，之后跨房间/场次复用（同一玩家头像稳定）。
+        无 player_id / 无存储 / 取图失败时保持空串，由前端回退座位默认头像。
         """
         if state.avatar or not state.player_id:
+            return
+        if preferred:
+            state.avatar = preferred
+            if self.storage is not None:
+                self.storage.set_player_avatar(state.player_id, preferred)
             return
         if self.storage is None:
             return   # 纯内存态（测试/单机）：不触网
@@ -398,7 +403,8 @@ class RoomSession:
 
     def join_or_rejoin(self, nickname: str, rejoin_code: Optional[str] = None,
                        player_id: Optional[str] = None,
-                       character_id: str = DEFAULT_ANIME_CHARACTER_ID):
+                       character_id: str = DEFAULT_ANIME_CHARACTER_ID,
+                       avatar: str = ''):
         """REST join：占第一个空座并签发重进码（is_rejoin=False）。失败抛 RoomError。
 
         真人占座受 capacity 上限约束（超出 → ROOM_FULL）；AI 座位不在此列。
@@ -424,7 +430,7 @@ class RoomSession:
                 state = SeatState(seat, nickname, _make_rejoin_code(), controller,
                                   player_id=player_id, character_id=character_id)
                 self.seats[seat] = state
-                self._ensure_seat_avatar(state)
+                self._ensure_seat_avatar(state, preferred=avatar)
                 if self.creator_seat is None:
                     self.creator_seat = seat
                 self._persist_seat(seat)

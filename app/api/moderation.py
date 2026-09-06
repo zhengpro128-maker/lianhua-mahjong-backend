@@ -10,10 +10,11 @@
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from app.api.deps import AuthenticatedUser, require_wakudemo_login
 from app.game.room import room_registry
 from app.storage.db import storage
 
@@ -29,7 +30,7 @@ class BanRequest(BaseModel):
 
 class ReportRequest(BaseModel):
     roomId: str = ''
-    reporterPlayerId: str = Field(min_length=1, max_length=64)
+    reporterPlayerId: str = Field(default='', max_length=64)  # 已废弃：举报人由登录会话推导
     targetPlayerId: str = Field(default='', max_length=64)   # 可选：不传则由昵称反查
     targetName: str = ''
     reason: str = ''
@@ -51,8 +52,11 @@ def unban(scope: Literal['player', 'room', 'device'], target: str) -> dict:
 
 
 @router.post('/api/reports')
-def report(body: ReportRequest) -> dict:
-    # 优先用前端提供的 playerId；否则按房间内昵称反查座位 player_id（便于封禁落地）
+def report(body: ReportRequest,
+           user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
+    # 举报人身份由登录会话推导；目标优先用前端提供的 playerId，
+    # 否则按房间内昵称反查座位 player_id（便于封禁落地）
+    reporter_id = user.player_id
     target_id = body.targetPlayerId
     if not target_id and body.roomId:
         room = room_registry.get(body.roomId)
@@ -60,8 +64,8 @@ def report(body: ReportRequest) -> dict:
             target_id = next(
                 (s.player_id for s in room.seats
                  if s is not None and s.nickname == body.targetName), '')
-    storage.add_report(body.roomId, body.reporterPlayerId,
+    storage.add_report(body.roomId, reporter_id,
                        target_id, body.targetName, body.reason)
-    logger.bind(room_id=body.roomId, reporter=body.reporterPlayerId).info(
+    logger.bind(room_id=body.roomId, reporter=reporter_id).info(
         f"举报 target={target_id} targetName={body.targetName} reason={body.reason}")
     return {'reported': True}

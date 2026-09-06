@@ -227,34 +227,38 @@ async def test_room_meta_count(server, fresh_rooms, temp_storage, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_rejected_when_player_in_room(server, fresh_rooms, temp_storage):
-    """已在房间占座的玩家（guestId）再创建房间 → 409 ALREADY_IN_ROOM；离房后可再建。"""
+    """已在房间占座的登录身份再创建房间 → 409 ALREADY_IN_ROOM；离房后可再建。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room1 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'guest-A')
         join = (await http.post(f'/api/rooms/{room1}/join',
                                 json={'nickname': '甲', 'playerId': 'guest-A'})).json()
 
-        # 同一 guestId 已在 room1 占座 → 再建新房被拒
+        # 同一登录身份已在 room1 占座 → 再建新房被拒（playerId 字段已被忽略）
         resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4, 'playerId': 'guest-A'})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'ALREADY_IN_ROOM'
 
-        # 未占座的玩家可正常创建
+        # 未占座的其他身份可正常创建
+        http.cookies.set('lgm_wakudemo_session', 'guest-B')
         resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4, 'playerId': 'guest-B'})
         assert resp.status_code == 200
 
         # 离房后可再创建
         await http.post(f'/api/rooms/{room1}/leave',
                         json={'seat': join['seat'], 'rejoinCode': join['rejoinCode']})
+        http.cookies.set('lgm_wakudemo_session', 'guest-A')
         resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4, 'playerId': 'guest-A'})
         assert resp.status_code == 200, resp.text
 
 
 @pytest.mark.asyncio
 async def test_join_rejected_when_player_in_another_room(server, fresh_rooms, temp_storage):
-    """已在房间占座的玩家加入另一个房间 → 409 ALREADY_IN_ROOM。"""
+    """已在房间占座的登录身份加入另一个房间 → 409 ALREADY_IN_ROOM。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room1 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4})).json()['roomId']
         room2 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'guest-A')
         await http.post(f'/api/rooms/{room1}/join', json={'nickname': '甲', 'playerId': 'guest-A'})
 
         resp = await http.post(f'/api/rooms/{room2}/join',
@@ -271,6 +275,7 @@ async def test_human_avatar_persists_ai_unchanged(server, fresh_rooms, temp_stor
         room_id = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})).json()['roomId']
         joins = {}
         for nickname, pid in (('甲', 'guest-1'), ('乙', 'guest-2')):
+            http.cookies.set('lgm_wakudemo_session', pid)
             resp = await http.post(f'/api/rooms/{room_id}/join',
                                    json={'nickname': nickname, 'playerId': pid})
             assert resp.status_code == 200, resp.text
@@ -284,12 +289,13 @@ async def test_human_avatar_persists_ai_unchanged(server, fresh_rooms, temp_stor
         assert seeds[3]['avatar'] == 'avatars/young-master.svg'
         assert stub_avatar_fetch['n'] == 2   # 只在首次进房取图
 
-        # 持久化落库 + 跨房间复用（同一 player_id 不再重新取图）。
+        # 持久化落库 + 跨房间复用（同一登录身份不再重新取图）。
         # 一人只能在一间房（ALREADY_IN_ROOM）：甲先离房（房主离开，房间解散）再进新房
-        assert temp_storage.get_player_avatar('guest-1') == 'https://example.com/avatar/fake-1.jpg'
+        assert temp_storage.get_player_avatar('wakudemo-guest-1') == 'https://example.com/avatar/fake-1.jpg'
         await http.post(f'/api/rooms/{room_id}/leave',
                         json={'seat': joins['甲']['seat'], 'rejoinCode': joins['甲']['rejoinCode']})
         room2 = (await http.post('/api/rooms', json={'mode': 'east', 'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'guest-1')
         await http.post(f'/api/rooms/{room2}/join', json={'nickname': '甲', 'playerId': 'guest-1'})
         seeds2 = rooms.get(room2)._seeds()
         assert seeds2[0]['avatar'] == 'https://example.com/avatar/fake-1.jpg'
@@ -302,6 +308,7 @@ async def test_join_leave_room(server, fresh_rooms, temp_storage):
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
 
         # join 甲 → seat 0 + rejoinCode
+        http.cookies.set('lgm_wakudemo_session', 'p-甲')
         resp = await http.post(f'/api/rooms/{room_id}/join', json={
             'nickname': '甲', 'characterId': '  ＱＷＥＮ  ',
         })
@@ -313,6 +320,7 @@ async def test_join_leave_room(server, fresh_rooms, temp_storage):
         assert len(join_a['rejoinCode']) == 9  # XXXX-XXXX
 
         # 乙加入 seat 1；非法角色不是协议错误，安全回退 DeepSeek。
+        http.cookies.set('lgm_wakudemo_session', 'p-乙')
         join_b = (await http.post(f'/api/rooms/{room_id}/join',
                                   json={'nickname': '乙', 'characterId': '../gpt'})).json()
         assert join_b['characterId'] == 'deepseek'
@@ -348,9 +356,11 @@ async def test_full_room_rejects_join(server, fresh_rooms, temp_storage):
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': nickname})
             assert resp.status_code == 200, resp.text
         # 第三人 → ROOM_FULL
+        http.cookies.set('lgm_wakudemo_session', 'p-丙')
         resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '丙'})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'ROOM_FULL'
@@ -361,13 +371,16 @@ async def test_join_rejects_duplicate_nickname(server, fresh_rooms, temp_storage
     """昵称查重：房间内已有同名玩家占座 → NICKNAME_TAKEN。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'p-甲1')
         resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '甲'})
         assert resp.status_code == 200
-        # 同名再占 → 拒绝
+        # 同名再占（另一登录身份）→ 拒绝
+        http.cookies.set('lgm_wakudemo_session', 'p-甲2')
         resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '甲'})
         assert resp.status_code == 409
         assert resp.json()['detail']['code'] == 'NICKNAME_TAKEN'
         # 不同名可正常加入
+        http.cookies.set('lgm_wakudemo_session', 'p-乙')
         resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '乙'})
         assert resp.status_code == 200
 
@@ -377,8 +390,10 @@ async def test_creator_leave_in_lobby_dissolves_room(server, fresh_rooms, temp_s
     """房主在非对局中离开 → 房间自动解散（GET 404）。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'p-甲')
         join_a = (await http.post(f'/api/rooms/{room_id}/join',
                                   json={'nickname': '甲'})).json()
+        http.cookies.set('lgm_wakudemo_session', 'p-乙')
         await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '乙'})
         info = (await http.get(f'/api/rooms/{room_id}')).json()
         assert info['creatorSeat'] == 0
@@ -397,7 +412,9 @@ async def test_non_creator_leave_keeps_room(server, fresh_rooms, temp_storage):
     """非房主离开 → 房间保留、房主不变。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'p-甲')
         await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '甲'})
+        http.cookies.set('lgm_wakudemo_session', 'p-乙')
         join_b = (await http.post(f'/api/rooms/{room_id}/join',
                                   json={'nickname': '乙'})).json()
 
@@ -417,6 +434,7 @@ async def test_creator_leave_during_match_keeps_room(server, fresh_rooms, temp_s
         room_id = (await http.post('/api/rooms', json={'capacity': 4})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙', '丙', '丁'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
         room = rooms.get(room_id)
@@ -440,8 +458,10 @@ async def test_close_room_creator_only(server, fresh_rooms, temp_storage):
     """DELETE 房间：仅创建者可关；对局中拒绝；关闭后房间移除。"""
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
+        http.cookies.set('lgm_wakudemo_session', 'p-甲')
         join_a = (await http.post(f'/api/rooms/{room_id}/join',
                                   json={'nickname': '甲'})).json()
+        http.cookies.set('lgm_wakudemo_session', 'p-乙')
         join_b = (await http.post(f'/api/rooms/{room_id}/join',
                                   json={'nickname': '乙'})).json()
 
@@ -468,6 +488,7 @@ async def test_close_room_rejected_while_playing(server, fresh_rooms, temp_stora
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
         for join in joins.values():
@@ -606,6 +627,7 @@ async def test_room_lifecycle_persists_match(server, fresh_rooms, temp_storage):
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
 
@@ -674,6 +696,7 @@ async def test_db_outage_does_not_abort_match(server, fresh_rooms, temp_storage,
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
         for nickname, join in joins.items():
@@ -710,6 +733,7 @@ async def test_room_can_restart_after_match(server, fresh_rooms, temp_storage):
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
         room = rooms.get(room_id)
@@ -750,6 +774,7 @@ async def test_non_creator_can_rejoin_finished_room(server, fresh_rooms, temp_st
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
         for j in joins.values():
@@ -768,6 +793,7 @@ async def test_non_creator_can_rejoin_finished_room(server, fresh_rooms, temp_st
         assert resp.status_code == 200
 
         # 重新加入 finished 房间 → 放行，占回原空座
+        http.cookies.set('lgm_wakudemo_session', 'p-乙')
         resp = await http.post(f'/api/rooms/{room_id}/join', json={'nickname': '乙'})
         assert resp.status_code == 200, resp.text
         rejoin = resp.json()
@@ -787,6 +813,7 @@ async def test_all_leave_releases_room(server, fresh_rooms, temp_storage):
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
         # 非房主先离 → 房间保留
@@ -806,6 +833,7 @@ async def test_all_exit_mid_match_releases_room(server, fresh_rooms, temp_storag
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
         for j in joins.values():
@@ -833,6 +861,7 @@ async def test_expired_room_released_after_match(server, fresh_rooms, temp_stora
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname in ('甲', '乙'):
+            http.cookies.set('lgm_wakudemo_session', f'p-{nickname}')
             joins[nickname] = (await http.post(
                 f'/api/rooms/{room_id}/join', json={'nickname': nickname})).json()
         for join in joins.values():
@@ -859,6 +888,7 @@ async def test_stats_by_player_id(server, fresh_rooms, temp_storage):
     async with httpx.AsyncClient(base_url=server['http']) as http:
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         for nickname, pid in (('甲', 'guest-A'), ('乙', 'guest-B')):
+            http.cookies.set('lgm_wakudemo_session', pid)
             j = (await http.post(f'/api/rooms/{room_id}/join',
                                  json={'nickname': nickname, 'playerId': pid})).json()
             await http.post(f'/api/rooms/{room_id}/ready',
@@ -868,15 +898,22 @@ async def test_stats_by_player_id(server, fresh_rooms, temp_storage):
         await http.post(f'/api/rooms/{room_id}/start')
         await wait_until(lambda: room.status == 'finished', timeout=30)
 
-        resp = await http.get('/api/players/by-id/guest-A/stats')
+        resp = await http.get('/api/players/by-id/wakudemo-guest-A/stats')
         assert resp.status_code == 200
         stats = resp.json()
-        assert stats['playerId'] == 'guest-A'
+        assert stats['playerId'] == 'wakudemo-guest-A'
         assert stats['matches'] == 1
         assert stats['hands'] >= 1
 
+        # 登录身份战绩（/api/me/stats）：与 by-id 一致
+        http.cookies.set('lgm_wakudemo_session', 'guest-A')
+        me = await http.get('/api/me/stats')
+        assert me.status_code == 200
+        assert me.json()['playerId'] == 'wakudemo-guest-A'
+        assert me.json()['matches'] == 1
+
         # guest-B 各算各的，不与 guest-A 混淆
-        resp_b = await http.get('/api/players/by-id/guest-B/stats')
+        resp_b = await http.get('/api/players/by-id/wakudemo-guest-B/stats')
         assert resp_b.json()['matches'] == 1
 
         # 未参与过对局的 playerId → 全 0
@@ -891,6 +928,7 @@ async def test_stats_survive_leaving_room(server, fresh_rooms, temp_storage):
         room_id = (await http.post('/api/rooms', json={'capacity': 2})).json()['roomId']
         joins = {}
         for nickname, pid in (('甲', 'guest-A'), ('乙', 'guest-B')):
+            http.cookies.set('lgm_wakudemo_session', pid)
             joins[nickname] = (await http.post(f'/api/rooms/{room_id}/join',
                                                json={'nickname': nickname, 'playerId': pid})).json()
         for j in joins.values():
@@ -908,9 +946,9 @@ async def test_stats_survive_leaving_room(server, fresh_rooms, temp_storage):
                             json={'seat': j['seat'], 'rejoinCode': j['rejoinCode']})
         assert temp_storage._conn().execute(
             'SELECT COUNT(*) AS c FROM room_seats').fetchone()['c'] == 0
-        # 战绩仍可查（match_players 持久）
-        resp = await http.get('/api/players/by-id/guest-A/stats')
+        # 战绩仍可查（match_players 持久，联机身份 wakudemo-<uid>）
+        resp = await http.get('/api/players/by-id/wakudemo-guest-A/stats')
         stats = resp.json()
         assert stats['matches'] == 1 and stats['hands'] >= 1
-        resp_b = await http.get('/api/players/by-id/guest-B/stats')
+        resp_b = await http.get('/api/players/by-id/wakudemo-guest-B/stats')
         assert resp_b.json()['matches'] == 1

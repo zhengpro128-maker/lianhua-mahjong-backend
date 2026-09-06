@@ -17,10 +17,11 @@ import os
 import secrets
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from app.api.deps import AuthenticatedUser, require_wakudemo_login
 from app.game.anime_characters import resolve_anime_character_id
 from app.game.manager import PLAY_PACE
 from app.game.room import RoomError, RoomSession, room_registry
@@ -50,6 +51,15 @@ def _room_or_404(room_id: str) -> RoomSession:
     if room is None:
         raise HTTPException(status_code=404, detail={'code': 'ROOM_NOT_FOUND'})
     return room
+
+
+def _safe_avatar_url(value: str | None) -> str:
+    """只接受 http(s) 头像 URL（平台头像字段未在审核期定稿，防御性校验）。"""
+    if not value or len(value) > 2048:
+        return ''
+    if not value.startswith(('https://', 'http://')):
+        return ''
+    return value
 
 
 def _llm_providers_public() -> list[dict]:
@@ -109,7 +119,7 @@ def _room_response(room: RoomSession) -> dict:
 class CreateRoomRequest(BaseModel):
     mode: Literal['east', 'hanchan'] = 'east'
     capacity: int = Field(default=4, ge=2, le=4)
-    playerId: Optional[str] = Field(default=None, max_length=64)  # 客户端匿名身份（guestId）
+    playerId: Optional[str] = Field(default=None, max_length=64)  # 已废弃：联机身份由登录会话推导
     rulesetId: Literal['lotus-classic', 'lotus-legacy'] = 'lotus-classic'
     # 空座 AI 补位是否使用大模型（服务端未配置时静默降级为 False）
     llmEnabled: bool = False
@@ -117,7 +127,7 @@ class CreateRoomRequest(BaseModel):
 
 class JoinRequest(BaseModel):
     nickname: str = Field(min_length=1, max_length=20)
-    playerId: Optional[str] = Field(default=None, max_length=64)  # 客户端匿名身份（guestId）
+    playerId: Optional[str] = Field(default=None, max_length=64)  # 已废弃：联机身份由登录会话推导
     # 只做长度边界；未知/非法值由角色白名单归一化为 DeepSeek，而不是返回 422。
     characterId: Optional[str] = Field(default=None, max_length=64)
 
@@ -148,15 +158,17 @@ class StartRoomRequest(BaseModel):
 # ─── 路由 ────────────────────────────────────────────────
 
 @router.post('')
-def create_room(body: CreateRoomRequest) -> dict:
-    """创建房间。同一房间码唯一，重复创建 → ROOM_EXISTS。
+def create_room(body: CreateRoomRequest,
+                user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
+    """创建房间（需登录）。同一房间码唯一，重复创建 → ROOM_EXISTS。
 
-    防重复占房：携带 playerId（匿名身份）时，若该玩家已在某个房间占座
-    （含对局中）→ ALREADY_IN_ROOM，阻止跨标签页/绕过前端守卫再开新房。
+    联机身份由登录会话推导（wakudemo-<uid>），客户端 playerId 不再参与身份判定。
+    防重复占房：该登录身份已在某个房间占座（含对局中）→ ALREADY_IN_ROOM，
+    阻止跨标签页/绕过前端守卫再开新房。
     房间数上限：先清扫到期房间（绕过惰性节流，确保到期房释放槽位），
     在册房间已达 MAX_ROOMS → ROOM_LIMIT_REACHED（客户端提示「房间已满」）。
     """
-    if body.playerId and room_registry.find_room_by_player(body.playerId) is not None:
+    if room_registry.find_room_by_player(user.player_id) is not None:
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
     room_registry.sweep_expired()
     if room_registry.count() >= MAX_ROOMS:
@@ -178,8 +190,8 @@ def create_room(body: CreateRoomRequest) -> dict:
 
 
 @router.get('/meta')
-def get_room_meta() -> dict:
-    """服务器房间容量：active = 当前在册房间数，max = 上限。
+def get_room_meta(_: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
+    """服务器房间容量（需登录）：active = 当前在册房间数，max = 上限。
 
     客户端大厅展示「剩余房间」用。先清扫到期房间，保证计数与实际可建槽位一致
     （对齐 create_room 的 ROOM_LIMIT_REACHED 判定）。定义在 /{room_id} 之前，
@@ -193,14 +205,19 @@ def get_room_meta() -> dict:
 
 
 @router.get('/{room_id}')
-def get_room(room_id: str) -> dict:
+def get_room(room_id: str,
+             _: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
     return _room_response(_room_or_404(room_id))
 
 
 @router.post('/{room_id}/join')
-def join_room(room_id: str, body: JoinRequest) -> dict:
-    """加入：占第一个空座并签发 rejoinCode（写 room_seats / players 落库）。
+def join_room(room_id: str, body: JoinRequest,
+              user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
+    """加入（需登录）：占第一个空座并签发 rejoinCode（写 room_seats / players 落库）。
 
+    联机身份由登录会话推导（wakudemo-<uid>），客户端 playerId 忽略。
+    头像优先级：登录会话携带平台头像（http/https URL）→ 直接用并落库；
+    否则回退服务端随机头像（按身份持久化）。
     允许加入大厅（lobby）与已结束（finished）房间——对局结束后离开的玩家可
     重新加入房间打下一场（start 已允许 finished 房间再开局）。对局中（playing）
     拒绝：运行中的牌局控制器已接线，新加入者无法参与当前场。
@@ -208,13 +225,15 @@ def join_room(room_id: str, body: JoinRequest) -> dict:
     room = _room_or_404(room_id)
     if room.status not in ('lobby', 'finished'):
         raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
-    # 防重复占房：该 guestId 已在别的房间占座 → 拒绝（避免跨标签页同时在两个房间）
-    if body.playerId and room_registry.find_room_by_player(body.playerId) is not None:
+    # 防重复占房：该登录身份已在别的房间占座 → 拒绝（避免跨标签页同时在两个房间）
+    if room_registry.find_room_by_player(user.player_id) is not None:
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
+    preferred_avatar = _safe_avatar_url(user.avatar_url)
     try:
         character_id = resolve_anime_character_id(body.characterId)
         seat, is_rejoin, state = room.join_or_rejoin(
-            body.nickname, player_id=body.playerId, character_id=character_id)
+            body.nickname, player_id=user.player_id, character_id=character_id,
+            avatar=preferred_avatar)
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"加入房间失败 {exc}")
         raise HTTPException(status_code=409, detail={'code': str(exc)})

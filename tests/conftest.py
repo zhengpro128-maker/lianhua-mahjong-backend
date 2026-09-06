@@ -89,3 +89,27 @@ def stub_avatar_fetch(monkeypatch):
 
     monkeypatch.setattr(room_module, '_fetch_random_avatar', _fake_avatar)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def stub_wakudemo_login(monkeypatch):
+    """默认登录态：REST 测试视为已登录，session Cookie 值即 uid（无 Cookie 用 default）。
+
+    联机接口现在强制登录；存量测试通过本桩获得默认身份。需要显式验证
+    401 / 身份绑定的测试可自行 monkeypatch app.api.deps.get_wakudemo_oauth_service
+    覆盖本桩（后应用的 patch 生效）。
+    """
+    from types import SimpleNamespace
+
+    import app.api.deps as deps
+
+    class _FakeService:
+        config = SimpleNamespace(cookie_name='lgm_wakudemo_session')
+
+        def get_session(self, session_id):
+            uid = session_id or 'default'
+            return SimpleNamespace(account={
+                'id': uid, 'displayName': f'玩家-{uid}', 'avatarUrl': None,
+            })
+
+    monkeypatch.setattr(deps, 'get_wakudemo_oauth_service', lambda: _FakeService())
