@@ -217,17 +217,19 @@ async def test_seat_ops_keep_rejoin_code_without_login(client, fake_auth, fresh_
 
         # 登录态失效（模拟 token 过期）：座位操作凭 rejoinCode 仍可用
         fake_auth['valid'] = False
-        no_login_cookies = {}
-        r = await http.post(f'/api/rooms/{room_id}/ready', json={
-            'seat': seat, 'rejoinCode': rejoin_code, 'ready': True,
-        }, cookies=no_login_cookies)
-        assert r.status_code == 200
-        assert r.json()['ready'] is True
+        async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=client),
+                base_url='http://test') as anon_http:
+            r = await anon_http.post(f'/api/rooms/{room_id}/ready', json={
+                'seat': seat, 'rejoinCode': rejoin_code, 'ready': True,
+            })
+            assert r.status_code == 200
+            assert r.json()['ready'] is True
 
-        r = await http.post(f'/api/rooms/{room_id}/leave', json={
-            'seat': seat, 'rejoinCode': rejoin_code,
-        }, cookies=no_login_cookies)
-        assert r.status_code == 200
+            r = await anon_http.post(f'/api/rooms/{room_id}/leave', json={
+                'seat': seat, 'rejoinCode': rejoin_code,
+            })
+            assert r.status_code == 200
 
 
 # ─── me 接口（战绩 / 免责声明）────────────────────────────
