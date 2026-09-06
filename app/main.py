@@ -25,6 +25,7 @@ from app.api.account import router as account_router
 from app.api.auth import router as auth_router
 from app.api.tts import router as tts_router
 from app.api.local_tts import router as local_tts_router
+from app.auth.wakudemo import WakuDemoOAuthConfig
 from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
 from app.tts.service import get_tts_service
@@ -57,18 +58,23 @@ app = FastAPI(title="莲花广麻 Backend", version="0.2.0",
 # 开发期跨域：Vite dev server (:4173) → 后端 REST。生产同源部署时由网关收窄。
 # 注意：allow_origins 为精确匹配（浏览器 Origin 头不含路径也不带尾斜杠）；
 # vibehub 部署在 *.lumigrav.space 任意子域，用 allow_origin_regex 覆盖，避免换子域后失效。
+_cors_origins = [
+    'https://lianhuaguangdongmahjong.guoguo-labs.online',
+    'http://localhost:4173',
+    'http://127.0.0.1:4173',
+    # e2e 冒烟用独立前端端口（避免与正在运行的 dev :4173 冲突）
+    'http://localhost:4174',
+    'http://127.0.0.1:4174',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+]
+_wakudemo_frontend_origin = WakuDemoOAuthConfig.from_env().frontend_origin
+if _wakudemo_frontend_origin and _wakudemo_frontend_origin not in _cors_origins:
+    _cors_origins.append(_wakudemo_frontend_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        'https://lianhuaguangdongmahjong.guoguo-labs.online',
-        'http://localhost:4173',
-        'http://127.0.0.1:4173',
-        # e2e 冒烟用独立前端端口（避免与正在运行的 dev :4173 冲突）
-        'http://localhost:4174',
-        'http://127.0.0.1:4174',
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-    ],
+    allow_origins=_cors_origins,
     allow_origin_regex=(
         r'^(?:https://([\w-]+\.)*lumigrav\.space'
         r'|http://(?:localhost|127\.0\.0\.1):\d+)$'

@@ -8,7 +8,12 @@ from loguru import logger
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app.logging_config import InterceptHandler, _patch_uvicorn_loggers
+from app import logging_config as logging_module
+from app.logging_config import (
+    InterceptHandler,
+    _patch_uvicorn_loggers,
+    redact_sensitive_data,
+)
 from app.main import access_log_middleware
 
 
@@ -62,6 +67,46 @@ async def test_rejoin_code_is_never_emitted_by_http_or_uvicorn_ws(captured_logs)
     rendered = '\n'.join(record['message'] for record in captured_logs)
     assert secret not in rendered
     assert 'rejoin_code=***' in rendered
+
+
+def test_oauth_credentials_are_redacted_from_logs():
+    rendered = redact_sensitive_data(
+        'GET /api/login/callback?code=secret-code&state=secret-state '
+        'code_verifier=secret-verifier&access_token=secret-token '
+        'Authorization: Bearer secret-bearer')
+
+    for secret in (
+        'secret-code', 'secret-state', 'secret-verifier', 'secret-token', 'secret-bearer',
+    ):
+        assert secret not in rendered
+    assert rendered.count('***') == 5
+
+
+def test_console_sink_disables_exception_local_diagnostics(monkeypatch):
+    add_calls = []
+
+    class FakeLogger:
+        def remove(self):
+            return None
+
+        def add(self, *args, **kwargs):
+            add_calls.append(kwargs)
+            return 1
+
+        def warning(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(logging_module, 'logger', FakeLogger())
+    monkeypatch.setattr(logging_module, '_CONFIGURED', False)
+    monkeypatch.setattr(logging_module, '_patch_uvicorn_loggers', lambda: None)
+    monkeypatch.setattr(logging_module.logging, 'basicConfig', lambda **kwargs: None)
+    monkeypatch.setenv('LOG_TO_FILE', '0')
+
+    logging_module.configure_logging()
+
+    assert len(add_calls) == 1
+    assert add_calls[0]['backtrace'] is False
+    assert add_calls[0]['diagnose'] is False
 
 
 @pytest.mark.asyncio

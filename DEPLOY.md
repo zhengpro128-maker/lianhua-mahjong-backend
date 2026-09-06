@@ -37,6 +37,8 @@ cd /opt/python-project/lianhua-mahjong-backend
 # 运行时配置：docker-compose.yml 会从同目录的 .env 加载数据库/LLM 等变量。
 # 按需填写完整配置；例如走 PostgreSQL 时至少设置：
 echo 'PG_PASSWORD=你的密码' > .env
+# 启用 WakuDemo 登录时，再按 docs/wakudemo-oauth.md 填写全部 WAKUDEMO_* 配置；
+# Client ID、回调地址必须使用平台审核通过的精确值，绝不配置密码。
 # TTS 使用 config/tts.yml，并通过其中的 credential_file 引用 config/secrets/。
 mkdir -p config/secrets
 cp config/tts.example.yml config/tts.yml
@@ -91,8 +93,15 @@ docker compose -f docker-compose.yml logs -f --tail=100       # 日志
 ## 4. 前端如何连后端
 
 后端监听 `0.0.0.0:8000`（REST + WebSocket）。前端构建时设 `VITE_API_BASE` 指向本服务器，
-例如 `VITE_API_BASE=https://你的域名` 或 `http://<服务器IP>:8000`；后端 CORS 已放开 `*`。
+例如 `VITE_API_BASE=https://你的域名`。后端 credentialed CORS 只允许 `app/main.py`
+列出的来源和 `WAKUDEMO_FRONTEND_URL` 的精确 origin；其他生产域名必须显式加入
+白名单，不能使用 `*`。
 若服务器 8000 端口不直接对公网开放，可前置 Nginx / EdgeOne 反代 `/api` 与 `/ws`。
+WakuDemo 跨站 Cookie 在部分浏览器会受第三方 Cookie 策略影响，生产优先让前端通过同站
+网关反代 `/api/login`；完整说明见 `docs/wakudemo-oauth.md`。
+登录限流依赖真实客户端 IP：反代应覆盖（而非追加）转发头，并把代理的精确 IP/CIDR
+配置到 Uvicorn `FORWARDED_ALLOW_IPS`。无法可靠恢复客户端 IP 时，应在网关限流并设置
+`WAKUDEMO_LOGIN_RATE_LIMIT_PER_MINUTE=0`，不要盲目信任 `*`。
 
 ## 5. 已知边界
 

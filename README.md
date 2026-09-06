@@ -107,7 +107,10 @@ backend/
 │  │  ├─ rooms.py             # 房间生命周期（创建/join/leave/ready/start/关闭）
 │  │  ├─ matches.py           # 战绩（单场/房间历史/玩家统计）
 │  │  ├─ moderation.py        # 风控（封禁/解封/举报）
-│  │  └─ account.py           # 免责声明同意记录
+│  │  ├─ account.py           # 免责声明同意记录
+│  │  └─ auth.py              # WakuDemo 登录入口/回调/服务端会话
+│  ├─ auth/
+│  │  └─ wakudemo.py          # OAuth 2.0 Authorization Code + PKCE
 │  ├─ core/                   # ★ 从前端 src/game/ 翻译的纯逻辑
 │  │  ├─ tiles.py             # 牌墙/洗牌/排序/中马
 │  │  ├─ rules.py             # 胡牌判定/听牌/算分/买马/杠分（游戏心脏）
@@ -148,14 +151,15 @@ backend/
 
 ### 本地启动
 
-```bash
+```powershell
 cd backend
 
 # 方式一：uvicorn（开发）
 python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"     # Windows
 # .venv/bin/pip install -e ".[dev]"                 # Linux/macOS
-PYTHONIOENCODING=utf-8 .venv/Scripts/python -m uvicorn app.main:app
+$env:PYTHONIOENCODING='utf-8'                       # PowerShell
+.venv/Scripts/python -m uvicorn app.main:app
 
 # 方式二：Docker（本地构建，监听 8000）
 docker compose up --build
@@ -169,13 +173,14 @@ REST + WebSocket → http://localhost:8000
 API 文档(可选)    → http://localhost:8000/docs   （设 DOCS_SHOW=True 开启）
 ```
 
-前端联机模式默认请求「页面所在主机」的 `8000` 端口；后端部署到其他地址时，前端设置 `VITE_API_BASE`（见前端 README「环境变量」）。
+前端默认请求同源 `/api`，开发服务器通过 Vite 代理到 `127.0.0.1:8000`；后端部署到其他地址时可设置 `VITE_API_BASE`。WakuDemo 登录的完整配置和联调步骤见 [docs/wakudemo-oauth.md](./docs/wakudemo-oauth.md)。
 
 ## 测试与冒烟
 
-```bash
+```powershell
 cd backend
-PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
+$env:PYTHONIOENCODING='utf-8'                                 # PowerShell
+.venv/Scripts/python -m pytest -q                              # 160+ 用例
 .venv/Scripts/python scripts/smoke_4p.py                      # 4 真人 WS 完整东风场
 .venv/Scripts/python scripts/smoke_e2e.py                     # 前端产物 + 真实后端端到端
 .venv/Scripts/python scripts/benchmark_rooms.py 8             # 并发房间压测（默认 8 房）
@@ -199,6 +204,9 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m pytest -q      # 160+ 用例
 | `LOG_ROTATION` | `10 MB` | 日志文件滚动大小 |
 | `LOG_RETENTION` | `30 days` | 日志文件保留时长 |
 | `LOG_TO_FILE` | `1` | 是否写滚动文件；`0` 仅控制台输出（测试/CI 用） |
+| `WAKUDEMO_CLIENT_ID` / `WAKUDEMO_BASE_URL` | 未设 | WakuDemo 应用 Client ID 与平台根地址；启用登录时必填 |
+| `WAKUDEMO_REDIRECT_URI` / `WAKUDEMO_FRONTEND_URL` | 未设 | 平台登记的精确回调地址与回调完成后的前端地址 |
+| `WAKUDEMO_*` 其余项 | 见 `.env.example` | PKCE 事务、会话 TTL 与安全 Cookie；完整说明见 [WakuDemo 登录文档](./docs/wakudemo-oauth.md) |
 | `LLM_ENABLED` | `false` | 启用服务端 LLM 空座补位（未启用时 LLM 开关一律不生效） |
 | `LLM_API_BASE` | 空 | OpenAI 兼容 API 根地址（**单提供商兼容路径**，见下） |
 | `LLM_API_KEY` | 空 | API 密钥（服务端持有，不下发） |
@@ -333,6 +341,10 @@ TTS 凭据放在 `config/secrets/`，由 `config/tts.yml` 引用，两者同样�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/health` | 健康检查 |
+| `GET` | `/api/login/wakudemo` | 发起 WakuDemo Authorization Code + PKCE 授权 |
+| `GET` | `/api/login/callback` | 严格校验 state、服务端换 token 并读取账户 |
+| `GET` | `/api/login/session` | 返回最小账户摘要（永不返回 access token） |
+| `POST` | `/api/login/logout` | 注销服务端会话（JSON 请求 + Origin/CSRF 校验） |
 | `POST` | `/api/rooms` | 创建房间（mode/capacity），签发 6 位房间码 |
 | `GET` | `/api/rooms/meta` | 服务器房间容量（active/max） |
 | `GET` | `/api/rooms/{id}` | 房间详情 + 座位表 + 准备状态 |
@@ -367,6 +379,8 @@ TTS 凭据放在 `config/secrets/`，由 `config/tts.yml` 引用，两者同样�
 ## 已知边界
 
 - 单 worker 部署（Uvicorn 单进程）；SQLite 多 worker 需 WAL + 写锁（当前未启用）。
+- WakuDemo 的 PKCE 事务、code 防重放和 access token 会话同样保存在单 worker 内存；进程重启后玩家需重新登录，多实例部署前必须换成 Redis 原子 TTL 存储。
+- 当前 WakuDemo 身份用于大厅账号展示和昵称预填，尚未替代既有 `guestId/playerId`，也不改变房间与战绩接口的授权语义。
 - `GET /api/players/{nickname}/stats` 用昵称做路径参数，含特殊字符需 URL 编码；长期建议换 `player_id`。
 - 首版封禁/举报接口无管理端鉴权（内部工具），上真账号体系后再收紧。
 - 房间内存态运行期保存在 `room_registry`，服务重启丢失进行中对局（无重启恢复）。
@@ -377,6 +391,7 @@ TTS 凭据放在 `config/secrets/`，由 `config/tts.yml` 引用，两者同样�
 
 | 文档 | 内容 |
 | --- | --- |
+| [wakudemo-oauth.md](./docs/wakudemo-oauth.md) | WakuDemo OAuth + PKCE 架构、配置、启动、测试、安全边界 |
 | [mahjong-backend-dev-plan.md](./docs/mahjong-backend-dev-plan.md) | 开发计划：现状盘点、目标架构、分阶段任务、WS 协议草案、表结构 DDL、测试策略、风控规划 |
 | [claude-handoff-phase0-4.md](./docs/claude-handoff-phase0-4.md) | Phase 0–4：环境骨架、数据模型与牌系统、规则引擎、AI/动作、游戏状态机 |
 | [claude-handoff-phase5.md](./docs/claude-handoff-phase5.md) | Phase 5：WebSocket 实时层与断线托管 |

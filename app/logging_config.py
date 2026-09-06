@@ -26,17 +26,23 @@ _REJOIN_CODE_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
-# OAuth 授权码是一次性凭据；即使短时有效也不得进入访问日志。
-_OAUTH_CODE_PATTERN = re.compile(
-    r'((?:^|[?&])code=)[^&\s"\']*',
+# OAuth 授权码、state、PKCE 和 token 都是凭据；不得进入任何日志出口。
+_OAUTH_QUERY_SECRET_PATTERN = re.compile(
+    r'((?:^|[?&\s])(?:code|state|code_verifier|code_challenge|access_token|'
+    r'refresh_token|id_token)=)[^&\s"\']*',
+    flags=re.IGNORECASE,
+)
+_BEARER_TOKEN_PATTERN = re.compile(
+    r'(\bBearer\s+)[A-Za-z0-9._~+/=-]+',
     flags=re.IGNORECASE,
 )
 
 
 def redact_sensitive_data(message: str) -> str:
-    """脱敏可能出现在 HTTP/WS 请求行中的座位重进码。"""
+    """脱敏可能出现在 HTTP/WS 请求行或第三方异常中的凭据。"""
     message = _REJOIN_CODE_PATTERN.sub(r'\1***', message)
-    return _OAUTH_CODE_PATTERN.sub(r'\1***', message)
+    message = _OAUTH_QUERY_SECRET_PATTERN.sub(r'\1***', message)
+    return _BEARER_TOKEN_PATTERN.sub(r'\1***', message)
 
 
 def _fmt(record: dict) -> str:
@@ -106,7 +112,14 @@ def configure_logging() -> None:
     logger.remove()  # 清掉默认 stderr sink，按需重建
 
     # 控制台：colorize=None 交给 loguru 自动检测（TTY 着色，非 TTY 无颜色）
-    logger.add(sys.stderr, format=_fmt, level=level, colorize=None)
+    logger.add(
+        sys.stderr,
+        format=_fmt,
+        level=level,
+        colorize=None,
+        backtrace=False,
+        diagnose=False,
+    )
 
     # 滚动文件：默认开启；测试 / CI 可用 LOG_TO_FILE=0 关闭。
     # 目录不可写（只读文件系统 / 权限）时降级为仅控制台，绝不崩进程。

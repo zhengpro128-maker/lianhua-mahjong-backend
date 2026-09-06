@@ -15,3 +15,6 @@ build/
 dist/
 *.egg-info/
 .codegraph/
+# 本地浏览器抓取/审核页面提取物可能含 OAuth 申请元数据，禁止误提交。
+.dsh-vision-router/
+wakudemo_docs_extract.txt
