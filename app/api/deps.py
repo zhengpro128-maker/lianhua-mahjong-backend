@@ -1,8 +1,7 @@
 """联机接口统一登录鉴权依赖。
 
-WakuDemo 登录后，联机身份一律由服务端从登录会话推导（uid），不再信任客户端
-提交的 playerId / guestId。身份键统一为 ``wakudemo-<uid>``，避免与历史匿名
-guestId 冲突；封禁、防占房、战绩与头像都绑定该键。
+支持 WakuDemo Cookie 与微信小游戏 Bearer token；身份一律由服务端推导，
+不再信任客户端提交的 playerId / guestId。
 """
 
 from __future__ import annotations
@@ -13,29 +12,44 @@ from typing import Any, Optional
 from fastapi import HTTPException, Request
 
 from app.auth.wakudemo import get_wakudemo_oauth_service
+from app.auth.wechat import get_wechat_auth_service
 
 AUTH_REQUIRED = 'AUTH_REQUIRED'
 
 
 @dataclass(frozen=True)
 class AuthenticatedUser:
-    """从 WakuDemo 会话推导出的联机玩家身份。"""
+    """从可信登录态推导出的联机玩家身份。"""
 
     uid: str
     display_name: Optional[str]
     avatar_url: Optional[str]
+    provider: str = 'wakudemo'
 
     @property
     def player_id(self) -> str:
-        return f'wakudemo-{self.uid}'
+        return f'{self.provider}-{self.uid}'
 
 
 async def require_wakudemo_login(request: Request) -> AuthenticatedUser:
-    """联机接口鉴权：无有效登录会话 → 401 AUTH_REQUIRED。
+    """兼容旧名称的统一联机鉴权：无有效登录态 → 401 AUTH_REQUIRED。
 
     本地开发（WAKUDEMO_LOGIN_BYPASS=true）且无真实会话时，按客户端提交的
     playerId 推导测试身份（非法/缺失时用 dev-bypass），跳过 OAuth 流程。
     """
+    authorization = request.headers.get('authorization', '')
+    scheme, _, bearer = authorization.partition(' ')
+    if scheme.lower() == 'bearer' and bearer:
+        identity = get_wechat_auth_service().verify_access_token(bearer.strip())
+        if identity is not None:
+            return AuthenticatedUser(
+                uid=identity.uid,
+                display_name=None,
+                avatar_url=None,
+                provider='wechat',
+            )
+        raise HTTPException(status_code=401, detail={'code': AUTH_REQUIRED})
+
     service = get_wakudemo_oauth_service()
     session = service.get_session(request.cookies.get(service.config.cookie_name))
     if session is not None:

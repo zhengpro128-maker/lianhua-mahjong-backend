@@ -38,6 +38,8 @@ cd /opt/python-project/lianhua-mahjong-backend
 # 按需填写完整配置；例如走 PostgreSQL 时至少设置：
 echo 'PG_PASSWORD=你的密码' > .env
 # 启用 WakuDemo 登录时，再按 docs/wakudemo-oauth.md 填写全部 WAKUDEMO_* 配置；
+# 启用微信小游戏时，填写 WECHAT_APP_ID / WECHAT_APP_SECRET，并生成独立的
+# 至少 32 字节 WECHAT_TOKEN_SECRET；这些值只放服务器 .env。
 # Client ID、回调地址必须使用平台审核通过的精确值，绝不配置密码。
 # TTS 使用 config/tts.yml，并通过其中的 credential_file 引用 config/secrets/。
 mkdir -p config/secrets
