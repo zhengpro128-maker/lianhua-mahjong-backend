@@ -214,6 +214,8 @@ $env:PYTHONIOENCODING='utf-8'                                 # PowerShell
 | `WECHAT_TOKEN_TTL_SECONDS` | `604800` | 微信访问令牌有效期，允许 5 分钟至 30 天 |
 | `WECHAT_AUTH_TIMEOUT_SECONDS` | `10` | 服务端调用微信 code2Session 的超时秒数 |
 | `WECHAT_LOGIN_RATE_LIMIT_PER_MINUTE` | `30` | 每来源 IP 每分钟微信登录交换上限；可信代理配置错误时不要依赖此值识别真实客户端 |
+| `ROOM_INVITE_SECRET` | 未设 | 可选的独立房间邀请签名密钥（至少 32 字节）；未设时复用 `WECHAT_TOKEN_SECRET` 并做签名域隔离 |
+| `ROOM_INVITE_TTL_SECONDS` | `900` | 房间分享票据有效期，允许 60 秒至 24 小时 |
 | `LLM_ENABLED` | `false` | 启用服务端 LLM 空座补位（未启用时 LLM 开关一律不生效） |
 | `LLM_API_BASE` | 空 | OpenAI 兼容 API 根地址（**单提供商兼容路径**，见下） |
 | `LLM_API_KEY` | 空 | API 密钥（服务端持有，不下发） |

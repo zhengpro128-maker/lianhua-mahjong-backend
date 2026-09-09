@@ -5,6 +5,8 @@ Phase 6 起房间生命周期由本层接管：
 - GET    /api/rooms/meta       服务器房间容量（active 在册数 / max 上限，大厅「剩余房间」用）
 - GET    /api/rooms/{id}       房间详情 + 座位表 + 准备状态
 - POST   /api/rooms/{id}/join  加入（占座 + 签发 rejoinCode，写 room_seats 落库）
+- POST   /api/rooms/{id}/invites 生成短期微信分享票据（仅房间成员）
+- POST   /api/rooms/{id}/join-by-invite 校验分享票据并幂等加入
 - POST   /api/rooms/{id}/leave 离开（释放座位）
 - POST   /api/rooms/{id}/ready 切换准备态
 - POST   /api/rooms/{id}/start 开局（所有已占真人座位 ready 后触发）
@@ -22,6 +24,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.api.deps import AuthenticatedUser, require_wakudemo_login
+from app.auth.room_invite import RoomInviteError, get_room_invite_service
 from app.game.anime_characters import resolve_anime_character_id
 from app.game.manager import PLAY_PACE
 from app.game.room import RoomError, RoomSession, room_registry
@@ -132,6 +135,10 @@ class JoinRequest(BaseModel):
     characterId: Optional[str] = Field(default=None, max_length=64)
 
 
+class InviteJoinRequest(JoinRequest):
+    inviteTicket: str = Field(min_length=1, max_length=1024)
+
+
 class SeatActionRequest(BaseModel):
     seat: int = Field(ge=0, le=3)
     rejoinCode: str
@@ -153,6 +160,54 @@ class SeatLlmRequest(BaseModel):
 
 class StartRoomRequest(BaseModel):
     llmSeats: list[SeatLlmRequest] = Field(default_factory=list)
+
+
+def _join_response(room: RoomSession, seat: int, state, is_rejoin: bool) -> dict:
+    return {
+        'roomId': room.room_id,
+        'seat': seat,
+        'nickname': state.nickname,
+        'characterId': state.character_id,
+        'rejoinCode': state.rejoin_code,
+        'playerId': state.player_id,
+        'rejoin': is_rejoin,
+        'mode': room.mode,
+        'rulesetId': room.ruleset_id,
+    }
+
+
+def _seat_for_player(room: RoomSession, player_id: str):
+    return next(
+        ((seat, state) for seat, state in enumerate(room.seats)
+         if state is not None and state.player_id == player_id),
+        None,
+    )
+
+
+def _join_as_user(room_id: str, body: JoinRequest, user: AuthenticatedUser,
+                  allow_existing_member: bool = False) -> dict:
+    room = _room_or_404(room_id)
+    if room.status not in ('lobby', 'finished'):
+        raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
+    existing_room = room_registry.find_room_by_player(user.player_id)
+    if existing_room is not None:
+        existing = _seat_for_player(room, user.player_id)
+        if allow_existing_member and existing_room is room and existing is not None:
+            seat, state = existing
+            return _join_response(room, seat, state, True)
+        raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
+    preferred_avatar = _safe_avatar_url(user.avatar_url)
+    try:
+        character_id = resolve_anime_character_id(body.characterId)
+        seat, is_rejoin, state = room.join_or_rejoin(
+            body.nickname, player_id=user.player_id, character_id=character_id,
+            avatar=preferred_avatar)
+    except RoomError as exc:
+        logger.bind(room_id=room_id).warning(f"加入房间失败 {exc}")
+        raise HTTPException(status_code=409, detail={'code': str(exc)})
+    logger.bind(room_id=room_id, seat=seat).info(
+        f"加入房间 昵称={state.nickname} 重进={is_rejoin} player_id={state.player_id}")
+    return _join_response(room, seat, state, is_rejoin)
 
 
 # ─── 路由 ────────────────────────────────────────────────
@@ -222,32 +277,52 @@ def join_room(room_id: str, body: JoinRequest,
     重新加入房间打下一场（start 已允许 finished 房间再开局）。对局中（playing）
     拒绝：运行中的牌局控制器已接线，新加入者无法参与当前场。
     """
+    return _join_as_user(room_id, body, user)
+
+
+@router.post('/{room_id}/invites')
+def create_room_invite(
+        room_id: str,
+        user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
+    """为微信分享生成短期邀请票据。
+
+    只有目标房间内已占座的登录玩家可生成；票据绑定房间码，
+    在有效期内可供多位好友使用，房间容量仍由 join 流程权威校验。
+    """
     room = _room_or_404(room_id)
     if room.status not in ('lobby', 'finished'):
         raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
-    # 防重复占房：该登录身份已在别的房间占座 → 拒绝（避免跨标签页同时在两个房间）
-    if room_registry.find_room_by_player(user.player_id) is not None:
-        raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
-    preferred_avatar = _safe_avatar_url(user.avatar_url)
+    if _seat_for_player(room, user.player_id) is None:
+        raise HTTPException(status_code=403, detail={'code': 'NOT_ROOM_MEMBER'})
     try:
-        character_id = resolve_anime_character_id(body.characterId)
-        seat, is_rejoin, state = room.join_or_rejoin(
-            body.nickname, player_id=user.player_id, character_id=character_id,
-            avatar=preferred_avatar)
-    except RoomError as exc:
-        logger.bind(room_id=room_id).warning(f"加入房间失败 {exc}")
-        raise HTTPException(status_code=409, detail={'code': str(exc)})
-    logger.bind(room_id=room_id, seat=seat).info(
-        f"加入房间 昵称={state.nickname} 重进={is_rejoin} player_id={state.player_id}")
+        ticket, expires_at = get_room_invite_service().issue(
+            room.room_id, user.player_id)
+    except RoomInviteError as exc:
+        raise HTTPException(status_code=exc.status_code,
+                            detail={'code': exc.code})
     return {
         'roomId': room.room_id,
-        'seat': seat,
-        'nickname': state.nickname,
-        'characterId': state.character_id,
-        'rejoinCode': state.rejoin_code,
-        'playerId': state.player_id,
-        'rejoin': is_rejoin,
+        'inviteTicket': ticket,
+        'expiresAt': expires_at,
     }
+
+
+@router.post('/{room_id}/join-by-invite')
+def join_room_by_invite(
+        room_id: str,
+        body: InviteJoinRequest,
+        user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
+    """校验微信分享票据后加入房间。
+
+    同一登录身份重复打开该房间的分享卡片时幂等返回原座位，
+    不会重复占座；已在其他房间时仍拒绝加入。
+    """
+    try:
+        get_room_invite_service().verify(body.inviteTicket, room_id)
+    except RoomInviteError as exc:
+        raise HTTPException(status_code=exc.status_code,
+                            detail={'code': exc.code})
+    return _join_as_user(room_id, body, user, allow_existing_member=True)
 
 
 @router.post('/{room_id}/character')

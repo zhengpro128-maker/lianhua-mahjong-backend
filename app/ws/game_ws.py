@@ -1,7 +1,7 @@
 """WebSocket 游戏端点 —— /ws/room/{room_id}
 
 流程（Phase 6：REST 接管房间生命周期，WS 只管实时游戏）：
-1. 握手鉴权：query 携带 rejoin_code（REST join 签发）→ resume_by_code 恢复原座位
+1. 握手鉴权：query 携带 rejoin_code（REST join 签发）；微信座位还需 Bearer 身份匹配
 2. 绑定座位：注册出站队列 + 发送任务，下发 rejoin_ok + 全量快照
 3. 开局由 REST POST /api/rooms/{id}/start 显式触发（本端点不再自动开局）
 4. 接收循环：客户端动作 → handle_client_message（服务端权威校验）→ 拒绝回错误
@@ -16,6 +16,7 @@ import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
+from app.auth.wechat import get_wechat_auth_service
 from app.game.room import RoomError, build_snapshot, room_registry
 
 router = APIRouter()
@@ -38,6 +39,21 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
     start = time.perf_counter()
 
     rejoin_code = (websocket.query_params.get('rejoin_code') or '').strip()
+    authorization = websocket.headers.get('authorization', '')
+    scheme, _, bearer = authorization.partition(' ')
+    wechat_identity = None
+    if authorization:
+        if scheme.lower() != 'bearer' or not bearer.strip():
+            logger.bind(room_id=room_id).warning("WS 握手拒绝 AUTH_REQUIRED")
+            await websocket.send_json({'kind': 'rejoin_err', 'code': 'AUTH_REQUIRED'})
+            await websocket.close()
+            return
+        wechat_identity = get_wechat_auth_service().verify_access_token(bearer.strip())
+        if wechat_identity is None:
+            logger.bind(room_id=room_id).warning("WS 握手拒绝 AUTH_REQUIRED")
+            await websocket.send_json({'kind': 'rejoin_err', 'code': 'AUTH_REQUIRED'})
+            await websocket.close()
+            return
 
     room = room_registry.get(room_id)
     if room is None:
@@ -61,6 +77,16 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
     except RoomError as exc:
         logger.bind(room_id=room_id).warning(f"WS 握手拒绝 {exc}")
         await websocket.send_json({'kind': 'rejoin_err', 'code': str(exc)})
+        await websocket.close()
+        return
+    # 浏览器历史房间仍兼容仅 rejoinCode 握手；微信座位必须额外绑定
+    # 有效 Bearer 身份，防止单独泄露重进码时被其他微信用户顶号。
+    if state.player_id and state.player_id.startswith('wechat-') \
+            and (wechat_identity is None
+                 or wechat_identity.player_id != state.player_id):
+        logger.bind(room_id=room_id, seat=seat).warning(
+            "WS 握手拒绝 AUTH_IDENTITY_MISMATCH")
+        await websocket.send_json({'kind': 'rejoin_err', 'code': 'AUTH_REQUIRED'})
         await websocket.close()
         return
     room.reset_rejoin_rate(rejoin_code)  # 成功恢复座位：清零该码失败计数
