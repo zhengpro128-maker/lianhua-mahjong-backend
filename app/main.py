@@ -8,6 +8,7 @@ import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from app.logging_config import (
@@ -31,6 +32,8 @@ from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
 from app.tts.service import get_tts_service
 from app.local_tts.service import get_local_tts_service
+from app.game.room import room_registry
+from app.runtime_state import runtime_state
 
 DOCS_SHOW = os.getenv('DOCS_SHOW', 'False') == 'True'
 logger.info(f"api文档开启: {DOCS_SHOW}")
@@ -48,9 +51,20 @@ async def lifespan(app: FastAPI):
         f"route={'->'.join(tts.config.provider_names)}")
     logger.info(
         f"单机 TTS 网关 available={local_tts.available} providers={providers}")
-    yield
-    await tts.close()
-    await local_tts.close()
+    runtime_state.mark_ready()
+    try:
+        yield
+    finally:
+        # Remove the instance from readiness before cancelling active room tasks.
+        runtime_state.begin_shutdown()
+        try:
+            room_registry.clear()
+            await tts.close()
+            await local_tts.close()
+        finally:
+            # A real container exits here; this reset only permits ASGI embedding
+            # and test suites to start the same application object again.
+            runtime_state.complete_shutdown()
 
 
 app = FastAPI(title="莲花广麻 Backend", version="0.2.0",
@@ -110,7 +124,7 @@ async def access_log_middleware(request: Request, call_next):
                 f"状态=500 耗时={duration_ms:.1f}ms 来源={client_ip} 参数={query}")
             raise
         duration_ms = (time.perf_counter() - start) * 1000
-        log = logger.debug if request.url.path == '/api/health' else logger.info
+        log = logger.debug if request.url.path in {'/api/health', '/api/ready'} else logger.info
         log(
             f"HTTP {request.method} {request.url.path} 状态={response.status_code} "
             f"耗时={duration_ms:.1f}ms 来源={client_ip} 参数={query}")
@@ -134,3 +148,10 @@ app.include_router(ws_router)
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/ready")
+async def readiness_check():
+    if not runtime_state.ready:
+        return JSONResponse({"status": "draining"}, status_code=503)
+    return {"status": "ready"}

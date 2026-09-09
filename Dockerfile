@@ -22,5 +22,5 @@ COPY pyproject.toml ./
 COPY app ./app
 RUN pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple --no-cache-dir .
 
-# 单 worker 即开发计划 §8 性能基准口径（瓶颈在 WS 连接数而非 CPU）
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 单 worker保证内存房间、REST 和 WebSocket 落在同一进程。微信云托管会注入 PORT。
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --workers 1"]

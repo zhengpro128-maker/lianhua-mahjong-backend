@@ -30,10 +30,20 @@ _PG_DEFAULTS = {
 }
 
 
+def _enabled(name: str) -> bool:
+    return os.environ.get(name, '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def postgres_dsn() -> Optional[str]:
-    """从环境变量构造 PostgreSQL DSN；无密码时回退 SQLite。"""
+    """Resolve PostgreSQL configuration; local development may fall back to SQLite."""
+    database_url = os.environ.get('DATABASE_URL', '').strip()
+    if database_url:
+        return database_url
     password = os.environ.get('PG_PASSWORD')
     if not password:
+        if _enabled('REQUIRE_POSTGRES'):
+            raise RuntimeError(
+                'REQUIRE_POSTGRES is enabled but DATABASE_URL/PG_PASSWORD is missing')
         return None
     host = os.environ.get('PG_HOST', _PG_DEFAULTS['PG_HOST'])
     port = os.environ.get('PG_PORT', _PG_DEFAULTS['PG_PORT'])
@@ -41,10 +51,12 @@ def postgres_dsn() -> Optional[str]:
     database = os.environ.get('PG_DATABASE', _PG_DEFAULTS['PG_DATABASE'])
     user_encoded = quote(user, safe='')
     password_encoded = quote(password, safe='')
-    return (
+    dsn = (
         f'postgresql://{user_encoded}:{password_encoded}'
         f'@{host}:{port}/{database}'
     )
+    sslmode = os.environ.get('PG_SSLMODE', '').strip()
+    return f'{dsn}?sslmode={quote(sslmode, safe="")}' if sslmode else dsn
 
 
 def _resolve_storage():

@@ -1,5 +1,8 @@
 # 部署指南 · GitHub Actions → GHCR → 服务器（仅后端）
 
+微信小游戏后端使用微信云托管时，改用
+[微信云托管部署说明](docs/wechat-cloud-hosting.md)；不要同时执行本文的服务器部署流程。
+
 > 本仓库（后端）的每个 `master` push 会由 GitHub Actions 自动：
 > 构建后端镜像 → 推 GHCR → scp `docker-compose.yml` 到服务器 → `docker compose pull && up -d`。
 >

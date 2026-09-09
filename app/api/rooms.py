@@ -32,6 +32,7 @@ from app.llm.config import (LLM_STYLES, default_provider_id,
                             llm_server_available, load_llm_providers)
 from app.llm.persona import avatar_url, default_nickname
 from app.storage.db import storage
+from app.runtime_state import runtime_state
 
 router = APIRouter(prefix='/api/rooms', tags=['rooms'])
 
@@ -223,6 +224,8 @@ def create_room(body: CreateRoomRequest,
     房间数上限：先清扫到期房间（绕过惰性节流，确保到期房释放槽位），
     在册房间已达 MAX_ROOMS → ROOM_LIMIT_REACHED（客户端提示「房间已满」）。
     """
+    if not runtime_state.ready:
+        raise HTTPException(status_code=503, detail={'code': 'SERVICE_DRAINING'})
     if room_registry.find_room_by_player(user.player_id) is not None:
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
     room_registry.sweep_expired()
