@@ -12,7 +12,8 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
 
 WORKDIR /app
 
@@ -20,7 +21,10 @@ WORKDIR /app
 # setuptools 配置见 pyproject.toml；storage/*.sql 作为 package-data 一并打包）
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple --no-cache-dir .
+# 云托管构建环境访问公网镜像可能抖动。先显式安装本项目的 PEP 517
+# 构建工具，再关闭隔离环境，避免 pip 子进程重复下载构建依赖。
+RUN pip install --no-cache-dir "setuptools>=68" wheel \
+    && pip install --no-cache-dir --no-build-isolation .
 
 # 单 worker保证内存房间、REST 和 WebSocket 落在同一进程。微信云托管会注入 PORT。
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --workers 1"]
