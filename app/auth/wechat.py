@@ -190,7 +190,13 @@ class WechatAuthService:
             raise WechatAuthError('WECHAT_CODE_INVALID', 400)
         self._check_login_rate_limit(client_key)
         owns_client = self._client is None
-        client = self._client or httpx.AsyncClient(timeout=self.config.request_timeout_seconds)
+        # The platform may inject an HTTPS proxy with a private CA.  Never send
+        # the AppSecret-bearing code2Session request through that proxy; the
+        # cloud-hosting public egress connects to WeChat directly.
+        client = self._client or httpx.AsyncClient(
+            timeout=self.config.request_timeout_seconds,
+            trust_env=False,
+        )
         try:
             try:
                 response = await client.get(self.code2session_url, params={

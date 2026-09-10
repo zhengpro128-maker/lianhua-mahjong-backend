@@ -65,6 +65,24 @@ def test_access_token_rejects_tampering_expiry_and_wrong_audience():
 
 
 @pytest.mark.asyncio
+async def test_exchange_code_bypasses_environment_proxy(monkeypatch):
+    created = {}
+    original_client = httpx.AsyncClient
+
+    def handler(_: httpx.Request):
+        return httpx.Response(200, json={'openid': 'openid'})
+
+    def create_client(*args, **kwargs):
+        created.update(kwargs)
+        return original_client(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr('app.auth.wechat.httpx.AsyncClient', create_client)
+    await WechatAuthService(config()).exchange_code('one-time-code')
+
+    assert created['trust_env'] is False
+
+
+@pytest.mark.asyncio
 async def test_code2session_errors_are_mapped_to_stable_codes():
     async def exchange(payload):
         async with httpx.AsyncClient(
