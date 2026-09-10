@@ -202,6 +202,14 @@ class WechatAuthService:
             except httpx.TimeoutException as exc:
                 raise WechatAuthError('WECHAT_AUTH_TIMEOUT', 504) from exc
             except httpx.HTTPError as exc:
+                # Do not log the request URL: its query parameters include the
+                # AppSecret. The exception class and message are enough to
+                # distinguish DNS, connection, proxy, and TLS failures.
+                logger.warning(
+                    '微信 code2Session 请求失败: type={} detail={}',
+                    type(exc).__name__,
+                    str(exc),
+                )
                 raise WechatAuthError('WECHAT_AUTH_UNAVAILABLE', 502) from exc
             if response.status_code != 200:
                 logger.warning('微信 code2Session HTTP 错误: status={}', response.status_code)
