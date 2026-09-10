@@ -25,6 +25,7 @@ class WechatAuthConfig:
     app_id: str
     app_secret: str
     token_secret: str
+    code2session_url: str = 'https://api.weixin.qq.com/sns/jscode2session'
     token_ttl_seconds: int = 7 * 24 * 60 * 60
     request_timeout_seconds: float = 10.0
     login_rate_limit_per_minute: int = 30
@@ -48,6 +49,10 @@ class WechatAuthConfig:
             app_id=os.getenv('WECHAT_APP_ID', '').strip(),
             app_secret=os.getenv('WECHAT_APP_SECRET', '').strip(),
             token_secret=os.getenv('WECHAT_TOKEN_SECRET', '').strip(),
+            code2session_url=os.getenv(
+                'WECHAT_CODE2SESSION_URL',
+                'https://api.weixin.qq.com/sns/jscode2session',
+            ).strip(),
             token_ttl_seconds=token_ttl,
             request_timeout_seconds=timeout,
             login_rate_limit_per_minute=rate_limit,
@@ -95,8 +100,6 @@ def _b64decode(value: str) -> bytes:
 
 class WechatAuthService:
     """不保存 session_key；只签发服务自身可验证的短期访问令牌。"""
-
-    code2session_url = 'https://api.weixin.qq.com/sns/jscode2session'
 
     def __init__(self, config: WechatAuthConfig,
                  client: httpx.AsyncClient | None = None,
@@ -199,7 +202,7 @@ class WechatAuthService:
         )
         try:
             try:
-                response = await client.get(self.code2session_url, params={
+                response = await client.get(self.config.code2session_url, params={
                     'appid': self.config.app_id,
                     'secret': self.config.app_secret,
                     'js_code': normalized_code,

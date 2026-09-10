@@ -16,6 +16,7 @@ def config(**overrides) -> WechatAuthConfig:
         'app_id': 'wx-app-id',
         'app_secret': 'wx-app-secret',
         'token_secret': 't' * 32,
+        'code2session_url': 'https://api.weixin.qq.com/sns/jscode2session',
         'token_ttl_seconds': 3600,
         'request_timeout_seconds': 5,
         'login_rate_limit_per_minute': 30,
@@ -49,6 +50,23 @@ async def test_exchange_code_and_verify_token_without_exposing_openid_or_session
     assert 'raw-open-id' not in identity.access_token
     assert 'must-not-leave-server' not in identity.access_token
     assert service.verify_access_token(identity.access_token) == identity
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_uses_configured_cloud_hosting_endpoint():
+    captured = {}
+
+    def handler(request: httpx.Request):
+        captured['url'] = str(request.url).split('?')[0]
+        return httpx.Response(200, json={'openid': 'openid'})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = WechatAuthService(config(
+            code2session_url='http://api.weixin.qq.com/sns/jscode2session',
+        ), client=client)
+        await service.exchange_code('one-time-code')
+
+    assert captured['url'] == 'http://api.weixin.qq.com/sns/jscode2session'
 
 
 def test_access_token_rejects_tampering_expiry_and_wrong_audience():

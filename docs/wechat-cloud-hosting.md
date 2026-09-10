@@ -32,6 +32,16 @@ DOCS_SHOW=False
 LOG_TO_FILE=0
 ```
 
+若服务在微信云托管中启用了「云调用 → 开放接口服务」，平台会在容器内代理
+`api.weixin.qq.com` 并使用自签名证书。为使微信 `code2Session` 登录请求走该平台内代理，
+还需配置：
+
+```text
+WECHAT_CODE2SESSION_URL=http://api.weixin.qq.com/sns/jscode2session
+```
+
+这只适用于微信云托管内部调用；其他部署环境不要设置该变量，默认仍使用公开的 HTTPS 地址。
+
 也可以不设置 `DATABASE_URL`，改用 `PG_HOST`、`PG_PORT`、`PG_USER`、
 `PG_DATABASE`、`PG_PASSWORD` 和 `PG_SSLMODE=require`。生产环境设置
 `REQUIRE_POSTGRES=true` 后，如果遗漏 PostgreSQL 配置，容器会启动失败，而不会静默
