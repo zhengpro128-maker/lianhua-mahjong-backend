@@ -1,5 +1,6 @@
 from app.rules.registry import get_rule_set
 from app.rules.wuhan import joker_for
+from app.models.game import Meld
 
 
 def test_wuhan_registry_and_wall():
@@ -37,3 +38,11 @@ def test_wuhan_red_is_not_an_automatic_flower_draw():
     assert rules.is_flower_tile('red') is False
     rules.round_state.joker_tiles = ['m2']
     assert rules.is_flower_tile('m2') is False
+
+
+def test_wuhan_pure_one_suit_includes_exposed_melds():
+    rules = get_rule_set('wuhan-huanghuang')
+    rules.round_state.joker_tiles = ['white']
+    hand = ['m1', 'm1', 'm1', 'm2', 'm2', 'm2', 'm3', 'm3', 'm3', 'm4', 'm4']
+    assert rules.is_pure_one_suit(hand, [Meld(type='chi', tile='m5', tiles=['m5', 'm6', 'm7'])])
+    assert not rules.is_pure_one_suit(hand, [Meld(type='chi', tile='p5', tiles=['p5', 'p6', 'p7'])])

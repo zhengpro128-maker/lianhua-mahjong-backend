@@ -72,6 +72,16 @@ class WuhanHuanghuangRuleSet:
     # 由 GameManager 以武汉专属单张杠处理。
     def is_flower_tile(self, tile): return False
     def is_joker_tile(self, tile): return tile in self.round_state.jokers
+    def is_pure_one_suit(self, hand: list[TileType], melds: list[Meld]) -> bool:
+        """清一色须同时检查手牌及已吃、碰、杠的结构副露；红中/癞子单张杠不参与。"""
+        joker = self.round_state.jokers[0] if self.round_state.jokers else None
+        tiles = [tile for tile in hand if tile != joker]
+        tiles.extend(
+            tile for meld in melds if meld.type != 'flower'
+            for tile in meld.tiles if tile != joker
+        )
+        suits = {tile[0] for tile in tiles if tile and tile[0] in 'mps'}
+        return len(suits) == 1 and all(tile[0] in 'mps' for tile in tiles)
     def is_claimable_tile(self, tile): return tile != 'red'
     def should_auto_win_on_flowers(self, count): return False
     def resolve_win_tile(self, winner: GamePlayer, options):

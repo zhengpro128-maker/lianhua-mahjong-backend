@@ -1158,11 +1158,12 @@ class GameManager:
             if options.get('sourceFrom') is not None and options.get('winTile') and not options.get('robbedKong'):
                 hand.append(options['winTile'])
             hard = not joker or (joker not in hand and not any(meld.tile == joker for meld in winner.melds))
+            pure_one_suit = self.rules.is_pure_one_suit(hand, winner.melds)
             kong_factor = 1
             for meld in winner.melds:
                 if meld.type in ('gang', 'angang') or meld.type == 'flower':
                     kong_factor *= 4 if meld.type == 'angang' or meld.tile == joker else 2
-            base = 3 if options.get('selfDraw') or options.get('robbedKong') else 1
+            base = 10 if pure_one_suit else (3 if options.get('selfDraw') or options.get('robbedKong') else 1)
             # points 是“每名付款者”的应付分；9 分起胡按三家合计收分判断，
             # 不能把每家都强行抬到 9 分。硬屁胡自摸应为每家 6 分、总计 18 分。
             points = min(50, base * (2 if hard else 1) * kong_factor)
@@ -1178,7 +1179,7 @@ class GameManager:
             self.result = self.make_round_result({
                 'winnerIndex': winner_index, 'winner': winner.name, 'horses': [], 'hits': 0,
                 'multiplier': points, 'totalMultiplier': points, 'points': points,
-                'totalWon': total, 'details': [{'label': '硬胡' if hard else '软胡'}],
+                'totalWon': total, 'details': ([{'label': '清一色'}] if pure_one_suit else []) + [{'label': '硬胡' if hard else '软胡'}],
                 'winType': 'robbed-kong' if options.get('robbedKong') else ('self-draw' if options.get('selfDraw') else 'discard'),
                 **options,
             }, scores_before)
