@@ -82,6 +82,20 @@ class WuhanHuanghuangRuleSet:
         )
         suits = {tile[0] for tile in tiles if tile and tile[0] in 'mps'}
         return len(suits) == 1 and all(tile[0] in 'mps' for tile in tiles)
+    def seven_pairs_factor(self, hand: list[TileType], melds: list[Meld]) -> int:
+        """七对/龙七对/双龙七对的基础倍数：1/2/4；七对不叠加门前清。"""
+        if any(meld.type != 'flower' for meld in melds) or 'red' in hand:
+            return 0
+        joker = self.round_state.jokers[0] if self.round_state.jokers else None
+        wild = hand.count(joker) if joker else 0
+        counts = Counter(tile for tile in hand if tile != joker)
+        singles = sum(amount % 2 for amount in counts.values())
+        remaining_wild = wild - singles
+        pairs = sum(amount // 2 for amount in counts.values()) + singles + (remaining_wild // 2 if remaining_wild >= 0 and remaining_wild % 2 == 0 else -99)
+        if pairs != 7:
+            return 0
+        quads = sum(amount == 4 for amount in counts.values())
+        return 4 if quads > 1 else 2 if quads else 1
     def is_claimable_tile(self, tile): return tile != 'red'
     def should_auto_win_on_flowers(self, count): return False
     def resolve_win_tile(self, winner: GamePlayer, options):

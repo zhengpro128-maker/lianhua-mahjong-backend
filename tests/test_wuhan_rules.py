@@ -46,3 +46,8 @@ def test_wuhan_pure_one_suit_includes_exposed_melds():
     hand = ['m1', 'm1', 'm1', 'm2', 'm2', 'm2', 'm3', 'm3', 'm3', 'm4', 'm4']
     assert rules.is_pure_one_suit(hand, [Meld(type='chi', tile='m5', tiles=['m5', 'm6', 'm7'])])
     assert not rules.is_pure_one_suit(hand, [Meld(type='chi', tile='p5', tiles=['p5', 'p6', 'p7'])])
+
+
+def test_wuhan_dragon_seven_pairs_factor():
+    rules = get_rule_set('wuhan-huanghuang')
+    assert rules.seven_pairs_factor(['m1', 'm1', 'm1', 'm1', 'm2', 'm2', 'm3', 'm3', 'p1', 'p1', 'p2', 'p2', 's1', 's1'], []) == 2
