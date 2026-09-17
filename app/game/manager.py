@@ -1189,10 +1189,11 @@ class GameManager:
                 'paymentPerPayer': points,
                 **({'discarderPayment': min(50, points * 2)} if payer is not None and not options.get('robbedKong') else {}),
                 'totalWon': total,
-                'details': ([{'label': '双龙七对' if seven_pairs_factor == 4 else '龙七对' if seven_pairs_factor == 2 else '七对', 'points': 10 * seven_pairs_factor}] if seven_pairs_factor else [])
-                + ([{'label': '清一色', 'points': 10}] if pure_one_suit else [])
-                + ([{'label': '门前清', **({'multiplier': 6} if pure_one_suit else {'points': 6})}]
-                   if men_qian_qing else [])
+                'details': ([{'label': '底分·双龙七对' if seven_pairs_factor == 4 else '底分·龙七对' if seven_pairs_factor == 2 else '底分·七对', 'points': 10 * seven_pairs_factor}] if seven_pairs_factor else [])
+                + ([{'label': '底分·清一色', 'points': 10}] if pure_one_suit else [])
+                + ([{'label': '门前清', 'multiplier': 6}]
+                   if pure_one_suit and men_qian_qing else ([{'label': '底分·门前清', 'points': 6}]
+                   if men_qian_qing else []))
                 + ([{'label': '大胡自摸', 'multiplier': 1.5}]
                    if (pure_one_suit or men_qian_qing) and (options.get('selfDraw') or options.get('robbedKong')) else [])
                 + [{'label': '硬胡' if hard else '软胡', 'multiplier': 2 if hard else 1}]
