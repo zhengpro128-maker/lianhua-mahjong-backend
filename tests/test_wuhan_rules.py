@@ -29,3 +29,11 @@ def test_wuhan_chi_only_number_tiles():
     rules = get_rule_set('wuhan-huanghuang')
     assert rules.chi_options(['m1', 'm2'], 'm3')
     assert rules.chi_options(['green', 'white'], 'red') == []
+
+
+def test_wuhan_red_is_not_an_automatic_flower_draw():
+    rules = get_rule_set('wuhan-huanghuang')
+    # 红中和翻出的癞子都应留到玩家选择杠/出牌时处理。
+    assert rules.is_flower_tile('red') is False
+    rules.round_state.joker_tiles = ['m2']
+    assert rules.is_flower_tile('m2') is False

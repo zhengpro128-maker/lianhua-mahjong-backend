@@ -642,7 +642,7 @@ class GameManager:
     # ── 摸牌 ──
 
     async def draw_for(self, player_index: int, from_tail: bool = False) -> bool:
-        """摸牌：红中 → 亮花杠 → 牌墙尾补摸（递归 draw_for）。"""
+        """摸牌。武汉晃晃的红中和癞子均由出牌/杠牌动作处理，不自动补张。"""
         player = self.players[player_index]
         self.kong_draw_player_index = player_index if from_tail else -1
         tile = self._take_tile(from_tail)
@@ -671,6 +671,30 @@ class GameManager:
         player.hand = [*player.hand, tile]
         player.drawnTileIndex = len(player.hand) - 1
         self._play_sound('give.mp3', 0.7)
+        return True
+
+    async def _perform_wuhan_single_kong(self, player_index: int, hand_index: int) -> bool:
+        """武汉晃晃单张杠：红中由玩家选择，癞子在选择出牌时强制亮杠。"""
+        player = self.players[player_index]
+        if not 0 <= hand_index < len(player.hand):
+            return False
+        tile = player.hand[hand_index]
+        joker = self.rules.round_state.jokers[0] if self.rules.round_state.jokers else None
+        if tile != 'red' and tile != joker:
+            return False
+        player.hand.pop(hand_index)
+        player.hand = self._sort_hand(player.hand)
+        player.drawnTileIndex = -1
+        self.kong_draw_player_index = -1
+        if tile == 'red':
+            player.redCount += 1
+        player.melds.append(Meld(type='flower', tile=tile, tiles=[tile]))
+        self._show_table_action('flower-gang', player_index, None, tile, len(player.melds) - 1)
+        await self._play_sound_and_wait('gang.mp3')
+        if self.phase == 'settled':
+            return True
+        await self._sleep(self.pace['redKongDraw'])
+        await self.begin_turn(player_index, from_tail=True)
         return True
 
     # ── 回合流转 ──
@@ -761,6 +785,8 @@ class GameManager:
         if not player.hand or not isinstance(hand_index, int) or isinstance(hand_index, bool):
             return
         if not 0 <= hand_index < len(player.hand):
+            return
+        if self.rules.code == 'wuhan-huanghuang' and await self._perform_wuhan_single_kong(player_index, hand_index):
             return
         tile = player.hand.pop(hand_index)
         player.hand = self._sort_hand(player.hand)
@@ -1131,11 +1157,11 @@ class GameManager:
             hand = list(winner.hand)
             if options.get('sourceFrom') is not None and options.get('winTile') and not options.get('robbedKong'):
                 hand.append(options['winTile'])
-            hard = not joker or joker not in hand
+            hard = not joker or (joker not in hand and not any(meld.tile == joker for meld in winner.melds))
             kong_factor = 1
             for meld in winner.melds:
                 if meld.type in ('gang', 'angang') or meld.type == 'flower':
-                    kong_factor *= 4 if meld.type == 'angang' else 2
+                    kong_factor *= 4 if meld.type == 'angang' or meld.tile == joker else 2
             base = 3 if options.get('selfDraw') or options.get('robbedKong') else 1
             points = min(50, max(9, base * (2 if hard else 1) * kong_factor))
             payer = options.get('sourceFrom')

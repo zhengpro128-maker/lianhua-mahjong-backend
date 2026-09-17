@@ -68,7 +68,9 @@ class WuhanHuanghuangRuleSet:
         self.round_state = WuhanRoundState(flip, [joker], 0)
         return {'wall': wall, 'flipTile': flip, 'jokers': [joker], 'flipStack': 59,
                 'openingStack': 0, 'wallBreakIndex': 0, 'flipSeat': dealer}
-    def is_flower_tile(self, tile): return tile == 'red'
+    # 红中不再摸到即自动花杠；玩家选择杠红中、或选择打出癞子时，
+    # 由 GameManager 以武汉专属单张杠处理。
+    def is_flower_tile(self, tile): return False
     def is_joker_tile(self, tile): return tile in self.round_state.jokers
     def is_claimable_tile(self, tile): return tile != 'red'
     def should_auto_win_on_flowers(self, count): return False
