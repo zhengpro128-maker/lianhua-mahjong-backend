@@ -1,4 +1,4 @@
-"""微信房间分享票据与受邀加入集成测试。"""
+"""网页房间分享票据与受邀加入集成测试。"""
 
 import httpx
 import pytest
@@ -21,7 +21,7 @@ def test_room_invite_ticket_is_room_bound_and_expires():
         RoomInviteConfig(secret=SECRET, ttl_seconds=120),
         clock=lambda: clock['now'],
     )
-    ticket, expires_at = service.issue('ABC123', 'wechat-owner')
+    ticket, expires_at = service.issue('ABC123', 'guest-owner')
     assert expires_at == 1120
     assert service.verify(ticket, 'ABC123').room_id == 'ABC123'
 

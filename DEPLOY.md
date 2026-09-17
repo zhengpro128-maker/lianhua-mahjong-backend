@@ -1,8 +1,5 @@
 # 部署指南 · GitHub Actions → GHCR → 服务器（仅后端）
 
-微信小游戏后端使用微信云托管时，改用
-[微信云托管部署说明](docs/wechat-cloud-hosting.md)；不要同时执行本文的服务器部署流程。
-
 > 本仓库（后端）的每个 `master` push 会由 GitHub Actions 自动：
 > 构建后端镜像 → 推 GHCR → scp `docker-compose.yml` 到服务器 → `docker compose pull && up -d`。
 >
@@ -40,10 +37,8 @@ cd /opt/python-project/lianhua-mahjong-backend
 # 运行时配置：docker-compose.yml 会从同目录的 .env 加载数据库/LLM 等变量。
 # 按需填写完整配置；例如走 PostgreSQL 时至少设置：
 echo 'PG_PASSWORD=你的密码' > .env
-# 启用 WakuDemo 登录时，再按 docs/wakudemo-oauth.md 填写全部 WAKUDEMO_* 配置；
-# 启用微信小游戏时，填写 WECHAT_APP_ID / WECHAT_APP_SECRET，并生成独立的
-# 至少 32 字节 WECHAT_TOKEN_SECRET；这些值只放服务器 .env。
-# 房间邀请默认复用该随机密钥；如需独立轮换可配置 ROOM_INVITE_SECRET。
+# 网页游客会话必须填写至少 32 字节的 GUEST_SESSION_SECRET；如需独立轮换
+# 房间邀请票据，可额外配置 ROOM_INVITE_SECRET。
 # Client ID、回调地址必须使用平台审核通过的精确值，绝不配置密码。
 # TTS 使用 config/tts.yml，并通过其中的 credential_file 引用 config/secrets/。
 mkdir -p config/secrets

@@ -109,10 +109,8 @@ backend/
 │  │  ├─ moderation.py        # 风控（封禁/解封/举报）
 │  │  ├─ account.py           # 免责声明同意记录
 │  │  ├─ auth.py              # WakuDemo 登录入口/回调/服务端会话
-│  │  └─ wechat_auth.py       # 微信 code2Session 与 Bearer 登录
 │  ├─ auth/
 │  │  ├─ wakudemo.py          # OAuth 2.0 Authorization Code + PKCE
-│  │  └─ wechat.py            # 微信身份映射与签名访问令牌
 │  ├─ core/                   # ★ 从前端 src/game/ 翻译的纯逻辑
 │  │  ├─ tiles.py             # 牌墙/洗牌/排序/中马
 │  │  ├─ rules.py             # 胡牌判定/听牌/算分/买马/杠分（游戏心脏）
@@ -209,12 +207,8 @@ $env:PYTHONIOENCODING='utf-8'                                 # PowerShell
 | `WAKUDEMO_CLIENT_ID` / `WAKUDEMO_BASE_URL` | 未设 | WakuDemo 应用 Client ID 与平台根地址；启用登录时必填 |
 | `WAKUDEMO_REDIRECT_URI` / `WAKUDEMO_FRONTEND_URL` | 未设 | 平台登记的精确回调地址与回调完成后的前端地址 |
 | `WAKUDEMO_*` 其余项 | 见 `.env.example` | PKCE 事务、会话 TTL 与安全 Cookie；完整说明见 [WakuDemo 登录文档](./docs/wakudemo-oauth.md) |
-| `WECHAT_APP_ID` / `WECHAT_APP_SECRET` | 未设 | 微信小游戏 AppID/AppSecret；只允许配置在服务端 |
-| `WECHAT_TOKEN_SECRET` | 未设 | 至少 32 字节的独立令牌签名密钥，不能与 AppSecret 相同 |
-| `WECHAT_TOKEN_TTL_SECONDS` | `604800` | 微信访问令牌有效期，允许 5 分钟至 30 天 |
-| `WECHAT_AUTH_TIMEOUT_SECONDS` | `10` | 服务端调用微信 code2Session 的超时秒数 |
-| `WECHAT_LOGIN_RATE_LIMIT_PER_MINUTE` | `30` | 每来源 IP 每分钟微信登录交换上限；可信代理配置错误时不要依赖此值识别真实客户端 |
-| `ROOM_INVITE_SECRET` | 未设 | 可选的独立房间邀请签名密钥（至少 32 字节）；未设时复用 `WECHAT_TOKEN_SECRET` 并做签名域隔离 |
+| `GUEST_SESSION_SECRET` | 未设 | 至少 32 字节的游客会话签名密钥 |
+| `ROOM_INVITE_SECRET` | 未设 | 可选的独立房间邀请签名密钥（至少 32 字节）；未设时复用 `GUEST_SESSION_SECRET` 并做签名域隔离 |
 | `ROOM_INVITE_TTL_SECONDS` | `900` | 房间分享票据有效期，允许 60 秒至 24 小时 |
 | `LLM_ENABLED` | `false` | 启用服务端 LLM 空座补位（未启用时 LLM 开关一律不生效） |
 | `LLM_API_BASE` | 空 | OpenAI 兼容 API 根地址（**单提供商兼容路径**，见下） |
@@ -354,7 +348,7 @@ TTS 凭据放在 `config/secrets/`，由 `config/tts.yml` 引用，两者同样�
 | `GET` | `/api/login/callback` | 严格校验 state、服务端换 token 并读取账户 |
 | `GET` | `/api/login/session` | 返回最小账户摘要（永不返回 access token） |
 | `POST` | `/api/login/logout` | 注销服务端会话（JSON 请求 + Origin/CSRF 校验） |
-| `POST` | `/api/auth/wechat` | 微信小游戏 code2Session 登录，返回自有 Bearer 令牌 |
+| `POST` | `/api/guest/session` | 初始化或恢复签名游客会话 |
 | `POST` | `/api/rooms` | 创建房间（mode/capacity），签发 6 位房间码 |
 | `GET` | `/api/rooms/meta` | 服务器房间容量（active/max） |
 | `GET` | `/api/rooms/{id}` | 房间详情 + 座位表 + 准备状态 |
@@ -390,7 +384,7 @@ TTS 凭据放在 `config/secrets/`，由 `config/tts.yml` 引用，两者同样�
 
 - 单 worker 部署（Uvicorn 单进程）；SQLite 多 worker 需 WAL + 写锁（当前未启用）。
 - WakuDemo 的 PKCE 事务、code 防重放和 access token 会话保存在单 worker 内存；进程重启后网页玩家需重新登录，多实例部署前必须换成 Redis 原子 TTL 存储。
-- 微信访问令牌由服务端 HMAC 签名，不保存或下发微信 `session_key`/原始 OpenID；服务重启后仍有效，但轮换 `WECHAT_TOKEN_SECRET` 会使已有令牌全部失效。首版没有单令牌撤销表，主动退出只清除客户端令牌。
+- 游客会话由服务端 HMAC 签名；轮换 `GUEST_SESSION_SECRET` 会使已有游客会话失效。
 - `GET /api/players/{nickname}/stats` 用昵称做路径参数，含特殊字符需 URL 编码；长期建议换 `player_id`。
 - 首版封禁/举报接口无管理端鉴权（内部工具），上真账号体系后再收紧。
 - 房间内存态运行期保存在 `room_registry`，服务重启丢失进行中对局（无重启恢复）。

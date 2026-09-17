@@ -5,7 +5,7 @@ Phase 6 起房间生命周期由本层接管：
 - GET    /api/rooms/meta       服务器房间容量（active 在册数 / max 上限，大厅「剩余房间」用）
 - GET    /api/rooms/{id}       房间详情 + 座位表 + 准备状态
 - POST   /api/rooms/{id}/join  加入（占座 + 签发 rejoinCode，写 room_seats 落库）
-- POST   /api/rooms/{id}/invites 生成短期微信分享票据（仅房间成员）
+- POST   /api/rooms/{id}/invites 生成短期网页邀请票据（仅房间成员）
 - POST   /api/rooms/{id}/join-by-invite 校验分享票据并幂等加入
 - POST   /api/rooms/{id}/leave 离开（释放座位）
 - POST   /api/rooms/{id}/ready 切换准备态
@@ -288,7 +288,7 @@ def join_room(room_id: str, body: JoinRequest,
 def create_room_invite(
         room_id: str,
         user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
-    """为微信分享生成短期邀请票据。
+    """为网页分享生成短期邀请票据。
 
     只有目标房间内已占座的登录玩家可生成；票据绑定房间码，
     在有效期内可供多位好友使用，房间容量仍由 join 流程权威校验。
@@ -316,7 +316,7 @@ def join_room_by_invite(
         room_id: str,
         body: InviteJoinRequest,
         user: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
-    """校验微信分享票据后加入房间。
+    """校验网页分享票据后加入房间。
 
     同一登录身份重复打开该房间的分享卡片时幂等返回原座位，
     不会重复占座；已在其他房间时仍拒绝加入。

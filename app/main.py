@@ -24,7 +24,6 @@ from app.api.matches import router as matches_router
 from app.api.moderation import router as moderation_router
 from app.api.account import router as account_router
 from app.api.auth import router as auth_router
-from app.api.wechat_auth import router as wechat_auth_router
 from app.api.tts import router as tts_router
 from app.api.local_tts import router as local_tts_router
 from app.api.guest import router as guest_router
@@ -140,7 +139,6 @@ app.include_router(matches_router)
 app.include_router(moderation_router)
 app.include_router(account_router)
 app.include_router(auth_router)
-app.include_router(wechat_auth_router)
 app.include_router(tts_router)
 app.include_router(local_tts_router)
 app.include_router(guest_router)

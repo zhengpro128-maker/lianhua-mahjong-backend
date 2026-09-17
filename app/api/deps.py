@@ -1,6 +1,6 @@
 """联机接口统一登录鉴权依赖。
 
-支持 WakuDemo Cookie 与微信小游戏 Bearer token；身份一律由服务端推导，
+支持匿名游客与 WakuDemo Cookie；身份一律由服务端推导，
 不再信任客户端提交的 playerId / guestId。
 """
 
@@ -12,7 +12,6 @@ from typing import Any, Optional
 from fastapi import HTTPException, Request
 
 from app.auth.wakudemo import get_wakudemo_oauth_service
-from app.auth.wechat import get_wechat_auth_service
 from app.auth.guest import COOKIE_NAME as GUEST_COOKIE_NAME, verify_guest_token
 
 AUTH_REQUIRED = 'AUTH_REQUIRED'
@@ -41,19 +40,6 @@ async def require_wakudemo_login(request: Request) -> AuthenticatedUser:
     guest_uid = verify_guest_token(request.cookies.get(GUEST_COOKIE_NAME))
     if guest_uid:
         return AuthenticatedUser(uid=guest_uid, display_name=None, avatar_url=None, provider='guest')
-
-    authorization = request.headers.get('authorization', '')
-    scheme, _, bearer = authorization.partition(' ')
-    if scheme.lower() == 'bearer' and bearer:
-        identity = get_wechat_auth_service().verify_access_token(bearer.strip())
-        if identity is not None:
-            return AuthenticatedUser(
-                uid=identity.uid,
-                display_name=None,
-                avatar_url=None,
-                provider='wechat',
-            )
-        raise HTTPException(status_code=401, detail={'code': AUTH_REQUIRED})
 
     service = get_wakudemo_oauth_service()
     session = service.get_session(request.cookies.get(service.config.cookie_name))

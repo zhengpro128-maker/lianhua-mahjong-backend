@@ -1,4 +1,4 @@
-"""微信房间邀请票据。
+"""网页房间邀请票据。
 
 票据无需落库，可由多位好友在有效期内使用；签名同时绑定房间码，
 不能被篡改后用于其他房间。
@@ -42,9 +42,9 @@ class RoomInviteConfig:
             ttl = int(os.getenv('ROOM_INVITE_TTL_SECONDS', '900'))
         except ValueError:
             ttl = -1
-        # 默认与微信访问令牌共享随机密钥，通过消息域隔离避免两类签名互用。
+        # 未配置独立邀请密钥时，复用游客会话密钥并通过消息域隔离。
         secret = os.getenv('ROOM_INVITE_SECRET', '').strip() \
-            or os.getenv('WECHAT_TOKEN_SECRET', '').strip()
+            or os.getenv('GUEST_SESSION_SECRET', '').strip()
         return cls(secret=secret, ttl_seconds=ttl)
 
     @property
