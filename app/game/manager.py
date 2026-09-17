@@ -1169,7 +1169,7 @@ class GameManager:
                 kong_factor *= entry['multiplier']
             base = 10 * seven_pairs_factor if seven_pairs_factor else (10 if pure_one_suit else (6 if men_qian_qing else (3 if self_draw_style else 1)))
             if pure_one_suit and men_qian_qing:
-                base *= 6
+                base *= 2
             # points 是“每名付款者”的应付分；9 分起胡按三家合计收分判断，
             # 不能把每家都强行抬到 9 分。硬屁胡自摸应为每家 6 分、总计 18 分。
             win_type_factor = 1.5 if (pure_one_suit or men_qian_qing) and self_draw_style else 1
@@ -1191,7 +1191,7 @@ class GameManager:
                 'totalWon': total,
                 'details': ([{'label': '底分·双龙七对' if seven_pairs_factor == 4 else '底分·龙七对' if seven_pairs_factor == 2 else '底分·七对', 'points': 10 * seven_pairs_factor}] if seven_pairs_factor else [])
                 + ([{'label': '底分·清一色', 'points': 10}] if pure_one_suit else [])
-                + ([{'label': '门前清', 'multiplier': 6}]
+                + ([{'label': '门前清', 'multiplier': 2}]
                    if pure_one_suit and men_qian_qing else ([{'label': '底分·门前清', 'points': 6}]
                    if men_qian_qing else []))
                 + ([{'label': '大胡自摸', 'multiplier': 1.5}]
