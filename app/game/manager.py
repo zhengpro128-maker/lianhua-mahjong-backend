@@ -1159,14 +1159,18 @@ class GameManager:
                 hand.append(options['winTile'])
             hard = not joker or (joker not in hand and not any(meld.tile == joker for meld in winner.melds))
             pure_one_suit = self.rules.is_pure_one_suit(hand, winner.melds)
+            men_qian_qing = all(meld.type in ('angang', 'flower') for meld in winner.melds)
             kong_factor = 1
             for meld in winner.melds:
                 if meld.type in ('gang', 'angang') or meld.type == 'flower':
                     kong_factor *= 4 if meld.type == 'angang' or meld.tile == joker else 2
-            base = 10 if pure_one_suit else (3 if options.get('selfDraw') or options.get('robbedKong') else 1)
+            base = 10 if pure_one_suit else (6 if men_qian_qing else (3 if options.get('selfDraw') or options.get('robbedKong') else 1))
+            if pure_one_suit and men_qian_qing:
+                base *= 6
             # points 是“每名付款者”的应付分；9 分起胡按三家合计收分判断，
             # 不能把每家都强行抬到 9 分。硬屁胡自摸应为每家 6 分、总计 18 分。
-            points = min(50, base * (2 if hard else 1) * kong_factor)
+            win_type_factor = 1.5 if (pure_one_suit or men_qian_qing) and (options.get('selfDraw') or options.get('robbedKong')) else 1
+            points = min(50, base * win_type_factor * (2 if hard else 1) * kong_factor)
             payer = options.get('sourceFrom')
             deltas = []
             total = 0
@@ -1182,8 +1186,10 @@ class GameManager:
                 'paymentPerPayer': points,
                 'totalWon': total,
                 'details': ([{'label': '清一色', 'points': 10}] if pure_one_suit else [])
+                + ([{'label': '门前清', **({'multiplier': 6} if pure_one_suit else {'points': 6})}]
+                   if men_qian_qing else [])
                 + ([{'label': '大胡自摸', 'multiplier': 1.5}]
-                   if pure_one_suit and (options.get('selfDraw') or options.get('robbedKong')) else [])
+                   if (pure_one_suit or men_qian_qing) and (options.get('selfDraw') or options.get('robbedKong')) else [])
                 + [{'label': '硬胡' if hard else '软胡', 'multiplier': 2 if hard else 1}],
                 'winType': 'robbed-kong' if options.get('robbedKong') else ('self-draw' if options.get('selfDraw') else 'discard'),
                 **options,
