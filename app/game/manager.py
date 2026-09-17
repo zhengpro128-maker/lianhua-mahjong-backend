@@ -465,7 +465,7 @@ class GameManager:
             return self.wall.pop(0)
         # 每墩在 wall 中按「上层、下层」排列；补摸先取当前尾墩上层（倒数第二张），
         # 再取同墩底层。只剩一张时照常取完，不设置王牌区。
-        wall_total = 134 if self.rules.code == 'lotus-legacy' else 136
+        wall_total = 120 if self.rules.code == 'wuhan-huanghuang' else (134 if self.rules.code == 'lotus-legacy' else 136)
         tail_drawn = max(0, wall_total - self._head_drawn - len(self.wall))
         tail_index = -2 if tail_drawn % 2 == 0 and len(self.wall) >= 2 else -1
         return self.wall.pop(tail_index)
@@ -553,7 +553,7 @@ class GameManager:
             self.dice = [random.randint(1, 6), random.randint(1, 6)]
         else:
             self.dice = [1 + int(self._random() * 6), 1 + int(self._random() * 6)]
-        if self.rules.code == 'lotus-legacy':
+        if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang'):
             self.second_dice = [
                 random.randint(1, 6) if self._random is None else 1 + int(self._random() * 6),
                 random.randint(1, 6) if self._random is None else 1 + int(self._random() * 6),
@@ -561,7 +561,7 @@ class GameManager:
         else:
             self.second_dice = [1, 1]
         opening = None
-        if self.rules.code == 'lotus-legacy':
+        if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang'):
             opening = self.rules.begin_round(
                 dealer=self.dealer, dice=self.dice, second_dice=self.second_dice,
                 random=self._random,
@@ -569,7 +569,7 @@ class GameManager:
             self.wall = opening['wall']
             self.flip_tile = opening['flipTile']
             self.joker_tiles = opening['jokers']
-            self.wildcard_tiles = ['white']
+            self.wildcard_tiles = ['white'] if self.rules.code == 'lotus-legacy' else []
             self.flip_stack = opening['flipStack']
             self.opening_stack = opening['openingStack']
             self.wall_break_index = opening['wallBreakIndex']
@@ -680,7 +680,7 @@ class GameManager:
         """摸牌（draw_for）→ request_turn → 执行动作（胡/补杠/暗杠/弃牌）。"""
         if self.phase == 'settled':
             return
-        if not self.wall:
+        if not self.wall or (self.rules.code == 'wuhan-huanghuang' and len(self.wall) <= 8):
             self.end_draw()
             return
         self.current_player = player_index
@@ -709,7 +709,7 @@ class GameManager:
             drawnTile=(player.hand[player.drawnTileIndex]
                        if not skip_draw and player.drawnTileIndex >= 0 else None),
             jokers=list(getattr(self.rules, 'round_state', None).jokers)
-            if self.rules.code == 'lotus-legacy' else ['white'],
+            if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang') else ['white'],
             visibleTiles=self._visible_tiles_for(player_index),
             publicTiles=self._public_tiles_for(),
             upperLastDiscard=self._upper_last_discard_for(player_index),
@@ -804,15 +804,15 @@ class GameManager:
             round_state = getattr(self.rules, 'round_state', None)
             ordinary_jokers = (
                 [tile]
-                if self.rules.code == 'lotus-legacy'
+                if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang')
                 and round_state is not None
                 and (tile in round_state.jokers or tile == 'white')
                 else []
             )
-            can_hu = self.rules.code == 'lotus-legacy' and self.rules.is_winning_hand(
+            can_hu = self.rules.code in ('lotus-legacy', 'wuhan-huanghuang') and self.rules.is_winning_hand(
                 [*player.hand, tile], structural_meld_count(player), ordinary_jokers=ordinary_jokers)
             options = self.rules.chi_options(player.hand, tile) \
-                if self.rules.code == 'lotus-legacy' and self.seat_distance(from_, player_index) == 1 else []
+                if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang') and self.seat_distance(from_, player_index) == 1 else []
             if can_hu or capabilities.can_peng or capabilities.can_gang or options:
                 claimants.append({
                     'playerIndex': player_index,
@@ -863,7 +863,7 @@ class GameManager:
             chiOptions=claimant.get('chiOptions', []),
             exposedMelds=structural_meld_count(player),
             jokers=list(getattr(self.rules, 'round_state', None).jokers)
-            if self.rules.code == 'lotus-legacy' else ['white'],
+            if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang') else ['white'],
             visibleTiles=self._visible_tiles_for(claimant['playerIndex']),
             publicTiles=self._public_tiles_for(),
             upperLastDiscard=self._upper_last_discard_for(claimant['playerIndex']),
@@ -1122,6 +1122,40 @@ class GameManager:
         """胡牌结算：买马 + 算分 + 收付 → result → settled。"""
         winner = self.players[winner_index]
         scores_before = [p.score for p in self.players]
+        if self.rules.code == 'wuhan-huanghuang':
+            if options.get('sourceFrom') is not None and options.get('winTile'):
+                source = self.players[options['sourceFrom']]
+                if source.discards and source.discards[-1] == options['winTile']:
+                    source.discards.pop()
+            joker = self.rules.round_state.jokers[0] if self.rules.round_state.jokers else None
+            hand = list(winner.hand)
+            if options.get('sourceFrom') is not None and options.get('winTile') and not options.get('robbedKong'):
+                hand.append(options['winTile'])
+            hard = not joker or joker not in hand
+            kong_factor = 1
+            for meld in winner.melds:
+                if meld.type in ('gang', 'angang') or meld.type == 'flower':
+                    kong_factor *= 4 if meld.type == 'angang' else 2
+            base = 3 if options.get('selfDraw') or options.get('robbedKong') else 1
+            points = min(50, max(9, base * (2 if hard else 1) * kong_factor))
+            payer = options.get('sourceFrom')
+            deltas = []
+            total = 0
+            for index in range(len(self.players)):
+                if index == winner_index: continue
+                payment = min(50, points + (2 if payer == index and not options.get('robbedKong') else 0))
+                deltas.append({'playerIndex': index, 'amount': -payment}); total += payment
+            deltas.insert(0, {'playerIndex': winner_index, 'amount': total})
+            self.settlements.apply_deltas(self.players, deltas)
+            self.result = self.make_round_result({
+                'winnerIndex': winner_index, 'winner': winner.name, 'horses': [], 'hits': 0,
+                'multiplier': points, 'totalMultiplier': points, 'points': points,
+                'totalWon': total, 'details': [{'label': '硬胡' if hard else '软胡'}],
+                'winType': 'robbed-kong' if options.get('robbedKong') else ('self-draw' if options.get('selfDraw') else 'discard'),
+                **options,
+            }, scores_before)
+            self.phase = 'settled'
+            return
         if self.rules.code == 'lotus-legacy':
             scores_before = [p.score for p in self.players]
             if options.get('sourceFrom') is not None and options.get('winTile'):

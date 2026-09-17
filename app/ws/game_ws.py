@@ -17,6 +17,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from app.auth.wechat import get_wechat_auth_service
+from app.auth.guest import COOKIE_NAME as GUEST_COOKIE_NAME, verify_guest_token
 from app.game.room import RoomError, build_snapshot, room_registry
 
 router = APIRouter()
@@ -42,6 +43,7 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
     authorization = websocket.headers.get('authorization', '')
     scheme, _, bearer = authorization.partition(' ')
     wechat_identity = None
+    guest_uid = verify_guest_token(getattr(websocket, 'cookies', {}).get(GUEST_COOKIE_NAME))
     if authorization:
         if scheme.lower() != 'bearer' or not bearer.strip():
             logger.bind(room_id=room_id).warning("WS 握手拒绝 AUTH_REQUIRED")
@@ -86,6 +88,13 @@ async def game_ws(websocket: WebSocket, room_id: str) -> None:
                  or wechat_identity.player_id != state.player_id):
         logger.bind(room_id=room_id, seat=seat).warning(
             "WS 握手拒绝 AUTH_IDENTITY_MISMATCH")
+        await websocket.send_json({'kind': 'rejoin_err', 'code': 'AUTH_REQUIRED'})
+        await websocket.close()
+        return
+    if state.player_id and state.player_id.startswith('guest-') \
+            and f'guest-{guest_uid}' != state.player_id:
+        logger.bind(room_id=room_id, seat=seat).warning(
+            "WS 握手拒绝 GUEST_IDENTITY_MISMATCH")
         await websocket.send_json({'kind': 'rejoin_err', 'code': 'AUTH_REQUIRED'})
         await websocket.close()
         return

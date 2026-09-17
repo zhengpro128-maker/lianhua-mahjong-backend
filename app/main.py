@@ -27,6 +27,7 @@ from app.api.auth import router as auth_router
 from app.api.wechat_auth import router as wechat_auth_router
 from app.api.tts import router as tts_router
 from app.api.local_tts import router as local_tts_router
+from app.api.guest import router as guest_router
 from app.auth.wakudemo import WakuDemoOAuthConfig
 from app.ws.game_ws import router as ws_router
 from app.storage.db import storage
@@ -142,6 +143,7 @@ app.include_router(auth_router)
 app.include_router(wechat_auth_router)
 app.include_router(tts_router)
 app.include_router(local_tts_router)
+app.include_router(guest_router)
 app.include_router(ws_router)
 
 

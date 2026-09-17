@@ -13,6 +13,7 @@ from fastapi import HTTPException, Request
 
 from app.auth.wakudemo import get_wakudemo_oauth_service
 from app.auth.wechat import get_wechat_auth_service
+from app.auth.guest import COOKIE_NAME as GUEST_COOKIE_NAME, verify_guest_token
 
 AUTH_REQUIRED = 'AUTH_REQUIRED'
 
@@ -37,6 +38,10 @@ async def require_wakudemo_login(request: Request) -> AuthenticatedUser:
     本地开发（WAKUDEMO_LOGIN_BYPASS=true）且无真实会话时，按客户端提交的
     playerId 推导测试身份（非法/缺失时用 dev-bypass），跳过 OAuth 流程。
     """
+    guest_uid = verify_guest_token(request.cookies.get(GUEST_COOKIE_NAME))
+    if guest_uid:
+        return AuthenticatedUser(uid=guest_uid, display_name=None, avatar_url=None, provider='guest')
+
     authorization = request.headers.get('authorization', '')
     scheme, _, bearer = authorization.partition(' ')
     if scheme.lower() == 'bearer' and bearer:

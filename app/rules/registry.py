@@ -3,8 +3,9 @@
 from app.rules.base import GameRuleSet
 from app.rules.lianhua import LianhuaGuangmaRuleSet
 from app.rules.lotus_legacy import LotusLegacyRuleSet
+from app.rules.wuhan import WuhanHuanghuangRuleSet
 
-RULESET_IDS = ('lotus-classic', 'lotus-legacy')
+RULESET_IDS = ('lotus-classic', 'lotus-legacy', 'wuhan-huanghuang')
 
 
 def get_rule_set(ruleset_id: str | None = None) -> GameRuleSet:
@@ -12,4 +13,6 @@ def get_rule_set(ruleset_id: str | None = None) -> GameRuleSet:
         return LianhuaGuangmaRuleSet()
     if ruleset_id == 'lotus-legacy':
         return LotusLegacyRuleSet()
+    if ruleset_id == 'wuhan-huanghuang':
+        return WuhanHuanghuangRuleSet()
     raise ValueError(f'UNKNOWN_RULESET:{ruleset_id}')

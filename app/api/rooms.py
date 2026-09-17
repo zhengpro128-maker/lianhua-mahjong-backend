@@ -124,7 +124,8 @@ class CreateRoomRequest(BaseModel):
     mode: Literal['east', 'hanchan'] = 'east'
     capacity: int = Field(default=4, ge=2, le=4)
     playerId: Optional[str] = Field(default=None, max_length=64)  # 已废弃：联机身份由登录会话推导
-    rulesetId: Literal['lotus-classic', 'lotus-legacy'] = 'lotus-classic'
+    # 旧规则值保留给历史房间/回归测试；当前浏览器产品只创建武汉晃晃房间。
+    rulesetId: Literal['lotus-classic', 'lotus-legacy', 'wuhan-huanghuang'] = 'lotus-classic'
     # 空座 AI 补位是否使用大模型（服务端未配置时静默降级为 False）
     llmEnabled: bool = False
 
