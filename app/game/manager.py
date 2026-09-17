@@ -1182,6 +1182,8 @@ class GameManager:
                 'paymentPerPayer': points,
                 'totalWon': total,
                 'details': ([{'label': '清一色', 'points': 10}] if pure_one_suit else [])
+                + ([{'label': '大胡自摸', 'multiplier': 1.5}]
+                   if pure_one_suit and (options.get('selfDraw') or options.get('robbedKong')) else [])
                 + [{'label': '硬胡' if hard else '软胡', 'multiplier': 2 if hard else 1}],
                 'winType': 'robbed-kong' if options.get('robbedKong') else ('self-draw' if options.get('selfDraw') else 'discard'),
                 **options,
