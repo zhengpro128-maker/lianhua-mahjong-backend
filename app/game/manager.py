@@ -38,6 +38,7 @@ from app.game.player import AI_DELAYS, AIPlayer, ClaimContext, RobKongContext, T
 from app.rules.base import GameRuleSet
 from app.rules.fans import FanContext
 from app.rules.lianhua import get_default_rule_set
+from app.rules.wuhan import wuhan_kong_entries
 from app.settlement import SettlementService, settlement_service
 
 # ─── 场次常量（对应 useGame.ts MATCH_HANDS / MATCH_NAMES）────────
@@ -1160,31 +1161,25 @@ class GameManager:
             hard = not joker or (joker not in hand and not any(meld.tile == joker for meld in winner.melds))
             pure_one_suit = self.rules.is_pure_one_suit(hand, winner.melds)
             seven_pairs_factor = self.rules.seven_pairs_factor(hand, winner.melds)
-            men_qian_qing = not seven_pairs_factor and all(meld.type in ('angang', 'flower') for meld in winner.melds)
+            self_draw_style = bool(options.get('selfDraw') or options.get('robbedKong'))
+            men_qian_qing = self_draw_style and not seven_pairs_factor and all(meld.type in ('angang', 'flower') for meld in winner.melds)
+            kong_entries = wuhan_kong_entries(self.players, joker)
             kong_factor = 1
-            # 红中单杠是全桌公开番：任一玩家亮出都会计入本局胡牌；其它杠只算胡牌者自身。
-            for player in self.players:
-                for meld in player.melds:
-                    if meld.type == 'flower' and meld.tile == 'red':
-                        kong_factor *= 2
-            for meld in winner.melds:
-                if meld.type in ('gang', 'angang') or meld.type == 'flower':
-                    if meld.type == 'flower' and meld.tile == 'red':
-                        continue
-                    kong_factor *= 4 if meld.type == 'angang' or meld.tile == joker else 2
-            base = 10 * seven_pairs_factor if seven_pairs_factor else (10 if pure_one_suit else (6 if men_qian_qing else (3 if options.get('selfDraw') or options.get('robbedKong') else 1)))
+            for entry in kong_entries:
+                kong_factor *= entry['multiplier']
+            base = 10 * seven_pairs_factor if seven_pairs_factor else (10 if pure_one_suit else (6 if men_qian_qing else (3 if self_draw_style else 1)))
             if pure_one_suit and men_qian_qing:
                 base *= 6
             # points 是“每名付款者”的应付分；9 分起胡按三家合计收分判断，
             # 不能把每家都强行抬到 9 分。硬屁胡自摸应为每家 6 分、总计 18 分。
-            win_type_factor = 1.5 if (pure_one_suit or men_qian_qing) and (options.get('selfDraw') or options.get('robbedKong')) else 1
+            win_type_factor = 1.5 if (pure_one_suit or men_qian_qing) and self_draw_style else 1
             points = min(50, base * win_type_factor * (2 if hard else 1) * kong_factor)
             payer = options.get('sourceFrom')
             deltas = []
             total = 0
             for index in range(len(self.players)):
                 if index == winner_index: continue
-                payment = min(50, points + (2 if payer == index and not options.get('robbedKong') else 0))
+                payment = min(50, points * (2 if payer == index and not options.get('robbedKong') else 1))
                 deltas.append({'playerIndex': index, 'amount': -payment}); total += payment
             deltas.insert(0, {'playerIndex': winner_index, 'amount': total})
             self.settlements.apply_deltas(self.players, deltas)
@@ -1192,6 +1187,7 @@ class GameManager:
                 'winnerIndex': winner_index, 'winner': winner.name, 'horses': [], 'hits': 0,
                 'multiplier': points, 'totalMultiplier': points, 'points': points,
                 'paymentPerPayer': points,
+                **({'discarderPayment': min(50, points * 2)} if payer is not None and not options.get('robbedKong') else {}),
                 'totalWon': total,
                 'details': ([{'label': '双龙七对' if seven_pairs_factor == 4 else '龙七对' if seven_pairs_factor == 2 else '七对', 'points': 10 * seven_pairs_factor}] if seven_pairs_factor else [])
                 + ([{'label': '清一色', 'points': 10}] if pure_one_suit else [])
@@ -1200,10 +1196,10 @@ class GameManager:
                 + ([{'label': '大胡自摸', 'multiplier': 1.5}]
                    if (pure_one_suit or men_qian_qing) and (options.get('selfDraw') or options.get('robbedKong')) else [])
                 + [{'label': '硬胡' if hard else '软胡', 'multiplier': 2 if hard else 1}]
+                + ([{'label': '放炮者翻倍', 'multiplier': 2}] if payer is not None and not options.get('robbedKong') else [])
                 + [
-                    {'label': '杠番·red', 'multiplier': 2}
-                    for player in self.players for meld in player.melds
-                    if meld.type == 'flower' and meld.tile == 'red'
+                    {'label': entry['label'], 'multiplier': entry['multiplier']}
+                    for entry in kong_entries
                 ],
                 'winType': 'robbed-kong' if options.get('robbedKong') else ('self-draw' if options.get('selfDraw') else 'discard'),
                 **options,

@@ -1,6 +1,6 @@
 from app.rules.registry import get_rule_set
-from app.rules.wuhan import joker_for
-from app.models.game import Meld
+from app.rules.wuhan import joker_for, wuhan_kong_entries
+from app.models.game import GamePlayer, Meld
 
 
 def test_wuhan_registry_and_wall():
@@ -51,3 +51,35 @@ def test_wuhan_pure_one_suit_includes_exposed_melds():
 def test_wuhan_dragon_seven_pairs_factor():
     rules = get_rule_set('wuhan-huanghuang')
     assert rules.seven_pairs_factor(['m1', 'm1', 'm1', 'm1', 'm2', 'm2', 'm3', 'm3', 'p1', 'p1', 'p2', 'p2', 's1', 's1'], []) == 2
+
+
+def test_wuhan_kong_entries_count_all_players():
+    players = [
+        GamePlayer(
+            name='0', avatar='', score=1000, seat=0,
+            hand=[], discards=[], melds=[Meld(type='flower', tile='red', tiles=['red'])],
+            redCount=1, drawnTileIndex=-1,
+        ),
+        GamePlayer(
+            name='1', avatar='', score=1000, seat=1,
+            hand=[], discards=[], melds=[Meld(type='gang', tile='m1', tiles=['m1', 'm1', 'm1', 'm1'], added=False)],
+            redCount=0, drawnTileIndex=-1,
+        ),
+        GamePlayer(
+            name='2', avatar='', score=1000, seat=2,
+            hand=[], discards=[], melds=[Meld(type='angang', tile='p2', tiles=['p2', 'p2', 'p2', 'p2'])],
+            redCount=0, drawnTileIndex=-1,
+        ),
+        GamePlayer(
+            name='3', avatar='', score=1000, seat=3,
+            hand=[], discards=[], melds=[Meld(type='flower', tile='white', tiles=['white'])],
+            redCount=0, drawnTileIndex=-1,
+        ),
+    ]
+
+    assert wuhan_kong_entries(players, 'white') == [
+        {'kind': 'red', 'label': '杠番·red', 'multiplier': 2},
+        {'kind': 'discard', 'label': '杠番·discard', 'multiplier': 2},
+        {'kind': 'concealed', 'label': '杠番·concealed', 'multiplier': 4},
+        {'kind': 'joker', 'label': '杠番·joker', 'multiplier': 4},
+    ]

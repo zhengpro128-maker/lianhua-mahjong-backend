@@ -134,3 +134,25 @@ class WuhanHuanghuangRuleSet:
     def draw_horses(self, wall, amount=None, seat=0): return {'horses': [], 'hits': 0}
     def evaluate_fans(self, context: FanContext): return FanEvaluation((), 1, 0, 1, 1)
     def score_hand(self, context): return {'multiplier': 1, 'totalMultiplier': 1, 'horsePoints': 0, 'points': 1, 'details': []}
+
+
+def wuhan_kong_entries(players: list[GamePlayer], joker: TileType | None) -> list[dict]:
+    """胡牌结算使用的全场杠番。
+
+    红中杠/明杠/补杠为 1 番（×2），癞子杠/暗杠为 2 番（×4）。
+    所有四家玩家已亮出的杠都要计入本次胡牌。
+    """
+    entries: list[dict] = []
+    for player in players:
+        for meld in player.melds:
+            if meld.type == 'flower':
+                if meld.tile == 'red':
+                    entries.append({'kind': 'red', 'label': '杠番·red', 'multiplier': 2})
+                elif meld.tile == joker:
+                    entries.append({'kind': 'joker', 'label': '杠番·joker', 'multiplier': 4})
+            elif meld.type == 'angang':
+                entries.append({'kind': 'concealed', 'label': '杠番·concealed', 'multiplier': 4})
+            elif meld.type == 'gang':
+                kind = 'added' if meld.added else 'discard'
+                entries.append({'kind': kind, 'label': f'杠番·{kind}', 'multiplier': 2})
+    return entries
