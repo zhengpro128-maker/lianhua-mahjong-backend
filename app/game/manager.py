@@ -1179,7 +1179,10 @@ class GameManager:
             self.result = self.make_round_result({
                 'winnerIndex': winner_index, 'winner': winner.name, 'horses': [], 'hits': 0,
                 'multiplier': points, 'totalMultiplier': points, 'points': points,
-                'totalWon': total, 'details': ([{'label': '清一色'}] if pure_one_suit else []) + [{'label': '硬胡' if hard else '软胡'}],
+                'paymentPerPayer': points,
+                'totalWon': total,
+                'details': ([{'label': '清一色', 'points': 10}] if pure_one_suit else [])
+                + [{'label': '硬胡' if hard else '软胡', 'multiplier': 2 if hard else 1}],
                 'winType': 'robbed-kong' if options.get('robbedKong') else ('self-draw' if options.get('selfDraw') else 'discard'),
                 **options,
             }, scores_before)
