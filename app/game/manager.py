@@ -1163,7 +1163,9 @@ class GameManager:
                 if meld.type in ('gang', 'angang') or meld.type == 'flower':
                     kong_factor *= 4 if meld.type == 'angang' or meld.tile == joker else 2
             base = 3 if options.get('selfDraw') or options.get('robbedKong') else 1
-            points = min(50, max(9, base * (2 if hard else 1) * kong_factor))
+            # points 是“每名付款者”的应付分；9 分起胡按三家合计收分判断，
+            # 不能把每家都强行抬到 9 分。硬屁胡自摸应为每家 6 分、总计 18 分。
+            points = min(50, base * (2 if hard else 1) * kong_factor)
             payer = options.get('sourceFrom')
             deltas = []
             total = 0
