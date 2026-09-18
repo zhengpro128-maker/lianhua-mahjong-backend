@@ -92,6 +92,7 @@ class RobKongContext(BaseModel):
     from_: int = Field(alias='from')
     hand: list[TileType]
     exposedMelds: int
+    canHu: bool = False
     model_config = {'populate_by_name': True}
 
 

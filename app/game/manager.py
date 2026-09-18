@@ -38,7 +38,13 @@ from app.game.player import AI_DELAYS, AIPlayer, ClaimContext, RobKongContext, T
 from app.rules.base import GameRuleSet
 from app.rules.fans import FanContext
 from app.rules.lianhua import get_default_rule_set
-from app.rules.wuhan import wuhan_kong_entries
+from app.rules.wuhan import (
+    cap_wuhan_payment, evaluate_wuhan_win, is_wuhan_hard_win,
+    wuhan_discarder_multiplier, wuhan_gets_self_draw_bonus,
+    wuhan_kong_kinds, wuhan_kong_label, wuhan_kong_multiplier,
+    wuhan_meets_minimum, wuhan_pattern_points, wuhan_raw_win_points,
+    wuhan_settlement_kong_kinds, with_wuhan_win_scenes,
+)
 from app.settlement import SettlementService, settlement_service
 
 # ─── 场次常量（对应 useGame.ts MATCH_HANDS / MATCH_NAMES）────────
@@ -599,8 +605,9 @@ class GameManager:
         for player_index, tile in zip(jump_order, jump_tiles):
             if tile is not None:
                 self._receive_dealt_tile(self.players[player_index], tile)
-        # 发完牌后统一处理红中补杠（逆时针从牌墙尾补张），避免发牌中牌山就少牌
-        if self.rules.code != 'lotus-legacy':
+        # 只有经典广麻的红中在发牌阶段自动补花；武汉晃晃的红中与癞子均
+        # 留在手中，必须由玩家在回合中选择/触发单张杠。
+        if self.rules.code not in ('lotus-legacy', 'wuhan-huanghuang'):
             self._resolve_dealt_reds(seat_order)
 
         self.phase = 'opening'
@@ -689,7 +696,10 @@ class GameManager:
         self.kong_draw_player_index = -1
         if tile == 'red':
             player.redCount += 1
-        player.melds.append(Meld(type='flower', tile=tile, tiles=[tile]))
+        player.melds.append(Meld(
+            type='flower', tile=tile, tiles=[tile],
+            specialKong='red' if tile == 'red' else 'joker',
+        ))
         self._show_table_action('flower-gang', player_index, None, tile, len(player.melds) - 1)
         await self._play_sound_and_wait('gang.mp3')
         if self.phase == 'settled':
@@ -697,6 +707,40 @@ class GameManager:
         await self._sleep(self.pace['redKongDraw'])
         await self.begin_turn(player_index, from_tail=True)
         return True
+
+    def _can_wuhan_win(self, winner_index: int, hand: list[TileType], *, self_draw: bool,
+                       source_from: int | None = None, win_tile: TileType | None = None,
+                       kong_bloom: bool = False, robbed_kong: bool = False) -> bool:
+        """武汉晃晃的完整和牌判定，不能只检查 4 副牌加将的牌型。"""
+        winner = self.players[winner_index]
+        joker = self.rules.round_state.jokers[0] if self.rules.round_state.jokers else None
+        exposed_melds = [meld for meld in winner.melds if meld.type != 'flower']
+        exposed = len(exposed_melds)
+        ordinary_jokers = [win_tile] if (
+            not self_draw and not robbed_kong and win_tile is not None and win_tile == joker
+        ) else []
+        if not self.rules.is_winning_hand(hand, exposed, ordinary_jokers):
+            return False
+        self_draw_style = self_draw or robbed_kong
+        men_qian_qing = all(meld.type in ('angang', 'flower') for meld in winner.melds)
+        kinds = evaluate_wuhan_win(
+            self.rules, hand, exposed=exposed, exposed_melds=exposed_melds, joker=joker,
+            ordinary_jokers=ordinary_jokers, men_qian_qing=men_qian_qing,
+            self_draw=self_draw_style,
+        )
+        discard_win = not self_draw and not robbed_kong
+        kinds = with_wuhan_win_scenes(
+            kinds, exposed=exposed, discard_win=discard_win,
+            kong_bloom=kong_bloom, robbed_kong=robbed_kong,
+        )
+        kongs = wuhan_settlement_kong_kinds(
+            self.players, winner_index, joker, kong_bloom,
+        )
+        return wuhan_meets_minimum(
+            kinds, self_draw_style,
+            is_wuhan_hard_win(self.rules, hand, exposed, joker),
+            kongs, discard_win, kong_bloom,
+        )
 
     # ── 回合流转 ──
 
@@ -740,7 +784,11 @@ class GameManager:
             upperLastDiscard=self._upper_last_discard_for(player_index),
             earlyRound=self._early_round_for(player_index),
             wallCount=len(self.wall),
-            canHu=(not skip_draw and self.rules.is_winning_hand(
+            canHu=(not skip_draw and self._can_wuhan_win(
+                player_index, player.hand,
+                self_draw=True,
+                kong_bloom=self.kong_draw_player_index == player_index,
+            ) if self.rules.code == 'wuhan-huanghuang' else not skip_draw and self.rules.is_winning_hand(
                 player.hand, structural_meld_count(player))),
             canWindKong=bool(
                 self.rules.code == 'lotus-legacy'
@@ -756,6 +804,13 @@ class GameManager:
 
         kind = action['kind']
         if kind == 'win':
+            # RemotePlayer 与 UI 会参考 canHu；AI/LLM 的动作也必须在这里再次
+            # 由权威规则校验，避免只因牌型成形便绕过武汉的 9 分起胡限制。
+            if self.rules.code == 'wuhan-huanghuang' and not self._can_wuhan_win(
+                player_index, player.hand, self_draw=True,
+                kong_bloom=self.kong_draw_player_index == player_index,
+            ):
+                return await self.discard_tile(player_index, len(player.hand) - 1)
             self.end_game(player_index, {
                 'kongBloom': self.kong_draw_player_index == player_index,
                 'selfDraw': True,
@@ -829,15 +884,21 @@ class GameManager:
                 continue
             capabilities = self.rules.claim_capabilities(player.hand, tile)
             round_state = getattr(self.rules, 'round_state', None)
-            ordinary_jokers = (
-                [tile]
-                if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang')
-                and round_state is not None
-                and (tile in round_state.jokers or tile == 'white')
-                else []
+            ordinary_jokers = []
+            if round_state is not None and self.rules.code == 'lotus-legacy' \
+                    and (tile in round_state.jokers or tile == 'white'):
+                ordinary_jokers = [tile]
+            elif round_state is not None and self.rules.code == 'wuhan-huanghuang' \
+                    and tile in round_state.jokers:
+                ordinary_jokers = [tile]
+            can_hu = (
+                self._can_wuhan_win(
+                    player_index, [*player.hand, tile], self_draw=False,
+                    source_from=from_, win_tile=tile,
+                ) if self.rules.code == 'wuhan-huanghuang' else
+                self.rules.code == 'lotus-legacy' and self.rules.is_winning_hand(
+                    [*player.hand, tile], structural_meld_count(player), ordinary_jokers=ordinary_jokers)
             )
-            can_hu = self.rules.code in ('lotus-legacy', 'wuhan-huanghuang') and self.rules.is_winning_hand(
-                [*player.hand, tile], structural_meld_count(player), ordinary_jokers=ordinary_jokers)
             options = self.rules.chi_options(player.hand, tile) \
                 if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang') and self.seat_distance(from_, player_index) == 1 else []
             if can_hu or capabilities.can_peng or capabilities.can_gang or options:
@@ -1014,9 +1075,15 @@ class GameManager:
         """找可以抢杠的玩家（按距离排序）。"""
         robbers = []
         for player_index, player in enumerate(self.players):
-            if player_index != kong_player_index and self.rules.can_rob_kong(
-                player.hand, tile, structural_meld_count(player)
-            ):
+            can_rob = (
+                self._can_wuhan_win(
+                    player_index, [*player.hand, tile], self_draw=False,
+                    win_tile=tile, robbed_kong=True,
+                ) if self.rules.code == 'wuhan-huanghuang' else self.rules.can_rob_kong(
+                    player.hand, tile, structural_meld_count(player)
+                )
+            )
+            if player_index != kong_player_index and can_rob:
                 robbers.append((self.seat_distance(kong_player_index, player_index), player_index))
         robbers.sort(key=lambda item: item[0])
         return [item[1] for item in robbers]
@@ -1050,6 +1117,7 @@ class GameManager:
             from_=kong['playerIndex'],
             hand=robber.hand,
             exposedMelds=structural_meld_count(robber),
+            canHu=True,
         )
         action = await self.controllers[robber_index].request_rob_kong(ctx)
         # 守卫：await 期间游戏可能已结束或 kong 已被处理
@@ -1158,50 +1226,88 @@ class GameManager:
             hand = list(winner.hand)
             if options.get('sourceFrom') is not None and options.get('winTile') and not options.get('robbedKong'):
                 hand.append(options['winTile'])
-            hard = not joker or (joker not in hand and not any(meld.tile == joker for meld in winner.melds))
-            pure_one_suit = self.rules.is_pure_one_suit(hand, winner.melds)
-            seven_pairs_factor = self.rules.seven_pairs_factor(hand, winner.melds)
+            exposed_melds = [meld for meld in winner.melds if meld.type != 'flower']
+            exposed = len(exposed_melds)
             self_draw_style = bool(options.get('selfDraw') or options.get('robbedKong'))
-            men_qian_qing = self_draw_style and not seven_pairs_factor and all(meld.type in ('angang', 'flower') for meld in winner.melds)
-            kong_entries = wuhan_kong_entries(self.players, joker)
-            kong_factor = 1
-            for entry in kong_entries:
-                kong_factor *= entry['multiplier']
-            base = 10 * seven_pairs_factor if seven_pairs_factor else (10 if pure_one_suit else (6 if men_qian_qing else (3 if self_draw_style else 1)))
-            if pure_one_suit and men_qian_qing:
-                base *= 2
-            # points 是“每名付款者”的应付分；9 分起胡按三家合计收分判断，
-            # 不能把每家都强行抬到 9 分。硬屁胡自摸应为每家 6 分、总计 18 分。
-            win_type_factor = 1.5 if (pure_one_suit or men_qian_qing) and self_draw_style else 1
-            points = min(50, base * win_type_factor * (2 if hard else 1) * kong_factor)
-            payer = options.get('sourceFrom')
+            discard_win = options.get('sourceFrom') is not None and not options.get('robbedKong')
+            ordinary_jokers = [options['winTile']] if (
+                discard_win and options.get('winTile') == joker
+            ) else []
+            men_qian_qing = all(meld.type in ('angang', 'flower') for meld in winner.melds)
+            kinds = evaluate_wuhan_win(
+                self.rules, hand, exposed=exposed, exposed_melds=exposed_melds,
+                joker=joker, ordinary_jokers=ordinary_jokers,
+                men_qian_qing=men_qian_qing, self_draw=self_draw_style,
+            )
+            kinds = with_wuhan_win_scenes(
+                kinds, exposed=exposed, discard_win=discard_win,
+                kong_bloom=bool(options.get('kongBloom')),
+                robbed_kong=bool(options.get('robbedKong')),
+            )
+            hard = is_wuhan_hard_win(self.rules, hand, exposed, joker)
+            winner_kongs = wuhan_settlement_kong_kinds(
+                self.players, winner_index, joker, bool(options.get('kongBloom')),
+            )
+            points = cap_wuhan_payment(wuhan_raw_win_points(
+                kinds, self_draw_style, hard, winner_kongs,
+                bool(options.get('kongBloom')),
+            ))
+            payer = options.get('sourceFrom') if discard_win else None
+            discarder_multiplier = wuhan_discarder_multiplier(kinds, discard_win)
+            payer_kong_kinds = [wuhan_kong_kinds(player.melds, joker) for player in self.players]
+            payer_kong_multipliers = [wuhan_kong_multiplier(kinds) for kinds in payer_kong_kinds]
+            payer_payments = [
+                0 if index == winner_index else cap_wuhan_payment(
+                    points * payer_kong_multipliers[index] * (
+                        discarder_multiplier if index == payer else 1
+                    )
+                )
+                for index in range(len(self.players))
+            ]
             deltas = []
             total = 0
-            for index in range(len(self.players)):
-                if index == winner_index: continue
-                payment = min(50, points * (2 if payer == index and not options.get('robbedKong') else 1))
+            for index, payment in enumerate(payer_payments):
+                if index == winner_index:
+                    continue
                 deltas.append({'playerIndex': index, 'amount': -payment}); total += payment
             deltas.insert(0, {'playerIndex': winner_index, 'amount': total})
             self.settlements.apply_deltas(self.players, deltas)
+            has_other_big_kind = any(kind not in ('屁胡', '门前清') for kind in kinds)
+            detail_kinds = [kind for kind in kinds if kind != '屁胡'] if any(kind != '屁胡' for kind in kinds) else kinds
             self.result = self.make_round_result({
                 'winnerIndex': winner_index, 'winner': winner.name, 'horses': [], 'hits': 0,
                 'multiplier': points, 'totalMultiplier': points, 'points': points,
-                'paymentPerPayer': points,
-                **({'discarderPayment': min(50, points * 2)} if payer is not None and not options.get('robbedKong') else {}),
+                'paymentPerPayer': next((payment for index, payment in enumerate(payer_payments)
+                                         if index != winner_index and payment > 0), points),
+                **({'discarderPayment': payer_payments[payer], 'discarderIndex': payer,
+                    'discarderMultiplier': discarder_multiplier} if payer is not None else {}),
+                'payerPayments': payer_payments,
+                'payerKongDetails': [[
+                    {'label': wuhan_kong_label(kind),
+                     'multiplier': 4 if kind in ('concealed', 'joker') else 2}
+                    for kind in payer_kinds
+                ] for payer_kinds in payer_kong_kinds],
                 'totalWon': total,
-                'details': ([{'label': '底分·双龙七对' if seven_pairs_factor == 4 else '底分·龙七对' if seven_pairs_factor == 2 else '底分·七对', 'points': 10 * seven_pairs_factor}] if seven_pairs_factor else [])
-                + ([{'label': '底分·清一色', 'points': 10}] if pure_one_suit else [])
-                + ([{'label': '门前清', 'multiplier': 2}]
-                   if pure_one_suit and men_qian_qing else ([{'label': '底分·门前清', 'points': 6}]
-                   if men_qian_qing else []))
+                'details': [
+                    {
+                        'label': '门前清' if kind == '门前清' and has_other_big_kind else f'底分·{kind}',
+                        **({'multiplier': 2} if kind == '门前清' and has_other_big_kind else {
+                            'points': 3 if kind == '屁胡' and self_draw_style else 1 if kind == '屁胡' else wuhan_pattern_points(kind),
+                        }),
+                    }
+                    for kind in detail_kinds
+                ]
                 + ([{'label': '大胡自摸', 'multiplier': 1.5}]
-                   if (pure_one_suit or men_qian_qing) and (options.get('selfDraw') or options.get('robbedKong')) else [])
+                   if self_draw_style and wuhan_gets_self_draw_bonus(kinds) else [])
                 + [{'label': '硬胡' if hard else '软胡', 'multiplier': 2 if hard else 1}]
-                + ([{'label': '放炮者翻倍', 'multiplier': 2}] if payer is not None and not options.get('robbedKong') else [])
+                + ([{'label': '放炮者加付', 'multiplier': discarder_multiplier}] if payer is not None else [])
                 + [
-                    {'label': entry['label'], 'multiplier': entry['multiplier']}
-                    for entry in kong_entries
-                ],
+                    {'label': f'杠番·{wuhan_kong_label(kind)}',
+                     'multiplier': 4 if kind in ('concealed', 'joker') else 2}
+                    for kind in winner_kongs
+                ]
+                + ([{'label': '杠上开花减一番', 'multiplier': 0.5}]
+                   if options.get('kongBloom') else []),
                 'winType': 'robbed-kong' if options.get('robbedKong') else ('self-draw' if options.get('selfDraw') else 'discard'),
                 **options,
             }, scores_before)

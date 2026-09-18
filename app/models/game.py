@@ -47,6 +47,9 @@ class Meld(BaseModel):
     added: Optional[bool] = None
     pending: Optional[bool] = None
     windKong: Optional[bool] = None
+    # 武汉晃晃的红中/癞子是单张杠。花牌展示类型跨玩法复用，必须保留
+    # 开杠时的凭据，不能仅因牌面恰好相同就在结算时误计为杠番。
+    specialKong: Optional[Literal['red', 'joker']] = None
 
     model_config = {'populate_by_name': True}
 

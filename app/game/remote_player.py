@@ -147,8 +147,12 @@ class RemotePlayer:
                     return None, 'INVALID_ACTION'
                 return {'kind': 'discard', 'handIndex': hi}, ''
             if mtype == 'hu':
-                # 自摸胡：手牌（含刚摸的牌）须已成形
-                if ctx is not None and self.rules.is_winning_hand(ctx.hand, ctx.exposedMelds):
+                # canHu 已由服务端按完整玩法规则（含武汉起胡门槛）算出。
+                if ctx is not None and (
+                    (getattr(self.rules, 'code', '') == 'wuhan-huanghuang' and getattr(ctx, 'canHu', False))
+                    or (getattr(self.rules, 'code', '') != 'wuhan-huanghuang'
+                        and self.rules.is_winning_hand(ctx.hand, ctx.exposedMelds))
+                ):
                     return {'kind': 'win'}, ''
                 return None, 'INVALID_ACTION'
             if mtype == 'gang':
@@ -205,9 +209,11 @@ class RemotePlayer:
 
         if kind == 'rob_kong':
             if mtype == 'hu':
-                # 抢杠胡：杠牌加入手牌后须成胡
-                if ctx is not None and self.rules.can_rob_kong(
-                    ctx.hand, ctx.tile, ctx.exposedMelds
+                # 抢杠同样以服务端已核验的完整胡牌资格为准。
+                if ctx is not None and (
+                    (getattr(self.rules, 'code', '') == 'wuhan-huanghuang' and getattr(ctx, 'canHu', False))
+                    or (getattr(self.rules, 'code', '') != 'wuhan-huanghuang'
+                        and self.rules.can_rob_kong(ctx.hand, ctx.tile, ctx.exposedMelds))
                 ):
                     return 'win', ''
                 return None, 'INVALID_ACTION'

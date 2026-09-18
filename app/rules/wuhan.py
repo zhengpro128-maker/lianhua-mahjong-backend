@@ -11,6 +11,8 @@ from app.rules.fans import FanContext, FanEvaluation
 
 TILES = [f'{s}{n}' for s in 'mps' for n in range(1, 10)] + ['red', 'green', 'white']
 USABLE = tuple(t for t in TILES if t != 'red')
+MIN_WIN_POINTS = 9
+BIG_DISCARD_KINDS = frozenset({'七对', '龙七对', '双龙七对', '清一色', '碰碰胡'})
 
 
 def joker_for(tile: TileType) -> TileType:
@@ -63,10 +65,13 @@ class WuhanHuanghuangRuleSet:
     def create_wall(self): return [tile for tile in TILES for _ in range(4)]
     def begin_round(self, *, dealer, dice, second_dice=None, random=None, **_):
         wall = shuffle(self.create_wall(), random)
-        flip = wall.pop()
+        # 与单机 roundFlow 一致：翻牌只是指示牌，仍留在物理牌墙中，
+        # 后续可照常从牌头或牌尾被摸走，不能凭空少一张牌。
+        indicator_index = ((dice[0] + dice[1] - 2) * 2 + 1) % len(wall)
+        flip = wall[indicator_index]
         joker = joker_for(flip)
         self.round_state = WuhanRoundState(flip, [joker], 0)
-        return {'wall': wall, 'flipTile': flip, 'jokers': [joker], 'flipStack': 59,
+        return {'wall': wall, 'flipTile': flip, 'jokers': [joker], 'flipStack': indicator_index // 2,
                 'openingStack': 0, 'wallBreakIndex': 0, 'flipSeat': dealer}
     # 红中不再摸到即自动花杠；玩家选择杠红中、或选择打出癞子时，
     # 由 GameManager 以武汉专属单张杠处理。
@@ -117,7 +122,9 @@ class WuhanHuanghuangRuleSet:
     def waiting_tiles(self, tiles, exposed_meld_count=0):
         return [t for t in USABLE if self.is_winning_hand([*tiles, t], exposed_meld_count)]
     def matching_count(self, tiles, tile): return tiles.count(tile)
-    def concealed_kongs(self, tiles): return [t for t in set(tiles) if t != 'red' and tiles.count(t) == 4]
+    def concealed_kongs(self, tiles):
+        joker = self.round_state.jokers[0] if self.round_state.jokers else None
+        return [t for t in set(tiles) if t != 'red' and t != joker and tiles.count(t) == 4]
     def can_added_kong(self, hand, melds: list[Meld], tile): return tile in hand and any(m.type == 'peng' and m.tile == tile for m in melds)
     def can_rob_kong(self, tiles, tile, exposed_meld_count=0):
         ordinary = [tile] if tile in self.round_state.jokers else []
@@ -136,23 +143,163 @@ class WuhanHuanghuangRuleSet:
     def score_hand(self, context): return {'multiplier': 1, 'totalMultiplier': 1, 'horsePoints': 0, 'points': 1, 'details': []}
 
 
-def wuhan_kong_entries(players: list[GamePlayer], joker: TileType | None) -> list[dict]:
-    """胡牌结算使用的全场杠番。
+def wuhan_kong_label(kind: str) -> str:
+    return {
+        'red': '红中杠', 'discard': '明杠', 'added': '补杠',
+        'concealed': '暗杠', 'joker': '癞子杠',
+    }[kind]
 
-    红中杠/明杠/补杠为 1 番（×2），癞子杠/暗杠为 2 番（×4）。
-    所有四家玩家已亮出的杠都要计入本次胡牌。
-    """
-    entries: list[dict] = []
-    for player in players:
-        for meld in player.melds:
-            if meld.type == 'flower':
-                if meld.tile == 'red':
-                    entries.append({'kind': 'red', 'label': '杠番·red', 'multiplier': 2})
-                elif meld.tile == joker:
-                    entries.append({'kind': 'joker', 'label': '杠番·joker', 'multiplier': 4})
-            elif meld.type == 'angang':
-                entries.append({'kind': 'concealed', 'label': '杠番·concealed', 'multiplier': 4})
-            elif meld.type == 'gang':
-                kind = 'added' if meld.added else 'discard'
-                entries.append({'kind': kind, 'label': f'杠番·{kind}', 'multiplier': 2})
-    return entries
+
+def wuhan_kong_kinds(melds: list[Meld], joker: TileType | None) -> list[str]:
+    """返回一名玩家自己的杠番，和前端 ruleProfile 保持一致。"""
+    kinds: list[str] = []
+    for meld in melds:
+        if meld.type == 'flower' and meld.specialKong == 'red' and meld.tile == 'red':
+            kinds.append('red')
+        elif meld.type == 'flower' and meld.specialKong == 'joker' and meld.tile == joker:
+            kinds.append('joker')
+        elif meld.type == 'angang':
+            kinds.append('joker' if meld.tile == joker else 'concealed')
+        elif meld.type == 'gang':
+            kinds.append('added' if meld.added else 'discard')
+    return kinds
+
+
+def wuhan_kong_multiplier(kinds: list[str], kong_bloom: bool = False) -> float:
+    factor = 1
+    for kind in kinds:
+        factor *= 4 if kind in ('concealed', 'joker') else 2
+    return factor / 2 if kong_bloom else factor
+
+
+def wuhan_settlement_kong_kinds(players: list[GamePlayer], winner_index: int,
+                                 joker: TileType | None, kong_bloom: bool) -> list[str]:
+    """胡家仅计自己的杠；杠开时的扣一番在 multiplier 中统一处理。"""
+    return wuhan_kong_kinds(players[winner_index].melds, joker)
+
+
+def _split_jokers(tiles: list[TileType], joker: TileType | None,
+                  ordinary_jokers: list[TileType] | None = None) -> tuple[int, list[TileType]]:
+    if not joker:
+        return 0, list(tiles)
+    ordinary = (ordinary_jokers or []).count(joker)
+    all_jokers = tiles.count(joker)
+    return max(0, all_jokers - ordinary), [t for t in tiles if t != joker] + [joker] * min(all_jokers, ordinary)
+
+
+def is_wuhan_hard_win(rules: WuhanHuanghuangRuleSet, tiles: list[TileType],
+                       exposed_meld_count: int, joker: TileType | None) -> bool:
+    """单张癞子若可按自身牌面完成牌型，按前端约定仍为硬胡。"""
+    return (not joker or tiles.count(joker) <= 1) and rules.is_winning_hand(tiles, exposed_meld_count)
+
+
+def _triplets_only(values: tuple[int, ...], wild: int, left: int) -> bool:
+    @lru_cache(maxsize=None)
+    def visit(counts: tuple[int, ...], jokers: int, groups: int) -> bool:
+        try:
+            index = next(i for i, amount in enumerate(counts) if amount)
+        except StopIteration:
+            return jokers == groups * 3
+        if not groups:
+            return False
+        used = min(3, counts[index])
+        if 3 - used > jokers:
+            return False
+        next_counts = list(counts)
+        next_counts[index] -= used
+        return visit(tuple(next_counts), jokers - (3 - used), groups - 1)
+    return visit(values, wild, left)
+
+
+def evaluate_wuhan_win(rules: WuhanHuanghuangRuleSet, tiles: list[TileType], *,
+                       exposed: int, exposed_melds: list[Meld], joker: TileType | None,
+                       ordinary_jokers: list[TileType] | None = None,
+                       men_qian_qing: bool = False, self_draw: bool = False) -> list[str]:
+    """前后端共用的武汉基础牌型：屁胡、碰碰胡、清一色、门前清、七对。"""
+    if 'red' in tiles:
+        return []
+    wild, natural = _split_jokers(tiles, joker, ordinary_jokers)
+    kinds: list[str] = []
+    standard = rules.is_winning_hand(tiles, exposed, ordinary_jokers)
+    if standard and wild <= 1:
+        kinds.append('屁胡')
+    if standard:
+        all_natural = list(natural)
+        for meld in exposed_melds:
+            all_natural.extend(tile for tile in meld.tiles if tile not in (joker, 'red'))
+        suits = {tile[0] for tile in all_natural if tile[0] in 'mps'}
+        honors = any(tile in ('green', 'white') for tile in all_natural)
+        if len(suits) == 1 and not honors:
+            kinds.append('清一色')
+        if not any(meld.type == 'chi' for meld in exposed_melds):
+            counts = Counter(natural)
+            values = tuple(counts[t] for t in USABLE)
+            for index, amount in enumerate(values):
+                used = min(2, amount)
+                need = 2 - used
+                if need <= wild:
+                    remainder = list(values)
+                    remainder[index] -= used
+                    if _triplets_only(tuple(remainder), wild - need, 4 - exposed):
+                        kinds.append('碰碰胡')
+                        break
+    if not exposed and len(tiles) == 14:
+        values = list(Counter(natural).values())
+        singles = sum(amount % 2 for amount in values)
+        remaining = wild - singles
+        pairs = sum(amount // 2 for amount in values) + singles + (remaining // 2 if remaining >= 0 and not remaining % 2 else -99)
+        if pairs == 7:
+            quads = sum(amount == 4 for amount in values)
+            kinds.append('双龙七对' if quads > 1 else '龙七对' if quads else '七对')
+    if not any(kind in ('七对', '龙七对', '双龙七对') for kind in kinds) and self_draw and men_qian_qing and kinds:
+        kinds.append('门前清')
+    return kinds
+
+
+def with_wuhan_win_scenes(kinds: list[str], *, exposed: int, discard_win: bool,
+                          kong_bloom: bool, robbed_kong: bool) -> list[str]:
+    result = list(kinds)
+    if exposed == 4 and discard_win:
+        result.append('全求人')
+    if kong_bloom:
+        result.append('杠上开花')
+    if robbed_kong:
+        result.append('抢杠胡')
+    return result
+
+
+def wuhan_pattern_points(kind: str) -> int:
+    return {'双龙七对': 40, '龙七对': 20, '门前清': 6}.get(kind, 10)
+
+
+def wuhan_gets_self_draw_bonus(kinds: list[str]) -> bool:
+    return '杠上开花' not in kinds and any(kind not in ('屁胡', '门前清') for kind in kinds)
+
+
+def wuhan_discarder_multiplier(kinds: list[str], discard_win: bool) -> float:
+    return 1.2 if discard_win and any(kind in BIG_DISCARD_KINDS for kind in kinds) else 2
+
+
+def wuhan_raw_win_points(kinds: list[str], self_draw: bool, hard: bool, kongs: list[str],
+                         kong_bloom: bool = False) -> float:
+    big = [kind for kind in kinds if kind != '屁胡']
+    has_other_big = any(kind != '门前清' for kind in big)
+    if big:
+        base = 1
+        for kind in big:
+            base *= 2 if kind == '门前清' and has_other_big else wuhan_pattern_points(kind)
+    else:
+        base = 3 if '屁胡' in kinds and self_draw else 1 if '屁胡' in kinds else 0
+    return base * (2 if hard else 1) * (1.5 if self_draw and wuhan_gets_self_draw_bonus(kinds) else 1) * wuhan_kong_multiplier(kongs, kong_bloom)
+
+
+def cap_wuhan_payment(points: float) -> float:
+    return min(50, max(0, points))
+
+
+def wuhan_meets_minimum(kinds: list[str], self_draw: bool, hard: bool,
+                         kongs: list[str], discard_win: bool,
+                         kong_bloom: bool = False) -> bool:
+    payment = wuhan_raw_win_points(kinds, self_draw, hard, kongs, kong_bloom)
+    total = payment * 3 if self_draw else payment * (2 + wuhan_discarder_multiplier(kinds, discard_win))
+    return total >= MIN_WIN_POINTS
