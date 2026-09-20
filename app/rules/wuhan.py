@@ -136,7 +136,10 @@ class WuhanHuanghuangRuleSet:
         rank = int(tile[1]); out = []
         for start in range(max(1, rank - 2), min(7, rank) + 1):
             seq = [f'{tile[0]}{start + x}' for x in range(3)]; need = list(seq); need.remove(tile)
-            if all(hand.count(t) >= need.count(t) for t in set(need)): out.append({'kind': 'sequence', 'tiles': seq})
+            if all(hand.count(t) >= need.count(t) for t in set(need)):
+                # 吃牌选项是跨规则集的公共协议；manager / perform_chi 需要用 tile
+                # 从上家牌河移除被吃的弃牌。缺少该字段会在联机真人吃牌时触发 KeyError。
+                out.append({'tile': tile, 'kind': 'sequence', 'tiles': seq})
         return out
     def draw_horses(self, wall, amount=None, seat=0): return {'horses': [], 'hits': 0}
     def evaluate_fans(self, context: FanContext): return FanEvaluation((), 1, 0, 1, 1)

@@ -45,7 +45,9 @@ def test_wuhan_standard_win_and_single_joker_hard_win():
 def test_wuhan_chi_and_regular_kong_exclude_red_and_joker():
     rules = get_rule_set('wuhan-huanghuang')
     rules.round_state.joker_tiles = ['s8']
-    assert rules.chi_options(['m1', 'm2'], 'm3')
+    assert rules.chi_options(['m1', 'm2'], 'm3') == [
+        {'tile': 'm3', 'kind': 'sequence', 'tiles': ['m1', 'm2', 'm3']},
+    ]
     assert rules.chi_options(['green', 'white'], 'red') == []
     assert rules.concealed_kongs(['red'] * 4 + ['s8'] * 4 + ['m1'] * 4) == ['m1']
 
