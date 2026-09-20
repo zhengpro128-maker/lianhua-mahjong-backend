@@ -39,6 +39,9 @@ def test_wuhan_standard_win_and_single_joker_hard_win():
     hand = ['m1', 'm2', 'm3', 'p1', 'p2', 'p3', 's4', 's5', 's6', 's7', 's8', 's9', 'green', 'green']
     assert rules.is_winning_hand(hand)
     assert is_wuhan_hard_win(rules, hand, 0, 'p3')
+    joker_must_substitute = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'p2', 'p3', 'p3', 's7', 's8', 's9', 'green', 'green']
+    assert rules.is_winning_hand(joker_must_substitute, 0)
+    assert not is_wuhan_hard_win(rules, joker_must_substitute, 0, 'p3')
     assert not is_wuhan_hard_win(rules, [*hand[:-2], 'p3', 'p3'], 0, 'p3')
 
 

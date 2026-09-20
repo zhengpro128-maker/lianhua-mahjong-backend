@@ -192,8 +192,13 @@ def _split_jokers(tiles: list[TileType], joker: TileType | None,
 
 def is_wuhan_hard_win(rules: WuhanHuanghuangRuleSet, tiles: list[TileType],
                        exposed_meld_count: int, joker: TileType | None) -> bool:
-    """单张癞子若可按自身牌面完成牌型，按前端约定仍为硬胡。"""
-    return (not joker or tiles.count(joker) <= 1) and rules.is_winning_hand(tiles, exposed_meld_count)
+    """单张癞子须按自身牌面仍能成胡；两张及以上癞子一律软胡。"""
+    joker_count = tiles.count(joker) if joker else 0
+    if joker_count > 1:
+        return False
+    # ordinary_jokers 会保留这张牌的真实面值，而不是把它当作万能牌。
+    return rules.is_winning_hand(
+        tiles, exposed_meld_count, [joker] if joker_count == 1 and joker else [])
 
 
 def _triplets_only(values: tuple[int, ...], wild: int, left: int) -> bool:
