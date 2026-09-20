@@ -349,9 +349,8 @@ class RoomSession:
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
         # 不再中断整场驱动，数据留在队列等下次落库机会重试。
         self._pending_writes: list = []
-        # 结算确认屏障：一局结算后等所有已连真人确认（客户端「继续」按钮）再推进下一局。
-        # 兜底超时防止某客户端完全不响应导致整场卡死；正常流程客户端 10s 倒计时自动确认。
-        self._continue_timeout = 20.0
+        # 结算确认屏障：一局结算后等所有在线真人明确确认才推进下一局。
+        # 空座和断线座位由 AI 托管，默认视为已同意，不进入确认集合。
         self._continue: Optional[dict] = None
         self._continue_event: Optional[asyncio.Event] = None
         self._early_continue_confirmed: dict[str, set[int]] = {}
@@ -485,6 +484,7 @@ class RoomSession:
         if rejoin_code is not None and rejoin_code != state.rejoin_code:
             raise RoomError('INVALID_REJOIN_CODE')
         state.controller.set_connected(False)  # 断开 pending，转 AI 代打
+        self._wake_continue_waiter()
         self.seats[seat] = None
         self.conn.unregister(seat)
         if self.creator_seat == seat:
@@ -537,6 +537,7 @@ class RoomSession:
         state = self.seats[seat]
         if state is not None:
             state.controller.set_connected(False)
+        self._wake_continue_waiter()
         self._presentation_audio_modes.pop(seat, None)
 
     def _presentation_audio_mode(self, seat: int) -> str:
@@ -660,6 +661,11 @@ class RoomSession:
         """当前在线（WS 已连）的真人座位列表。断线座位由 AI 托管，不参与确认。"""
         return [s.seat for s in self.seats if s is not None and s.controller.connected]
 
+    def _wake_continue_waiter(self) -> None:
+        """连接状态变化后重新核对结算确认集合。"""
+        if self._continue_event is not None:
+            self._continue_event.set()
+
     def _confirm_continue(self, seat: int, presentation_key: object = None) -> tuple[bool, str]:
         """客户端「继续」：把座位标记为已确认（仅在确认屏障激活时生效）。"""
         if self._continue is None:
@@ -734,11 +740,7 @@ class RoomSession:
             self._opening_event = None
 
     async def _wait_for_continue(self) -> None:
-        """结算后等所有已连真人确认再推进。全部断线 / 无真人 → 直接通过。
-
-        客户端在「继续」按钮显示后自动倒计时 10s 并发送 continue；此处的兜底
-        超时（_continue_timeout）只防客户端完全不响应导致整场卡死。
-        """
+        """结算后等所有在线真人确认再推进。AI/断线座位默认同意。"""
         seats = self._human_connected_seats()
         if not seats:
             self._early_continue_confirmed.clear()
@@ -747,7 +749,6 @@ class RoomSession:
         early = self._early_continue_confirmed.get(presentation_key or '', set()).intersection(seats)
         self._early_continue_confirmed.clear()
         self._continue = {
-            'deadline': time.monotonic() + self._continue_timeout,
             'confirmed': set(early),
             'presentationKey': presentation_key,
         }
@@ -760,15 +761,8 @@ class RoomSession:
                 # 无在线真人（全员断线）或所有在线真人都已确认 → 推进
                 if not current or all(s in confirmed for s in current):
                     break
-                remaining = self._continue['deadline'] - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    await asyncio.wait_for(self._continue_event.wait(), timeout=remaining)
-                    self._continue_event.clear()
-                except asyncio.TimeoutError:
-                    logger.bind(room_id=self.room_id).warning("结算确认等待超时，继续推进")
-                    break
+                await self._continue_event.wait()
+                self._continue_event.clear()
         finally:
             self._continue = None
             self._continue_event = None
@@ -1394,7 +1388,7 @@ class RoomSession:
                     })
                     await self._persist_round(self.manager.result)
                     logger.bind(room_id=self.room_id).info(f"第{self.manager.round}局结算")
-                    # 确认屏障：等所有在线真人点「继续」（10s 倒计时 / 兜底超时）再进下一局
+                    # 确认屏障：等所有在线真人点「确认下一局」再进下一局；AI 默认同意。
                     await self._wait_for_continue()
                     self._settlement_snapshot_released = False
                     await self.manager.next_round()
