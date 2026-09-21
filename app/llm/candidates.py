@@ -132,7 +132,7 @@ def _is_tenpai(ctx, hand: list[str], rules: GameRuleSet) -> bool:
 
 
 def _kong_delta(ctx, action: dict, rules: GameRuleSet) -> Optional[int]:
-    """杠分（即时收益）：SettlementService 结算器在克隆分数上计算。"""
+    """开杠不再即时收付；保留接口以兼容既有候选特征构建。"""
     players = _g(ctx, 'players')
     scores = _g(ctx, 'scores') or ([p.score for p in players] if players else [])
     if not scores:

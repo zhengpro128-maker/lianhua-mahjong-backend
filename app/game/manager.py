@@ -377,7 +377,9 @@ class GameManager:
         self.events.show_table_action(type_, actor_index, source_index, tile, meld_index)
 
     def _show_score_flow(self, deltas) -> None:
-        self.events.show_score_flow(deltas)
+        # 开杠已取消即时计分，避免向客户端广播空的飘分事件。
+        if deltas:
+            self.events.show_score_flow(deltas)
 
     def _announce(self, text, tone='gold') -> None:
         self._id_counter += 1

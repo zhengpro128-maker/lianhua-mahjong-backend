@@ -134,39 +134,26 @@ class TestHorseAndScore:
 class TestKongAndWinScore:
     """对应 rules.test.ts '开杠与抢杠计分'"""
 
-    def test_concealed_kong_three_payers_double_base(self):
-        """暗杠由其余三家各支付底分两倍"""
+    def test_concealed_kong_has_no_immediate_payment(self):
+        """暗杠不再即时收付。"""
         players = make_players()
         deltas = apply_kong_score(players, 0, 'concealed')
-        assert [p.score for p in players] == [1600, 800, 800, 800]
-        assert deltas == [
-            {'playerIndex': 0, 'amount': 600},
-            {'playerIndex': 1, 'amount': -200},
-            {'playerIndex': 2, 'amount': -200},
-            {'playerIndex': 3, 'amount': -200},
-        ]
+        assert [p.score for p in players] == [1000, 1000, 1000, 1000]
+        assert deltas == []
 
-    def test_discard_kong_only_source_pays(self):
-        """明杠只由被杠者支付底分"""
+    def test_discard_kong_has_no_immediate_payment(self):
+        """明杠不再即时收付。"""
         players = make_players()
         deltas = apply_kong_score(players, 0, 'discard', 2)
-        assert [p.score for p in players] == [1100, 1000, 900, 1000]
-        assert deltas == [
-            {'playerIndex': 0, 'amount': 100},
-            {'playerIndex': 2, 'amount': -100},
-        ]
+        assert [p.score for p in players] == [1000, 1000, 1000, 1000]
+        assert deltas == []
 
-    def test_added_kong_three_payers_base(self):
-        """补杠由其余三家各支付底分"""
+    def test_added_kong_has_no_immediate_payment(self):
+        """补杠不再即时收付。"""
         players = make_players()
         deltas = apply_kong_score(players, 0, 'added')
-        assert [p.score for p in players] == [1300, 900, 900, 900]
-        assert deltas == [
-            {'playerIndex': 0, 'amount': 300},
-            {'playerIndex': 1, 'amount': -100},
-            {'playerIndex': 2, 'amount': -100},
-            {'playerIndex': 3, 'amount': -100},
-        ]
+        assert [p.score for p in players] == [1000, 1000, 1000, 1000]
+        assert deltas == []
 
     def test_robbed_kong_win_only_kong_payer_pays(self):
         """抢杠胡只由补杠者支付胡牌分"""

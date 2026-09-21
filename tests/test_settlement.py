@@ -45,26 +45,13 @@ def test_calculate_discard_and_robbed_kong_win_has_one_payer():
     ]
 
 
-def test_calculate_all_kong_types_without_mutating_players():
+def test_calculate_all_kong_types_have_no_immediate_payment():
     service = SettlementService()
     table = players()
 
-    assert service.calculate_kong(4, 0, 'discard', 100, 2).as_list() == [
-        {'playerIndex': 0, 'amount': 100},
-        {'playerIndex': 2, 'amount': -100},
-    ]
-    assert service.calculate_kong(4, 0, 'concealed', 100).as_list() == [
-        {'playerIndex': 0, 'amount': 600},
-        {'playerIndex': 1, 'amount': -200},
-        {'playerIndex': 2, 'amount': -200},
-        {'playerIndex': 3, 'amount': -200},
-    ]
-    assert service.calculate_kong(4, 0, 'added', 100).as_list() == [
-        {'playerIndex': 0, 'amount': 300},
-        {'playerIndex': 1, 'amount': -100},
-        {'playerIndex': 2, 'amount': -100},
-        {'playerIndex': 3, 'amount': -100},
-    ]
+    assert service.calculate_kong(4, 0, 'discard', 100, 2).as_list() == []
+    assert service.calculate_kong(4, 0, 'concealed', 100).as_list() == []
+    assert service.calculate_kong(4, 0, 'added', 100).as_list() == []
     assert [p.score for p in table] == [1000, 1000, 1000, 1000]
 
 
@@ -74,9 +61,5 @@ def test_legacy_score_helpers_delegate_and_keep_mutating_contract():
 
     assert apply_win_score(win_players, 1, 100, None, 0) == 400
     assert [p.score for p in win_players] == [800, 1400, 900, 900]
-    assert apply_kong_score(kong_players, 0, 'added') == [
-        {'playerIndex': 0, 'amount': 300},
-        {'playerIndex': 1, 'amount': -100},
-        {'playerIndex': 2, 'amount': -100},
-        {'playerIndex': 3, 'amount': -100},
-    ]
+    assert apply_kong_score(kong_players, 0, 'added') == []
+    assert [p.score for p in kong_players] == [1000, 1000, 1000, 1000]

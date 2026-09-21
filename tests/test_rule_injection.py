@@ -66,7 +66,7 @@ def test_manager_propagates_one_rule_instance_to_controllers_and_actions():
     assert all(controller.rules is rules for controller in controllers)
 
 
-def test_manager_uses_injected_fan_engine_and_kong_base_score():
+def test_manager_uses_injected_fan_engine_without_immediate_kong_score():
     fan_engine = FanEngine([
         PredicateFan('custom', '测试番', lambda _: True, multiplier=3),
     ], base_score=100)
@@ -83,9 +83,11 @@ def test_manager_uses_injected_fan_engine_and_kong_base_score():
     manager._table_context.players = manager.players
 
     kong_deltas = manager._apply_kong_score(0, 'added')
+    assert kong_deltas == []
+    assert [player.score for player in manager.players] == [1000, 1000, 1000, 1000]
+
     manager.finalize_win(1, {})
 
-    assert kong_deltas[0] == {'playerIndex': 0, 'amount': 75}
     assert manager.result['points'] == 300
     assert manager.result['totalWon'] == 1200
 

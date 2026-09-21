@@ -61,28 +61,14 @@ class SettlementService:
 
     def calculate_kong(
         self,
-        player_count: int,
-        kong_player_index: int,
-        type_: str,
-        base_score: int,
-        from_index: Optional[int] = None,
+        _player_count: int,
+        _kong_player_index: int,
+        _type_: str,
+        _base_score: int,
+        _from_index: Optional[int] = None,
     ) -> SettlementResult:
-        payers = [from_index] if type_ == 'discard' else [
-            i for i in range(player_count) if i != kong_player_index
-        ]
-        payment = base_score * 2 if type_ == 'concealed' else base_score
-        valid_payers = [
-            payer for payer in payers
-            if _is_integer(payer) and payer != kong_player_index
-        ]
-        deltas = (
-            {'playerIndex': kong_player_index, 'amount': payment * len(valid_payers)},
-            *(
-                {'playerIndex': payer, 'amount': -payment}
-                for payer in valid_payers
-            ),
-        )
-        return SettlementResult(tuple(d for d in deltas if d['amount'] != 0))
+        """杠牌不再即时收付；仅保留杠后的补牌和既有胡牌结算。"""
+        return SettlementResult(())
 
     def calculate_follow_dealer(
         self,
