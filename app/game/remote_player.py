@@ -14,6 +14,7 @@ request_rob_kong 通过 ConnectionManager 下发请求并 await 用户动作（a
 """
 
 import asyncio
+import math
 from typing import Optional
 
 from loguru import logger
@@ -82,6 +83,7 @@ class RemotePlayer:
         future = asyncio.get_event_loop().create_future()
         self._pending = future
         self._pending_kind = kind
+        timer_task = asyncio.create_task(self._broadcast_countdown())
         try:
             result = await asyncio.wait_for(future, self.timeout)
             self._pending = None
@@ -95,6 +97,22 @@ class RemotePlayer:
             logger.bind(room_id=self.room_id, seat=self.seat).warning(
                 f"回合超时，AI 代打 (kind={kind})")
             return await self._fallback(kind, ctx)
+        finally:
+            timer_task.cancel()
+            # 计时结束须同步清掉所有客户端的公共 HUD，不能只由操作者本地清理。
+            self.conn.broadcast({'kind': 'turn_timer', 'seat': self.seat, 'seconds': 0})
+
+    async def _broadcast_countdown(self) -> None:
+        """按服务端权威超时向房内所有客户端广播同一倒计时。"""
+        remaining = max(1, math.ceil(self.timeout))
+        while remaining > 0:
+            self.conn.broadcast({
+                'kind': 'turn_timer',
+                'seat': self.seat,
+                'seconds': remaining,
+            })
+            await asyncio.sleep(1)
+            remaining -= 1
 
     async def _fallback(self, kind: str, ctx):
         """超时 / 断线自动代打：复用 AIPlayer 的决策（含碰后无牌可打 → pass 的修复）。"""

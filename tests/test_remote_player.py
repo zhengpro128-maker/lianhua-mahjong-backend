@@ -10,6 +10,8 @@
 不依赖 WebSocket：直接构造 RemotePlayer，伪造 pending future，验证 handle_action 的分支。
 """
 
+import asyncio
+
 from app.core.rules import is_winning_hand
 from app.game.player import ClaimContext, RobKongContext, TurnContext
 from app.game.remote_player import RemotePlayer
@@ -27,6 +29,16 @@ class _FakeFuture:
 
 class _FakeConn:
     """RemotePlayer 构造所需的最小 conn 桩（本测试不触发 request_* 出站）。"""
+
+
+class _BroadcastConn:
+    """记录公共房间广播，供倒计时协议测试使用。"""
+
+    def __init__(self):
+        self.messages = []
+
+    def broadcast(self, message):
+        self.messages.append(message)
 
 
 def _pending_turn_player(hand: list, exposed_melds: int = 0) -> RemotePlayer:
@@ -68,6 +80,15 @@ NOT_WINNING_HAND = ['m1', 'm2', 'm4', 'm5', 'm7', 'm8',
 def test_winning_hand_is_valid():
     assert is_winning_hand(WINNING_HAND, 0) is True
     assert is_winning_hand(NOT_WINNING_HAND, 0) is False
+
+
+def test_remote_player_broadcasts_public_turn_timer():
+    conn = _BroadcastConn()
+    player = RemotePlayer(2, conn, timeout=0)
+
+    asyncio.run(player._broadcast_countdown())
+
+    assert conn.messages == [{'kind': 'turn_timer', 'seat': 2, 'seconds': 1}]
 
 
 def test_turn_hu_rejected_when_not_winning():
