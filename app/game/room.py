@@ -817,6 +817,7 @@ class RoomSession:
             pace=self.pace,
             room_id=self.room_id,
             rule_set=self.rules,
+            initial_score=0,
         )
         self.status = 'playing'
         self.game_task = asyncio.create_task(self._drive())
@@ -890,7 +891,8 @@ class RoomSession:
                 seeds.append({
                     'name': state.nickname,
                     'avatar': state.avatar,
-                    'score': 1000,
+                    # 联机计分从 0 起步；得失分可自然跨过 0，不设淘汰下限。
+                    'score': 0,
                     'characterId': state.character_id,
                     'playerKind': 'human',
                 })
@@ -914,7 +916,7 @@ class RoomSession:
                                              style),
                         'avatar': avatar_url(
                             provider.base_url, style, avatar_folder, provider.provider_id),
-                        'score': 1000,
+                        'score': 0,
                         'characterId': resolve_anime_character_id(
                             provider_id=provider.provider_type,
                             avatar_folder=avatar_folder,
@@ -925,6 +927,7 @@ class RoomSession:
                     # AI 空座：固定种子头像，不随用户变化
                     seeds.append({
                         **PLAYER_SEED[seat],
+                        'score': 0,
                         'characterId': DEFAULT_ANIME_CHARACTER_ID,
                         'playerKind': 'bot',
                     })
@@ -1480,6 +1483,14 @@ class RoomRegistry:
     def count(self) -> int:
         """当前在册房间数（房间数上限检查用）。"""
         return len(self._rooms)
+
+    def joinable_rooms(self) -> list[RoomSession]:
+        """仍在大厅且未达到真人容量的房间，供大厅快速加入列表使用。"""
+        self._maybe_sweep()
+        return [
+            room for room in self._rooms.values()
+            if room.status == 'lobby' and sum(state is not None for state in room.seats) < room.capacity
+        ]
 
     def find_room_by_player(self, player_id: str) -> Optional[RoomSession]:
         """按匿名身份（guestId）定位其所在房间：该 player_id 是否已在某房间占座。

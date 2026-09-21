@@ -186,7 +186,8 @@ class GameManager:
                  player_count: int = 4, random=None, events: Optional[GameEvents] = None,
                  pace: Optional[dict] = None, player_seeds: Optional[list] = None,
                  room_id: Optional[str] = None, rule_set: Optional[GameRuleSet] = None,
-                 settlements: Optional[SettlementService] = None):
+                 settlements: Optional[SettlementService] = None,
+                 initial_score: Optional[int] = None):
         self.match_type = mode
         self.player_count = player_count
         # 房间级日志上下文：RoomSession 注入 room_id 后，对局日志带房间号便于查错
@@ -204,6 +205,8 @@ class GameManager:
                 controller.set_rule_set(self.rules)
         # 玩家种子：联网房间用「座位昵称」覆盖默认种子（AI 座位保留 PLAYER_SEED）
         self.seeds = player_seeds or PLAYER_SEED
+        # None 维持各规则/种子的历史起分；联机房间可显式统一为 0。
+        self.initial_score = initial_score
         self._random = random
         self.events: GameEvents = events or NullEvents()
         self.pace = {**DEFAULT_PACE, **(pace or {})}
@@ -451,8 +454,10 @@ class GameManager:
         self.players = []
         for index, seed in enumerate(self.seeds):
             prior = previous[index] if index < len(previous) else None
-            score = prior.score if prior is not None else seed['score']
-            if self.rules.code == 'lotus-legacy' and index >= len(previous):
+            score = prior.score if prior is not None else (
+                self.initial_score if self.initial_score is not None else seed['score'])
+            if self.rules.code == 'lotus-legacy' and index >= len(previous) \
+                    and self.initial_score is None:
                 score = 2000
             self.players.append(GamePlayer(
                 name=seed['name'], avatar=seed['avatar'], score=score, seat=index,
