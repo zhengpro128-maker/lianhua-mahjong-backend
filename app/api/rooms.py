@@ -109,6 +109,7 @@ def _room_response(room: RoomSession) -> dict:
             None if state is None else {
                 'seat': state.seat,
                 'nickname': state.nickname,
+                'avatar': state.avatar,
                 'characterId': state.character_id,
                 'ready': state.ready,
                 'connected': state.controller.connected,
