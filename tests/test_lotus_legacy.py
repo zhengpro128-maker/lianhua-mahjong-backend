@@ -10,6 +10,7 @@ from app.core.lotus_rules import (
 from app.core.lotus_wall import build_lotus_wall, compute_jokers, next_in_sequence
 from app.models.game import Meld
 from app.rules.lotus_legacy import LotusLegacyRuleSet
+from app.rules.lianhua import LianhuaGuangmaRuleSet
 from app.settlement import settlement_service
 from app.game.manager import GameManager
 from app.game.player import AIPlayer
@@ -246,3 +247,53 @@ def test_find_claims_priority_hu_first():
     assert [c['playerIndex'] for c in claimants] == [3, 2]
     assert claimants[0]['canHu'] is True
     assert claimants[1]['canGang'] is True and claimants[1]['canHu'] is False
+
+
+def test_find_claims_offers_hu_for_exposed_hand_waiting_on_discard():
+    """回归：一副副露后，二三万听四万仍须下发胡牌操作。
+
+    对应真机牌例：二三万、四五六筒、六七八条、白白，另有一组已吃；
+    本局翻九条，精牌为九条/一条。四万点炮后组成四副面子加将。
+    """
+    rules = LotusLegacyRuleSet()
+    rules.round_state.joker_tiles = ['s9', 's1']
+    manager = GameManager(
+        controllers=[AIPlayer() for _ in range(4)],
+        rule_set=rules,
+    )
+    manager._reset_players()
+    manager.players[1].hand = [
+        'm2', 'm3', 'p4', 'p5', 'p6', 's6', 's7', 's8', 'white', 'white',
+    ]
+    manager.players[1].melds = [
+        Meld(type='chi', tile='m7', tiles=['m5', 'm6', 'm7'], from_=0),
+    ]
+
+    claimants = manager.find_claims(0, 'm4')
+
+    assert claimants == [{
+        'playerIndex': 1,
+        'canHu': True,
+        'dihu': False,
+        'canPeng': False,
+        'canGang': False,
+        'chiOptions': [{'tile': 'm4', 'tiles': ['m2', 'm3', 'm4'], 'kind': 'sequence'}],
+    }]
+
+
+def test_find_claims_offers_hu_in_classic_room_too():
+    """广麻联机点炮胡不能因玩法标识不同而被过滤掉。"""
+    manager = GameManager(
+        controllers=[AIPlayer() for _ in range(4)],
+        rule_set=LianhuaGuangmaRuleSet(),
+    )
+    manager._reset_players()
+    manager.players[1].hand = [
+        'm1', 'm2', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9',
+        'p1', 'p2', 'p3', 's1', 's1',
+    ]
+
+    claimants = manager.find_claims(0, 'm3')
+
+    assert claimants[0]['playerIndex'] == 1
+    assert claimants[0]['canHu'] is True

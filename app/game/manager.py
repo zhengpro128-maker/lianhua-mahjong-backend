@@ -898,13 +898,18 @@ class GameManager:
             elif round_state is not None and self.rules.code == 'wuhan-huanghuang' \
                     and tile in round_state.jokers:
                 ordinary_jokers = [tile]
+            # 所有非武汉玩法都由各自规则集判断点炮胡。此前这里只覆盖了翻精玩法，
+            # 导致广麻联机房即使牌型已成也永远不会收到 canHu；保留 ordinary_jokers
+            # 仅供翻精玩法把“刚打出的精/白板”按物理牌面参与拆牌。
             can_hu = (
                 self._can_wuhan_win(
                     player_index, [*player.hand, tile], self_draw=False,
                     source_from=from_, win_tile=tile,
                 ) if self.rules.code == 'wuhan-huanghuang' else
-                self.rules.code == 'lotus-legacy' and self.rules.is_winning_hand(
+                self.rules.is_winning_hand(
                     [*player.hand, tile], structural_meld_count(player), ordinary_jokers=ordinary_jokers)
+                    if self.rules.code == 'lotus-legacy' else
+                self.rules.is_winning_hand([*player.hand, tile], structural_meld_count(player))
             )
             options = self.rules.chi_options(player.hand, tile) \
                 if self.rules.code in ('lotus-legacy', 'wuhan-huanghuang') and self.seat_distance(from_, player_index) == 1 else []
