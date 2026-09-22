@@ -37,6 +37,15 @@ async def require_wakudemo_login(request: Request) -> AuthenticatedUser:
     本地开发（WAKUDEMO_LOGIN_BYPASS=true）且无真实会话时，按客户端提交的
     playerId 推导测试身份（非法/缺失时用 dev-bypass），跳过 OAuth 流程。
     """
+    from app.api.minigame import verify
+    authorization = request.headers.get('authorization', '')
+    if authorization.startswith('Bearer '):
+        account = verify(authorization[7:])
+        if account is None:
+            raise HTTPException(status_code=401, detail={'code': AUTH_REQUIRED})
+        return AuthenticatedUser(uid=account['id'], display_name=account.get('displayName'),
+                                 avatar_url=account.get('avatarUrl'), provider='wechat')
+
     guest_uid = verify_guest_token(request.cookies.get(GUEST_COOKIE_NAME))
     if guest_uid:
         return AuthenticatedUser(uid=guest_uid, display_name=None, avatar_url=None, provider='guest')

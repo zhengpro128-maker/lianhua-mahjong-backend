@@ -209,6 +209,8 @@ def _join_as_user(room_id: str, body: JoinRequest, user: AuthenticatedUser,
             seat, state = existing
             return _join_response(room, seat, state, True)
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
+    if user.provider == 'wechat' and room.ruleset_id != 'wuhan-huanghuang':
+        raise HTTPException(409, detail={'code': 'WECHAT_RULESET_UNSUPPORTED'})
     preferred_avatar = _safe_avatar_url(user.avatar_url)
     try:
         character_id = resolve_anime_character_id(body.characterId)
@@ -236,6 +238,8 @@ def create_room(body: CreateRoomRequest,
     房间数上限：先清扫到期房间（绕过惰性节流，确保到期房释放槽位），
     在册房间已达 MAX_ROOMS → ROOM_LIMIT_REACHED（客户端提示「房间已满」）。
     """
+    if user.provider == 'wechat' and body.rulesetId != 'wuhan-huanghuang':
+        raise HTTPException(422, detail={'code': 'WECHAT_RULESET_UNSUPPORTED'})
     if not runtime_state.ready:
         raise HTTPException(status_code=503, detail={'code': 'SERVICE_DRAINING'})
     if room_registry.find_room_by_player(user.player_id) is not None:

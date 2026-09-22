@@ -406,3 +406,11 @@ TTS 凭据放在 `config/secrets/`，由 `config/tts.yml` 引用，两者同样�
 ## 资源说明
 
 项目代码许可见 [LICENSE](./LICENSE)。前端工程（Vue 3 + Three.js）及完整玩法说明见上级目录根 README。
+
+### 微信小游戏登录
+
+小游戏使用 `POST /api/minigame/login` 提交 `wx.login` code 和玩家授权的展示资料。服务端从微信换取 openid，签发 7 天有效的 Bearer 会话；不接收客户端自报的 openid，不返回微信 session_key 或 AppSecret。房间身份为 `wechat-<openid>`，微信身份仅能创建/加入武汉晃晃房间。
+
+服务器必填环境变量：`WECHAT_APP_ID`、`WECHAT_APP_SECRET`、`WECHAT_SESSION_SECRET`（独立随机字符串，至少 32 字符）。缺少配置返回 `503 WECHAT_NOT_CONFIGURED`。小游戏用 `VITE_API_BASE` 配置 HTTPS 地址，并在微信后台分别配置 request/socket 域名。头像昵称属于展示资料，不是身份认证依据，真实微信资料是否可返回取决于客户端授权和微信平台政策。
+
+验证：`.venv/bin/python -m pytest tests/test_minigame_auth.py -q`，包含登录签名、伪造/过期凭据拒绝、四个微信身份完成武汉晃晃联机以及结算提前确认竞态回归。

@@ -667,11 +667,10 @@ class RoomSession:
             self._continue_event.set()
 
     def _confirm_continue(self, seat: int, presentation_key: object = None) -> tuple[bool, str]:
-        """客户端「继续」：把座位标记为已确认（仅在确认屏障激活时生效）。"""
+        """客户端「继续」：确认当前结算；带匹配标识的提前确认保留到落库后的屏障。"""
         if self._continue is None:
             current_key = self._settlement_presentation_key()
-            if self._presentation_audio_mode(seat) == 'anime-fixed-tts-v1' \
-                    and isinstance(presentation_key, str) \
+            if isinstance(presentation_key, str) \
                     and presentation_key == current_key:
                 self._early_continue_confirmed.setdefault(current_key, set()).add(seat)
             return True, ''   # 非结算期间：幂等忽略（结算窗早于到达的 continue 不算错）

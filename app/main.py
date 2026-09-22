@@ -155,3 +155,6 @@ async def readiness_check():
     if not runtime_state.ready:
         return JSONResponse({"status": "draining"}, status_code=503)
     return {"status": "ready"}
+
+from app.api.minigame import router as minigame_router
+app.include_router(minigame_router)
