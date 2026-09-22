@@ -281,6 +281,28 @@ def test_find_claims_offers_hu_for_exposed_hand_waiting_on_discard():
     }]
 
 
+def test_find_claims_offers_hu_for_three_exposed_melds_waiting_on_one_man():
+    """回归：三副露后，二三万与一万组成顺子也必须可点炮胡。"""
+    rules = LotusLegacyRuleSet()
+    rules.round_state.joker_tiles = ['m8', 'm9']
+    manager = GameManager(
+        controllers=[AIPlayer() for _ in range(4)],
+        rule_set=rules,
+    )
+    manager._reset_players()
+    manager.players[1].hand = ['m2', 'm3', 'm6', 'm6']
+    manager.players[1].melds = [
+        Meld(type='chi', tile='p3', tiles=['p1', 'p2', 'p3'], from_=0),
+        Meld(type='peng', tile='s4', tiles=['s4', 's4', 's4'], from_=2),
+        Meld(type='chi', tile='m5', tiles=['m4', 'm5', 'm6'], from_=3),
+    ]
+
+    claimants = manager.find_claims(0, 'm1')
+
+    assert claimants[0]['playerIndex'] == 1
+    assert claimants[0]['canHu'] is True
+
+
 def test_find_claims_offers_hu_in_classic_room_too():
     """广麻联机点炮胡不能因玩法标识不同而被过滤掉。"""
     manager = GameManager(
