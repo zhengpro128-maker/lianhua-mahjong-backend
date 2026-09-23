@@ -49,8 +49,8 @@ from app.settlement import SettlementService, settlement_service
 
 # ─── 场次常量（对应 useGame.ts MATCH_HANDS / MATCH_NAMES）────────
 
-MATCH_HANDS = {'east': 4, 'hanchan': 8}
-MATCH_NAMES = {'east': '东风场', 'hanchan': '半庄场'}
+MATCH_HANDS = {'east': 4, 'hanchan': 8, 'rounds4': 4, 'rounds8': 8, 'rounds16': 16}
+MATCH_NAMES = {'east': '东风场', 'hanchan': '半庄场', 'rounds4': '4 局', 'rounds8': '8 局', 'rounds16': '16 局'}
 
 # 默认玩家种子（对应 PLAYER_SEED）
 PLAYER_SEED = [
@@ -145,6 +145,7 @@ def advance_match_state(*, round_, dealer, honba, match_type, result, scores=Non
     """庄家连庄 + 本场累加 / 轮庄推进 → 终局判断。
 
     连庄规则：胡牌且赢家为庄家 → 连庄；流局且庄家听牌 → 连庄；否则下庄。
+    rounds4/8/16 固定局数模式下，连庄保留庄位，但每次结算均推进局数。
     """
     draw = bool(result.get('draw'))
     dealer_keeps_seat = (
@@ -152,7 +153,7 @@ def advance_match_state(*, round_, dealer, honba, match_type, result, scores=Non
         or (draw and result.get('dealerTenpai'))
     )
     if dealer_keeps_seat:
-        next_state = {'round': round_, 'dealer': dealer, 'honba': honba + 1}
+        next_state = {'round': round_ + 1 if match_type.startswith('rounds') else round_, 'dealer': dealer, 'honba': honba + 1}
     else:
         next_state = {'round': round_ + 1, 'dealer': (dealer + 1) % player_count, 'honba': 0}
     return {
@@ -650,6 +651,8 @@ class GameManager:
         await self.begin_turn(self.dealer, skip_draw=True)
 
     def round_label(self) -> str:
+        if self.match_type.startswith('rounds'):
+            return f'第 {self.round} 局'
         wind = '南' if self.round > 4 else '东'
         hand_number = ((self.round - 1) % 4) + 1
         return f'{wind}{hand_number}局'

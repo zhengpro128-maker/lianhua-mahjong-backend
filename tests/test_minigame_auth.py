@@ -60,7 +60,8 @@ async def test_unconfigured_login_fails_closed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_four_wechat_players_complete_wuhan_match(server, fresh_rooms, auth_env):
+@pytest.mark.parametrize('mode,total', [('rounds4', 4), ('rounds8', 8), ('rounds16', 16)])
+async def test_four_wechat_players_complete_wuhan_match(server, fresh_rooms, auth_env, mode, total):
     import asyncio
     import json
     import websockets.asyncio.client
@@ -70,7 +71,7 @@ async def test_four_wechat_players_complete_wuhan_match(server, fresh_rooms, aut
     sockets = []
     async with httpx.AsyncClient(base_url=server['http']) as client:
         created = await client.post('/api/rooms', headers={'Authorization': 'Bearer ' + tokens[0]},
-                                    json={'mode': 'east', 'capacity': 4, 'rulesetId': 'wuhan-huanghuang'})
+                                    json={'mode': mode, 'capacity': 4, 'rulesetId': 'wuhan-huanghuang'})
         assert created.status_code == 200, created.text
         room_id = created.json()['roomId']
         room = room_registry.get(room_id)
@@ -88,6 +89,7 @@ async def test_four_wechat_players_complete_wuhan_match(server, fresh_rooms, aut
                 sockets.append(socket)
                 hello = json.loads(await socket.recv())
                 assert hello['kind'] == 'rejoin_ok'
+                assert hello['mode'] == mode
             started = await client.post(f'/api/rooms/{room_id}/start')
             assert started.status_code == 200, started.text
             async def play(socket):
@@ -105,6 +107,7 @@ async def test_four_wechat_players_complete_wuhan_match(server, fresh_rooms, aut
             results = await asyncio.wait_for(asyncio.gather(*(play(s) for s in sockets)), 60)
             assert all(sum(p['score'] for p in result) == 0 for result in results)
             assert room.status == 'finished'
+            assert room.manager.round == total + 1
         finally:
             for socket in sockets:
                 await socket.close()

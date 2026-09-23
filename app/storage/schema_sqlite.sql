@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS players (
 
 CREATE TABLE IF NOT EXISTS rooms (
   id          TEXT PRIMARY KEY,
-  mode        TEXT NOT NULL CHECK (mode IN ('east','hanchan')),
+  mode        TEXT NOT NULL CHECK (mode IN ('east','hanchan','rounds4','rounds8','rounds16')),
   ruleset_id  TEXT NOT NULL DEFAULT 'lotus-classic',
   capacity    INTEGER NOT NULL DEFAULT 4,
   status      TEXT NOT NULL DEFAULT 'lobby',

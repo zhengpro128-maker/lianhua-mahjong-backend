@@ -68,3 +68,14 @@ class PostgresStorage(BaseStorage):
                 conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN ruleset_id TEXT NOT NULL DEFAULT 'lotus-classic'"
                 )
+
+        constraint = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+            "WHERE conrelid = 'rooms'::regclass AND conname = 'rooms_mode_check'"
+        ).fetchone()
+        if constraint is not None and 'rounds16' not in constraint['definition']:
+            conn.execute('ALTER TABLE rooms DROP CONSTRAINT rooms_mode_check')
+            conn.execute(
+                "ALTER TABLE rooms ADD CONSTRAINT rooms_mode_check "
+                "CHECK (mode IN ('east','hanchan','rounds4','rounds8','rounds16'))"
+            )

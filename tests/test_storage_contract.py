@@ -190,3 +190,34 @@ def test_postgres_connect_gives_up_after_max_attempts(monkeypatch):
     with pytest.raises(psycopg.OperationalError):
         storage._conn()
     assert len(calls) == 3
+
+
+@pytest.mark.parametrize('mode', ['rounds4', 'rounds8', 'rounds16'])
+def test_fixed_round_rooms_and_matches_persist(backend, mode):
+    backend.create_room('FIXED1', mode, 4)
+    match_id = backend.create_match('FIXED1', mode)
+    with backend._conn() as conn:
+        assert conn.execute('SELECT mode FROM rooms WHERE id = ?', ('FIXED1',)).fetchone()['mode'] == mode
+        assert conn.execute('SELECT mode FROM matches WHERE id = ?', (match_id,)).fetchone()['mode'] == mode
+
+
+def test_legacy_sqlite_mode_migration_preserves_history_and_is_repeatable(tmp_path):
+    import sqlite3
+    from app.storage.base import load_schema
+    path = str(tmp_path / 'old.db')
+    schema = load_schema('schema_sqlite.sql').replace("'east','hanchan','rounds4','rounds8','rounds16'", "'east','hanchan'")
+    with sqlite3.connect(path) as conn:
+        conn.executescript(schema)
+    storage = Storage(path)
+    storage.create_room('OLD234', 'hanchan', 4)
+    match = storage.create_match('OLD234', 'hanchan')
+    storage.init()
+    storage.init()
+    storage.create_room('NEW234', 'rounds16', 4)
+    with storage._conn() as conn:
+        assert conn.execute('SELECT room_id FROM matches WHERE id = ?', (match,)).fetchone()['room_id'] == 'OLD234'
+        assert conn.execute('SELECT mode FROM rooms WHERE id = ?', ('OLD234',)).fetchone()['mode'] == 'hanchan'
+        assert conn.execute('SELECT mode FROM rooms WHERE id = ?', ('NEW234',)).fetchone()['mode'] == 'rounds16'
+        assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO rooms (id, mode) VALUES ('BAD234', 'rounds32')")

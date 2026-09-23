@@ -53,3 +53,18 @@ class TestAdvanceMatchState:
         )
         assert result['round'] == 9
         assert result['finished'] is True
+
+
+import pytest
+
+@pytest.mark.parametrize('mode,total', [('rounds4', 4), ('rounds8', 8), ('rounds16', 16)])
+@pytest.mark.parametrize('result', [
+    {'winnerIndex': 0}, {'winnerIndex': 2},
+    {'draw': True, 'dealerTenpai': True}, {'draw': True, 'dealerTenpai': False},
+])
+def test_fixed_rounds_count_dealer_repeats_and_draws(mode, total, result):
+    for round_ in range(1, total + 1):
+        state = advance_match_state(**{**BASE, 'match_type': mode, 'round_': round_}, result=result)
+        assert state['round'] == round_ + 1
+        assert state['finished'] is (round_ == total)
+        assert state['dealer'] == (0 if result.get('winnerIndex') == 0 or result.get('dealerTenpai') else 1)

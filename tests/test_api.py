@@ -164,14 +164,15 @@ class _FlakyStorage:
 # ─── 创建 / 查询 ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_create_and_get_room(server, fresh_rooms, temp_storage):
+@pytest.mark.parametrize('mode', ['east', 'rounds4', 'rounds8', 'rounds16'])
+async def test_create_and_get_room(server, fresh_rooms, temp_storage, mode):
     async with httpx.AsyncClient(base_url=server['http']) as http:
-        resp = await http.post('/api/rooms', json={'mode': 'east', 'capacity': 4})
+        resp = await http.post('/api/rooms', json={'mode': mode, 'capacity': 4})
         assert resp.status_code == 200
         data = resp.json()
         room_id = data['roomId']
         assert len(room_id) == 6
-        assert data['mode'] == 'east'
+        assert data['mode'] == mode
         assert data['capacity'] == 4
         assert data['status'] == 'lobby'
         assert data['seats'] == [None, None, None, None]  # 4 个空座
@@ -335,10 +336,12 @@ async def test_join_leave_room(server, fresh_rooms, temp_storage):
         seats = (await http.get(f'/api/rooms/{room_id}')).json()['seats']
         assert seats[0] == {
             'seat': 0, 'nickname': '甲', 'characterId': 'qwen',
+            'avatar': 'https://example.com/avatar/fake-1.jpg',
             'ready': False, 'connected': False,
         }
         assert seats[1] == {
             'seat': 1, 'nickname': '乙', 'characterId': 'deepseek',
+            'avatar': 'https://example.com/avatar/fake-2.jpg',
             'ready': False, 'connected': False,
         }
 

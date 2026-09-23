@@ -33,7 +33,7 @@ TileType = Literal[
 ]
 
 # 场次类型
-MatchType = Literal['east', 'hanchan']
+MatchType = Literal['east', 'hanchan', 'rounds4', 'rounds8', 'rounds16']
 PlayerKind = Literal['human', 'llm', 'bot']
 
 # ─── 副露 ─────────────────────────────────────────────────
