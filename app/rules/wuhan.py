@@ -320,7 +320,11 @@ def cap_wuhan_payment(points: float) -> float:
 
 def wuhan_meets_minimum(kinds: list[str], self_draw: bool, hard: bool,
                          kongs: list[str], discard_win: bool,
-                         kong_bloom: bool = False) -> bool:
-    payment = wuhan_raw_win_points(kinds, self_draw, hard, kongs, kong_bloom)
-    total = payment * 3 if self_draw else payment * (2 + wuhan_discarder_multiplier(kinds, discard_win))
+                         kong_bloom: bool = False,
+                         payer_multipliers: list[float] | None = None) -> bool:
+    payment = cap_wuhan_payment(wuhan_raw_win_points(kinds, self_draw, hard, kongs, kong_bloom))
+    multipliers = payer_multipliers if payer_multipliers is not None else (
+        [1, 1, 1] if self_draw else [wuhan_discarder_multiplier(kinds, discard_win), 1, 1]
+    )
+    total = sum(cap_wuhan_payment(payment * multiplier) for multiplier in multipliers)
     return total >= MIN_WIN_POINTS

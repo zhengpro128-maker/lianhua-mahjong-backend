@@ -111,6 +111,35 @@ def test_wuhan_scoring_matches_frontend_rules():
     assert wuhan_discarder_multiplier(['屁胡'], True) == 2
 
 
+def test_payer_kongs_make_discard_win_precede_another_players_peng():
+    rules = get_rule_set('wuhan-huanghuang')
+    rules.round_state.joker_tiles = ['m7']
+    manager = GameManager(rule_set=rules)
+    winner = player(0, ['m1', 'm2', 'm3', 'm5', 'm6', 's2', 's2'], [
+        Meld(type='chi', tile='s3', tiles=['s3', 's4', 's5']),
+        Meld(type='peng', tile='green', tiles=['green'] * 3),
+    ])
+    discarder = player(1)
+    discarder.discards = ['m4']
+    ponger = player(3, ['m4', 'm4'])
+    manager.players = [winner, discarder, player(2), ponger]
+    manager._table_context.players = manager.players
+    won = [*winner.hand, 'm4']
+    assert not manager._can_wuhan_win(0, won, self_draw=False, source_from=1, win_tile='m4')
+    ponger.melds.extend([
+        Meld(type='flower', tile='red', tiles=['red'], specialKong='red'),
+        Meld(type='flower', tile='red', tiles=['red'], specialKong='red'),
+        Meld(type='flower', tile='m7', tiles=['m7'], specialKong='joker'),
+    ])
+    assert manager._can_wuhan_win(0, won, self_draw=False, source_from=1, win_tile='m4')
+    claims = manager.find_claims(1, 'm4')
+    assert [(claim['playerIndex'], claim['canHu'], claim['canPeng']) for claim in claims] == [
+        (0, True, False), (3, False, True),
+    ]
+    manager.finalize_win(0, {'sourceFrom': 1, 'winTile': 'm4', 'selfDraw': False})
+    assert manager.result['payerPayments'] == [0, 4, 2, 32]
+
+
 def test_wuhan_settlement_uses_winner_and_each_payer_kongs_separately():
     rules = get_rule_set('wuhan-huanghuang')
     rules.round_state.joker_tiles = ['white']

@@ -750,6 +750,10 @@ class GameManager:
             kinds, self_draw_style,
             is_wuhan_hard_win(self.rules, hand, exposed, joker),
             kongs, discard_win, kong_bloom,
+            [wuhan_kong_multiplier(wuhan_kong_kinds(player.melds, joker)) * (
+                wuhan_discarder_multiplier(kinds, discard_win)
+                if index == source_from and discard_win else 1
+            ) for index, player in enumerate(self.players) if index != winner_index],
         )
 
     # ── 回合流转 ──
