@@ -45,6 +45,18 @@ def _meldable(values: tuple[int, ...], wild: int, left: int) -> bool:
     return visit(values, wild, left)
 
 
+def _seven_pairs(tiles: list[TileType], joker: TileType | None,
+                 ordinary_jokers: list[TileType] | None = None) -> bool:
+    if len(tiles) != 14 or 'red' in tiles:
+        return False
+    wild, natural = _split_jokers(tiles, joker, ordinary_jokers)
+    values = Counter(natural).values()
+    singles = sum(amount % 2 for amount in values)
+    remaining = wild - singles
+    return (remaining >= 0 and remaining % 2 == 0
+            and sum(amount // 2 for amount in values) + singles + remaining // 2 == 7)
+
+
 @dataclass
 class WuhanRoundState:
     flip_tile: TileType | None = None
@@ -106,6 +118,11 @@ class WuhanHuanghuangRuleSet:
     def resolve_win_tile(self, winner: GamePlayer, options):
         return options.get('winTile') or winner.hand[winner.drawnTileIndex if winner.drawnTileIndex >= 0 else -1]
     def is_winning_hand(self, tiles, exposed_meld_count=0, ordinary_jokers=None):
+        return (self.is_standard_winning_hand(tiles, exposed_meld_count, ordinary_jokers)
+                or (exposed_meld_count == 0 and _seven_pairs(
+                    tiles, self.round_state.jokers[0] if self.round_state.jokers else None,
+                    ordinary_jokers)))
+    def is_standard_winning_hand(self, tiles, exposed_meld_count=0, ordinary_jokers=None):
         if 'red' in tiles or len(tiles) != (4 - exposed_meld_count) * 3 + 2: return False
         joker = self.round_state.jokers[0] if self.round_state.jokers else None
         ordinary = (ordinary_jokers or []).count(joker)
@@ -228,7 +245,7 @@ def evaluate_wuhan_win(rules: WuhanHuanghuangRuleSet, tiles: list[TileType], *,
         return []
     wild, natural = _split_jokers(tiles, joker, ordinary_jokers)
     kinds: list[str] = []
-    standard = rules.is_winning_hand(tiles, exposed, ordinary_jokers)
+    standard = rules.is_standard_winning_hand(tiles, exposed, ordinary_jokers)
     if standard and wild <= 1:
         kinds.append('屁胡')
     if standard:
@@ -251,14 +268,10 @@ def evaluate_wuhan_win(rules: WuhanHuanghuangRuleSet, tiles: list[TileType], *,
                     if _triplets_only(tuple(remainder), wild - need, 4 - exposed):
                         kinds.append('碰碰胡')
                         break
-    if not exposed and len(tiles) == 14:
+    if not exposed and _seven_pairs(tiles, joker, ordinary_jokers):
         values = list(Counter(natural).values())
-        singles = sum(amount % 2 for amount in values)
-        remaining = wild - singles
-        pairs = sum(amount // 2 for amount in values) + singles + (remaining // 2 if remaining >= 0 and not remaining % 2 else -99)
-        if pairs == 7:
-            quads = sum(amount == 4 for amount in values)
-            kinds.append('双龙七对' if quads > 1 else '龙七对' if quads else '七对')
+        quads = sum(amount == 4 for amount in values)
+        kinds.append('双龙七对' if quads > 1 else '龙七对' if quads else '七对')
     if not any(kind in ('七对', '龙七对', '双龙七对') for kind in kinds) and self_draw and men_qian_qing and kinds:
         kinds.append('门前清')
     return kinds

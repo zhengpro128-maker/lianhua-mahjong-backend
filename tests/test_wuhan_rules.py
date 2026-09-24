@@ -45,6 +45,22 @@ def test_wuhan_standard_win_and_single_joker_hard_win():
     assert not is_wuhan_hard_win(rules, [*hand[:-2], 'p3', 'p3'], 0, 'p3')
 
 
+def test_six_pairs_and_one_joker_can_win_by_draw_or_discard():
+    rules = get_rule_set('wuhan-huanghuang')
+    rules.round_state.joker_tiles = ['p7']
+    waiting = ['m5', 'm5', 'p5', 'p5', 'p7', 'p8', 'p8', 'p9', 'p9', 's7', 's7', 's8', 's8']
+    won = [*waiting, 'm1']
+    assert not rules.is_standard_winning_hand(won)
+    assert rules.is_winning_hand(won)
+    assert 'm1' in rules.waiting_tiles(waiting)
+    assert '七对' in evaluate_wuhan_win(rules, won, exposed=0, exposed_melds=[], joker='p7')
+    manager = GameManager(rule_set=rules)
+    manager.players = [player(0, waiting), player(1), player(2), player(3)]
+    assert manager._can_wuhan_win(0, won, self_draw=False, source_from=1, win_tile='m1')
+    manager.players[0].hand.append('m1')
+    assert manager._can_wuhan_win(0, won, self_draw=True)
+
+
 def test_wuhan_chi_and_regular_kong_exclude_red_and_joker():
     rules = get_rule_set('wuhan-huanghuang')
     rules.round_state.joker_tiles = ['s8']
