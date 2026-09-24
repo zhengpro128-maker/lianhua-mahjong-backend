@@ -120,11 +120,12 @@ def _room_response(room: RoomSession) -> dict:
 
 
 def _joinable_room_response(room: RoomSession) -> dict:
-    """大厅公开房间摘要：只提供加入所需信息，不泄露座位身份或重进凭据。"""
+    """公开房间摘要：只提供列表展示信息，不泄露座位身份或重进凭据。"""
     return {
         'roomId': room.room_id,
         'mode': room.mode,
         'rulesetId': room.ruleset_id,
+        'status': room.status,
         'capacity': room.capacity,
         'occupied': sum(state is not None for state in room.seats),
     }
@@ -282,10 +283,10 @@ def get_room_meta(_: AuthenticatedUser = Depends(require_wakudemo_login)) -> dic
 
 @router.get('')
 def list_joinable_rooms(_: AuthenticatedUser = Depends(require_wakudemo_login)) -> dict:
-    """返回当前可直接加入的大厅房间（已开局、满员、已结束房间不展示）。"""
+    """返回公开房间列表：可加入的大厅房间与正在进行的对局。"""
     return {'rooms': [
         _joinable_room_response(room)
-        for room in room_registry.joinable_rooms()
+        for room in room_registry.public_rooms()
     ]}
 
 

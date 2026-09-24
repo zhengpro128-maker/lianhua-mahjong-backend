@@ -1494,12 +1494,14 @@ class RoomRegistry:
         """当前在册房间数（房间数上限检查用）。"""
         return len(self._rooms)
 
-    def joinable_rooms(self) -> list[RoomSession]:
-        """仍在大厅且未达到真人容量的房间，供大厅快速加入列表使用。"""
+    def public_rooms(self) -> list[RoomSession]:
+        """可加入的大厅房间和正在进行的对局，供公开房间列表展示。"""
         self._maybe_sweep()
         return [
             room for room in self._rooms.values()
-            if room.status == 'lobby' and sum(state is not None for state in room.seats) < room.capacity
+            if room.status == 'playing'
+            or (room.status == 'lobby'
+                and sum(state is not None for state in room.seats) < room.capacity)
         ]
 
     def find_room_by_player(self, player_id: str) -> Optional[RoomSession]:

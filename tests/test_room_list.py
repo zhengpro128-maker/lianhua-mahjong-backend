@@ -8,7 +8,7 @@ from app.game.room import RoomSession, room_registry
 
 
 @pytest.mark.asyncio
-async def test_room_list_only_returns_lobby_rooms_with_human_capacity(server, fresh_rooms):
+async def test_room_list_returns_joinable_lobby_rooms_and_ongoing_games(server, fresh_rooms):
     open_room = room_registry.create('OPEN01', mode='east', capacity=2)
     open_room.join_or_rejoin('甲', player_id='open-player')
 
@@ -26,7 +26,10 @@ async def test_room_list_only_returns_lobby_rooms_with_human_capacity(server, fr
     assert response.json() == {
         'rooms': [{
             'roomId': 'OPEN01', 'mode': 'east', 'rulesetId': 'lotus-classic',
-            'capacity': 2, 'occupied': 1,
+            'status': 'lobby', 'capacity': 2, 'occupied': 1,
+        }, {
+            'roomId': 'PLAY01', 'mode': 'east', 'rulesetId': 'lotus-classic',
+            'status': 'playing', 'capacity': 4, 'occupied': 0,
         }],
     }
 
