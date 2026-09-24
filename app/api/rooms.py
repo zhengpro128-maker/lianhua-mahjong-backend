@@ -198,18 +198,19 @@ def _seat_for_player(room: RoomSession, player_id: str):
     )
 
 
-def _join_as_user(room_id: str, body: JoinRequest, user: AuthenticatedUser,
-                  allow_existing_member: bool = False) -> dict:
+def _join_as_user(room_id: str, body: JoinRequest, user: AuthenticatedUser) -> dict:
     room = _room_or_404(room_id)
-    if room.status not in ('lobby', 'finished'):
-        raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
     existing_room = room_registry.find_room_by_player(user.player_id)
     if existing_room is not None:
         existing = _seat_for_player(room, user.player_id)
-        if allow_existing_member and existing_room is room and existing is not None:
+        # 同一身份用房间号重新进入自己已占座的房间时，复用原座位与重进码。
+        # 这也允许掉线玩家在对局进行中通过 join 流程恢复 WebSocket 会话。
+        if existing_room is room and existing is not None:
             seat, state = existing
             return _join_response(room, seat, state, True)
         raise HTTPException(status_code=409, detail={'code': 'ALREADY_IN_ROOM'})
+    if room.status not in ('lobby', 'finished'):
+        raise HTTPException(status_code=409, detail={'code': 'ROOM_CLOSED'})
     if user.provider == 'wechat' and room.ruleset_id != 'wuhan-huanghuang':
         raise HTTPException(409, detail={'code': 'WECHAT_RULESET_UNSUPPORTED'})
     preferred_avatar = _safe_avatar_url(user.avatar_url)
@@ -351,7 +352,7 @@ def join_room_by_invite(
     except RoomInviteError as exc:
         raise HTTPException(status_code=exc.status_code,
                             detail={'code': exc.code})
-    return _join_as_user(room_id, body, user, allow_existing_member=True)
+    return _join_as_user(room_id, body, user)
 
 
 @router.post('/{room_id}/character')
