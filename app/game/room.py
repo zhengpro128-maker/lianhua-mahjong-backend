@@ -484,6 +484,7 @@ class RoomSession:
         if rejoin_code is not None and rejoin_code != state.rejoin_code:
             raise RoomError('INVALID_REJOIN_CODE')
         state.controller.set_connected(False)  # 断开 pending，转 AI 代打
+        self._drop_opening_waiter(seat)
         self._wake_continue_waiter()
         self.seats[seat] = None
         self.conn.unregister(seat)
@@ -537,8 +538,15 @@ class RoomSession:
         state = self.seats[seat]
         if state is not None:
             state.controller.set_connected(False)
+        self._drop_opening_waiter(seat)
         self._wake_continue_waiter()
         self._presentation_audio_modes.pop(seat, None)
+
+    def _drop_opening_waiter(self, seat: int) -> None:
+        if self._opening is not None:
+            self._opening['waiting'].discard(seat)
+            if self._opening_event is not None:
+                self._opening_event.set()
 
     def _presentation_audio_mode(self, seat: int) -> str:
         return self._presentation_audio_modes.get(seat, 'legacy-dynamic')
@@ -715,15 +723,16 @@ class RoomSession:
         self._opening = {
             'round': self.manager.round if self.manager is not None else None,
             'deadline': time.monotonic() + self._opening_timeout,
+            'waiting': set(seats),
             'confirmed': set(),
         }
         self._opening_event = asyncio.Event()
         try:
             while True:
-                current = self._human_connected_seats()
+                waiting = self._opening['waiting']
                 confirmed = self._opening['confirmed']
-                # 无在线真人（全员断线）或所有在线真人都已就绪 → 开始首回合
-                if not current or all(s in confirmed for s in current):
+                # 只等待开局时在线的玩家；断线后移除，重连不能重新加入屏障。
+                if waiting <= confirmed:
                     break
                 remaining = self._opening['deadline'] - time.monotonic()
                 if remaining <= 0:
@@ -732,7 +741,9 @@ class RoomSession:
                     await asyncio.wait_for(self._opening_event.wait(), timeout=remaining)
                     self._opening_event.clear()
                 except asyncio.TimeoutError:
-                    logger.bind(room_id=self.room_id).warning("开局就绪等待超时，继续推进")
+                    logger.bind(room_id=self.room_id).warning(
+                        "开局就绪等待超时，继续推进 round={} 待确认座位={} 已确认座位={}",
+                        self._opening['round'], sorted(waiting - confirmed), sorted(confirmed))
                     break
         finally:
             self._opening = None

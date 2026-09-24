@@ -144,6 +144,32 @@ class TestOpeningReadyBarrier:
         assert time.monotonic() - t0 >= 0.04, '应等待至少到兜底超时'
 
     @pytest.mark.asyncio
+    async def test_disconnect_drops_waiter_and_reconnect_does_not_restore_it(self):
+        room = _room_with_humans('OPN-REJOIN', pace=PLAY_PACE)
+        room._opening_timeout = 2.0
+        task = asyncio.create_task(room._wait_for_opening())
+        while room._opening is None:
+            await asyncio.sleep(0)
+
+        room.on_disconnect(1)
+        room.on_connect(1)
+        room._confirm_opening(0)
+        await asyncio.wait_for(task, timeout=0.2)
+
+    @pytest.mark.asyncio
+    async def test_new_connection_during_opening_is_not_required(self):
+        room = _room_with_humans('OPN-LATE', pace=PLAY_PACE)
+        room.on_disconnect(1)
+        room._opening_timeout = 2.0
+        task = asyncio.create_task(room._wait_for_opening())
+        while room._opening is None:
+            await asyncio.sleep(0)
+
+        room.on_connect(1)
+        room._confirm_opening(0)
+        await asyncio.wait_for(task, timeout=0.2)
+
+    @pytest.mark.asyncio
     async def test_skipped_without_pace(self):
         """测试路径（pace=None）不等待：开局即用即答，不拖慢套件。"""
         room = _room_with_humans('OPN-NOPACE', pace=None, count=1)
