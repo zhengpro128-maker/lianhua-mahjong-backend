@@ -29,6 +29,7 @@ from app.game.anime_characters import (
 from app.game.manager import GameManager, PLAYER_SEED
 from app.game.player import AI_DELAYS, AIPlayer
 from app.game.llm_player import LLMPlayer
+from app.game.social import RoomSocial
 from app.game.remote_player import RemotePlayer
 from app.llm.config import (default_provider_id, llm_server_available,
                             load_llm_providers)
@@ -320,6 +321,7 @@ class RoomSession:
         self._rejoin_window = 30.0
         self._rejoin_limit = 5
         self.conn = ConnectionManager()
+        self.social = RoomSocial()
         self.manager: Optional[GameManager] = None
         self.game_task: Optional[asyncio.Task] = None
         self.match_id: Optional[str] = None  # 落库用；storage 为 None 时保持 None
@@ -629,6 +631,10 @@ class RoomSession:
 
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
         """客户端动作 → 投递给该座位控制器。返回 (是否受理, 错误码)。"""
+        if not isinstance(message, dict):
+            return False, 'INVALID_MESSAGE'
+        if message.get('type') == 'room_social':
+            return self.social.send(self, seat, message)
         if message.get('type') == 'ping':
             # 回应 pong：客户端据此测 RTT → 信号质量显示（signal-N）
             self.conn.send_to_seat_nowait(seat, {'kind': 'pong'})
