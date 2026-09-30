@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import AsyncExitStack
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -76,8 +77,8 @@ async def test_social_over_real_websockets(server, fresh_rooms):
     import websockets
     from app.game.room import room_registry
 
-    room = room_registry.create('SOCIAL', capacity=2)
-    codes = [room.join_or_rejoin(f'玩家{i}')[2].rejoin_code for i in range(2)]
+    room = room_registry.create('SOCIAL', capacity=4)
+    codes = [room.join_or_rejoin(f'玩家{i}')[2].rejoin_code for i in range(4)]
     # Keep the real room and authenticated transport, with no turn loop needed.
     room.status = 'playing'
 
@@ -88,13 +89,43 @@ async def test_social_over_real_websockets(server, fresh_rooms):
                 if event.get('kind') == kind:
                     return event
 
-    async with websockets.connect(f"{server['ws']}/ws/room/SOCIAL?rejoin_code={codes[0]}") as first, \
-            websockets.connect(f"{server['ws']}/ws/room/SOCIAL?rejoin_code={codes[1]}") as second:
-        await receive_kind(first, 'rejoin_ok')
-        await receive_kind(second, 'rejoin_ok')
-        await first.send(json.dumps({'type': 'room_social', 'category': 'text', 'value': '你好，同桌！', 'seat': 3}))
-        echo = await receive_kind(first, 'room_social')
-        assert echo == await receive_kind(second, 'room_social')
-        assert echo['seat'] == 0 and echo['value'] == '你好，同桌！'
-        await first.send(json.dumps({'type': 'room_social', 'category': 'emoji', 'value': 'smile'}))
-        assert (await receive_kind(first, 'error'))['code'] == 'SOCIAL_RATE_LIMIT'
+    async with AsyncExitStack() as stack:
+        sockets = [await stack.enter_async_context(websockets.connect(
+            f"{server['ws']}/ws/room/SOCIAL?rejoin_code={code}")) for code in codes]
+        for seat, socket in enumerate(sockets):
+            assert (await receive_kind(socket, 'rejoin_ok'))['seat'] == seat
+            await receive_kind(socket, 'state_snapshot')
+        # Only the table's occupied targets are needed for social validation;
+        # game-turn timing must not interfere with this real transport test.
+        room.manager = SimpleNamespace(players=[object()] * 4)
+        payloads = [
+            {'category': 'prop', 'value': 'tomato', 'targetSeat': 1},
+            {'category': 'prop', 'value': 'coffee', 'targetSeat': 2},
+            {'category': 'prop', 'value': 'hammer', 'targetSeat': 3},
+            {'category': 'text', 'value': '你好，同桌！'},
+            {'category': 'phrase', 'value': 'hello'},
+            {'category': 'emoji', 'value': 'smile'},
+        ]
+        event_ids = set()
+        for index, payload in enumerate(payloads):
+            if index == 4:
+                # Preserve the real two-second per-sender limit; the first
+                # four events use different senders and need no wait.
+                await asyncio.sleep(2.01)
+            sender = index % 4
+            await sockets[sender].send(json.dumps({
+                **payload, 'type': 'room_social', 'seat': (sender + 1) % 4,
+                'id': 'forged',
+            }))
+            events = await asyncio.gather(*[
+                receive_kind(socket, 'room_social') for socket in sockets])
+            echo = events[0]
+            assert all(event == echo for event in events)
+            assert echo == {**payload, 'kind': 'room_social',
+                            'seat': sender, 'id': echo['id']}
+            assert echo['id'] != 'forged' and echo['id'] not in event_ids
+            event_ids.add(echo['id'])
+            if index == 0:
+                await sockets[sender].send(json.dumps({
+                    'type': 'room_social', 'category': 'emoji', 'value': 'smile'}))
+                assert (await receive_kind(sockets[sender], 'error'))['code'] == 'SOCIAL_RATE_LIMIT'
