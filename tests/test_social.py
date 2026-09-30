@@ -129,3 +129,87 @@ async def test_social_over_real_websockets(server, fresh_rooms):
                 await sockets[sender].send(json.dumps({
                     'type': 'room_social', 'category': 'emoji', 'value': 'smile'}))
                 assert (await receive_kind(sockets[sender], 'error'))['code'] == 'SOCIAL_RATE_LIMIT'
+
+
+@pytest.mark.parametrize('props', [
+    pytest.param(('tomato',) * 3, id='three-tomatoes'),
+    pytest.param(('coffee',) * 3, id='three-coffees'),
+    pytest.param(('hammer',) * 3, id='three-hammers'),
+    pytest.param(('tomato', 'coffee', 'hammer'), id='mixed-props'),
+])
+async def test_concurrent_props_to_one_target_over_real_websockets(server, fresh_rooms, props):
+    import json
+    import websockets
+    from app.game.room import room_registry
+
+    room = room_registry.create('SOCIAL', capacity=4)
+    codes = [room.join_or_rejoin(f'玩家{i}')[2].rejoin_code for i in range(4)]
+    room.status = 'playing'
+
+    async def receive_kind(socket, kind):
+        async with asyncio.timeout(5):
+            while True:
+                event = json.loads(await socket.recv())
+                if event.get('kind') == kind:
+                    return event
+
+    async def receive_social_batch(socket):
+        return [await receive_kind(socket, 'room_social') for _ in props]
+
+    async with AsyncExitStack() as stack:
+        sockets = [await stack.enter_async_context(websockets.connect(
+            f"{server['ws']}/ws/room/SOCIAL?rejoin_code={code}")) for code in codes]
+        for seat, socket in enumerate(sockets):
+            assert (await receive_kind(socket, 'rejoin_ok'))['seat'] == seat
+            await receive_kind(socket, 'state_snapshot')
+        room.manager = SimpleNamespace(players=[object()] * 4)
+
+        payloads = [
+            {'type': 'room_social', 'category': 'prop', 'value': prop,
+             'targetSeat': 3, 'seat': 3, 'id': 'forged'}
+            for prop in props
+        ]
+        # Three authenticated players send concurrently to the fourth player.
+        await asyncio.gather(*[
+            sockets[sender].send(json.dumps(payload))
+            for sender, payload in enumerate(payloads)
+        ])
+        batches = await asyncio.gather(*[
+            receive_social_batch(socket) for socket in sockets
+        ])
+        events = batches[0]
+        assert all(batch == events for batch in batches)
+        event_ids = {event['id'] for event in events}
+        assert len(event_ids) == 3 and 'forged' not in event_ids
+        assert {event['seat'] for event in events} == {0, 1, 2}
+        for event in events:
+            assert event == {
+                'kind': 'room_social', 'category': 'prop',
+                'value': props[event['seat']], 'targetSeat': 3,
+                'seat': event['seat'], 'id': event['id'],
+            }
+
+        # Each sender has its own cooldown, even when the target is shared.
+        await asyncio.gather(*[
+            sockets[sender].send(json.dumps(payload))
+            for sender, payload in enumerate(payloads)
+        ])
+        errors = await asyncio.gather(*[
+            receive_kind(sockets[sender], 'error') for sender in range(3)
+        ])
+        assert all(error['code'] == 'SOCIAL_RATE_LIMIT' for error in errors)
+
+        # Receiving three props must not consume the target's send allowance.
+        await sockets[3].send(json.dumps({
+            'type': 'room_social', 'category': 'prop', 'value': 'tomato', 'targetSeat': 0,
+        }))
+        reply_events = await asyncio.gather(*[
+            receive_kind(socket, 'room_social') for socket in sockets
+        ])
+        reply = reply_events[0]
+        assert all(event == reply for event in reply_events)
+        assert reply == {
+            'kind': 'room_social', 'category': 'prop', 'value': 'tomato',
+            'targetSeat': 0, 'seat': 3, 'id': reply['id'],
+        }
+        assert reply['id'] not in event_ids
