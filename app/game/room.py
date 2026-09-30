@@ -18,6 +18,7 @@ import os
 import secrets
 import time
 import urllib.request
+from copy import deepcopy
 from typing import Optional
 
 from loguru import logger
@@ -205,6 +206,7 @@ class WSEvents:
     def round_start(self, match_started, round_, dealer, honba, dice, second_dice=None,
                     flip_tile=None, flip_stack=None, flip_seat=None) -> None:
         # 每局开局广播：客户端据此播放开局序列（对局开始 + 骰子 + 翻精）
+        self.room._begin_history_round(match_started, round_, dealer, honba)
         message = {
             'kind': 'round_start',
             'matchStarted': match_started,
@@ -281,6 +283,8 @@ def build_snapshot(room: 'RoomSession', seat: int) -> dict:
         'lastDiscard': mgr.last_discard if mgr else None,
         'winPresentation': mgr.win_presentation if mgr else None,
         'winningPlayerIndex': mgr.winning_player_index if mgr else -1,
+        # 整场已公开的各局战绩由房间保留，重连无需依赖易丢失的 hand_result 广播。
+        'roundHistory': deepcopy(room._round_history),
     }
 
 
@@ -348,6 +352,11 @@ class RoomSession:
         self.table_theme: str = 'jade'
         # settled 快照只在所有 LLM AI 依次发表完赛后感言后向客户端放行。
         self._settlement_snapshot_released = False
+        self._round_history: list[dict] = []
+        self._round_history_generation = 0
+        self._round_history_recorded: set[tuple[int, int, int]] = set()
+        self._round_start_scores: dict[int, int] = {}
+        self._round_start_key: tuple[int, int, int] | None = None
         # 落库韧性：待补写队列（按序执行，任一失败即停）。开局/每局/终局落库失败
         # 不再中断整场驱动，数据留在队列等下次落库机会重试。
         self._pending_writes: list = []
@@ -620,14 +629,87 @@ class RoomSession:
     def broadcast_snapshot(self) -> None:
         """向所有在位连接广播 per-seat 快照（本人手牌可见，他座隐藏）。"""
         if self.manager is not None:
+            if self.manager.phase == 'lobby' and self.manager.result is None \
+                    and not self.manager.players:
+                # 显式 return_to_lobby 是整场 reset；finished/下一局不清历史。
+                if self._round_history or self._round_start_key is not None:
+                    self._reset_round_history()
             if self.manager.phase == 'settled' and not self._settlement_snapshot_released:
                 for seat in self._anime_fixed_connected_seats():
                     self.conn.send_to_seat_nowait(seat, build_snapshot(self, seat))
                 return
+            if self.manager.phase == 'settled':
+                self._record_completed_round()
             if self.manager.phase != 'settled':
                 self._settlement_snapshot_released = False
         for seat in self.conn.connected_seats:
             self.conn.send_to_seat_nowait(seat, build_snapshot(self, seat))
+
+    def _reset_round_history(self) -> None:
+        self._round_history_generation += 1
+        self._round_history = []
+        self._round_history_recorded.clear()
+        self._round_start_scores = {}
+        self._round_start_key = None
+
+    def _begin_history_round(self, match_started: bool, round_: int,
+                             dealer: int, honba: int) -> None:
+        """抓取记分发生前的基线；本局净额包含胡牌前已记入的杠分/跟庄分。"""
+        if match_started and self._round_history:
+            # GameManager.start_game(mode) 的显式新场也不能沿用旧战绩。
+            self._reset_round_history()
+        self._round_start_key = (round_, dealer, honba)
+        self._round_start_scores = {
+            player.seat: player.score for player in self.manager.players
+        } if self.manager else {}
+
+    def _record_completed_round(self) -> None:
+        """只冻结已正式公开的结算；广播重发/重连不产生重复记录。"""
+        mgr = self.manager
+        if mgr is None or mgr.phase != 'settled' or not mgr.result \
+                or not self._settlement_snapshot_released:
+            return
+        key = (mgr.round, mgr.dealer, mgr.honba)
+        if key in self._round_history_recorded:
+            return
+        record = deepcopy(mgr.result)
+        record.update({
+            'id': f'{self._round_history_generation}:{len(self._round_history) + 1}',
+            'round': mgr.round,
+            'roundLabel': mgr.result.get('roundLabel') or mgr.round_label(),
+            'dealer': mgr.dealer,
+            'honba': mgr.honba,
+        })
+        previous_changes = {
+            change['playerIndex']: change
+            for change in mgr.result.get('scoreChanges', [])
+        }
+        changes = []
+        for player in mgr.players:
+            seat = player.seat
+            state = self.seats[seat] if 0 <= seat < len(self.seats) else None
+            change = deepcopy(previous_changes.get(seat, {}))
+            delta = player.score - self._round_start_scores[seat] \
+                if self._round_start_key == key and seat in self._round_start_scores \
+                else change.get('delta', 0)
+            change.update({
+                'playerIndex': seat,
+                'name': state.nickname if state is not None else player.name,
+                'avatar': (state.avatar or player.avatar) if state is not None else player.avatar,
+                'characterId': state.character_id if state is not None else player.characterId,
+                'playerKind': 'human' if state is not None else player.playerKind,
+                'score': player.score,
+                'delta': delta,
+            })
+            changes.append(change)
+        record['scoreChanges'] = changes
+        winner_index = record.get('winnerIndex')
+        if not record.get('draw') and winner_index is not None:
+            winner = next((change for change in changes if change['playerIndex'] == winner_index), None)
+            if winner is not None:
+                record['winner'] = winner['name']
+        self._round_history.append(record)
+        self._round_history_recorded.add(key)
 
     def handle_client_message(self, seat: int, message: dict) -> tuple[bool, str]:
         """客户端动作 → 投递给该座位控制器。返回 (是否受理, 错误码)。"""
@@ -811,6 +893,8 @@ class RoomSession:
             raise RoomError('LLM_NOT_ENABLED')
         await self._cancel_tts_tasks()
         self._tts_match_generation += 1
+        self._reset_round_history()
+        self._settlement_snapshot_released = False
         self._llm_seat_providers = {item['seat']: item['providerId'] for item in (llm_seats or [])}
         self._llm_seat_styles = {
             item['seat']: item['style'] for item in (llm_seats or []) if item.get('style')
